@@ -1,0 +1,890 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Multi-Agent Orchestrator</title>
+<style>
+  :root {
+    --bg1:#eef2f9; --bg2:#e6ebf5; --surface:#ffffff; --border:#e2e8f0; --border2:#cbd5e1;
+    --text:#0f172a; --muted:#64748b; --muted2:#94a3b8;
+    --blue:#2563eb; --green:#16a34a; --amber:#f59e0b; --red:#dc2626; --orange:#f97316; --slate:#cbd5e1;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+         background:linear-gradient(160deg,var(--bg1),var(--bg2)); color:var(--text); height:100vh;
+         display:flex; flex-direction:column; font-size:14px; }
+  header { padding:12px 22px; background:rgba(255,255,255,.85); backdrop-filter:blur(8px);
+           border-bottom:1px solid var(--border); display:flex; align-items:center; gap:14px; z-index:5; }
+  header h1 { font-size:15px; margin:0; font-weight:700; letter-spacing:-.01em;
+              background:linear-gradient(90deg,#1e3a8a,#2563eb); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  header .spacer { flex:1; }
+  header .user { font-size:12px; color:var(--muted); }
+  input[type=text] { background:#fff; border:1px solid var(--border2); color:var(--text);
+        padding:9px 12px; border-radius:9px; width:360px; font-size:13px; }
+  input[type=text]:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 3px #2563eb22; }
+  button { background:var(--blue); color:#fff; border:0; padding:9px 15px; border-radius:9px;
+           font-size:13px; font-weight:600; cursor:pointer; transition:filter .15s; }
+  button:hover { filter:brightness(.96); }
+  button.approve { background:var(--green); }
+  button.deny { background:#fff; color:var(--red); border:1px solid #fecaca; }
+  button.revise { background:#fff; color:#b45309; border:1px solid #fcd34d; }
+  button.ghost { background:#fff; color:var(--muted); border:1px solid var(--border); }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  main { flex:1; display:flex; min-height:0; }
+  .sidebar { width:290px; background:rgba(255,255,255,.7); border-right:1px solid var(--border); overflow-y:auto; }
+  .sess { padding:12px 16px; border-bottom:1px solid var(--border); cursor:pointer; transition:background .12s; }
+  .sess:hover { background:#eef2ff; } .sess.active { background:#e0e7ff; border-left:3px solid var(--blue); padding-left:13px; }
+  .sess { position:relative; }
+  .sess .topic { font-size:13px; margin-bottom:6px; font-weight:600; padding-right:22px; }
+  .sess .id { font-size:11px; color:var(--muted2); font-family:ui-monospace,monospace; }
+  .sess .sessdel { position:absolute; top:10px; right:10px; background:none; border:0; color:var(--muted2);
+                   font-size:13px; padding:2px 4px; border-radius:6px; cursor:pointer; opacity:0; transition:opacity .12s; }
+  .sess:hover .sessdel { opacity:1; }
+  .sess .sessdel:hover { color:var(--red); background:#fee2e2; }
+  .content { flex:1; overflow-y:auto; padding:26px; }
+  .wrap { max-width:1120px; margin:0 auto; }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:16px; padding:20px;
+          margin-bottom:18px; box-shadow:0 1px 3px #0f172a0f; }
+  .card h2 { font-size:12px; font-weight:700; color:var(--muted2); margin:0 0 16px; text-transform:uppercase; letter-spacing:.05em; }
+  .badge { display:inline-flex; align-items:center; gap:5px; padding:3px 10px; border-radius:999px; font-size:11px; font-weight:600; text-transform:capitalize; white-space:nowrap; }
+  .node .nstatus { position:absolute; right:12px; bottom:10px; }
+  .node .nstatus .badge { padding:2px 8px; font-size:10px; }
+  .badge .dot { width:6px; height:6px; border-radius:50%; background:currentColor; }
+  .b-pending { background:#f1f5f9; color:#64748b; }
+  .b-running, .b-revise { background:#dbeafe; color:#1d4ed8; }
+  .b-waiting_human { background:#fef3c7; color:#b45309; }
+  .b-done { background:#dcfce7; color:#15803d; }
+  .b-denied, .b-failed { background:#fee2e2; color:#b91c1c; }
+  .b-cancelling { background:#ffedd5; color:#c2410c; }
+  .b-cancelled { background:#e2e8f0; color:#475569; }
+  .node.cancelled { --accent:#94a3b8; }
+
+  /* --- Pipeline / DAG --- */
+  .dag { display:flex; align-items:center; gap:0; overflow-x:auto; padding:22px 8px 24px; }
+  .stage-body { position:relative; flex:0 0 auto; }
+  .stage-num { position:absolute; top:-11px; left:-10px; width:25px; height:25px; border-radius:50%;
+               background:linear-gradient(135deg,#1e3a8a,#2563eb); color:#fff; font-size:11px; font-weight:800;
+               display:flex; align-items:center; justify-content:center; box-shadow:0 2px 6px #1e3a8a55; z-index:4; }
+  .stage-gate { position:absolute; top:-12px; right:-8px; display:flex; align-items:center; gap:3px;
+                background:#fef3c7; color:#b45309; border:1px solid #fcd34d; font-size:9px; font-weight:700;
+                padding:2px 8px; border-radius:999px; z-index:4; box-shadow:0 1px 3px #0f172a1a; }
+  .stage-group { position:relative; border:1.5px dashed var(--border2); border-radius:18px; padding:26px 14px 14px;
+                 background:linear-gradient(180deg,#f8fafc,#eef2f7); }
+  /* Sequential group gets a distinct tint so it reads differently from parallel. */
+  .stage-group.seq { border-color:#c7d2fe; background:linear-gradient(180deg,#f5f8ff,#eaf0ff); }
+  .stage-group-title { position:absolute; top:-10px; left:50%; transform:translateX(-50%); white-space:nowrap;
+                       background:#eef2ff; color:#3730a3; border:1px solid #c7d2fe; font-size:10px; font-weight:700;
+                       padding:3px 12px; border-radius:999px; letter-spacing:.02em; }
+  /* Parallel = agents stacked VERTICALLY (they run at the same time). */
+  .stage-col { display:flex; flex-direction:column; gap:11px; }
+  .stage-col .node { width:200px; }
+  /* Sequential = agents laid out left-to-right with arrows (they run in order). */
+  .stage-row { display:flex; align-items:center; gap:6px; }
+  .stage-row .node { width:180px; }
+  .seq-arrow { flex:0 0 auto; display:flex; align-items:center; color:#6366f1; }
+  .seq-arrow svg { width:24px; height:18px; }
+  .arrow { flex:0 0 auto; align-self:center; display:flex; align-items:center; margin:0 8px; color:#22c55e; }
+  .arrow svg { width:30px; height:22px; }
+  .node { position:relative; width:200px; background:#fff; border:1px solid var(--border); border-radius:15px;
+          padding:15px 14px 32px; box-shadow:0 4px 12px #0f172a0f, 0 1px 2px #0f172a0a; --accent:var(--slate); overflow:hidden; }
+  .node::before { content:""; position:absolute; top:0; left:0; right:0; height:5px; background:var(--accent); }
+  .node.running, .node.revise { --accent:var(--blue); }
+  .node.done { --accent:var(--green); }
+  .node.waiting_human { --accent:var(--amber); }
+  .node.denied, .node.failed { --accent:var(--red); }
+  .node.running, .node.waiting_human { animation:pulse 1.8s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{ box-shadow:0 4px 10px #0f172a0d, 0 0 0 0 color-mix(in srgb, var(--accent) 40%, transparent);} 50%{ box-shadow:0 4px 10px #0f172a0d, 0 0 0 5px color-mix(in srgb, var(--accent) 8%, transparent);} }
+  .node .head { display:flex; align-items:center; gap:10px; margin-top:3px; }
+  .node .avatar { width:30px; height:30px; border-radius:9px; background:var(--accent); color:#fff; font-weight:800;
+                  font-size:14px; display:flex; align-items:center; justify-content:center; flex:0 0 auto; box-shadow:0 2px 4px #0f172a1a; }
+  .node .title { font-weight:700; font-size:13px; flex:1; min-width:0; line-height:1.2; }
+  .node .tags { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:2px; }
+  .tag { font-size:9px; padding:2px 7px; border-radius:6px; background:#f1f5f9; color:var(--muted); font-weight:600; }
+  .tag.mcp { background:#ecfeff; color:#0e7490; } .tag.model { background:#f5f3ff; color:#7c3aed; }
+  .tag.rag { background:#ecfdf5; color:#047857; } .tag.src { background:#eef2ff; color:#4338ca; }
+  .tag.hitl { background:#fef3c7; color:#b45309; } .tag.dedicated { background:#fff7ed; color:#c2410c; }
+  .bar { height:5px; background:#eef2f7; border-radius:3px; overflow:hidden; margin-top:10px; }
+  .bar > i { display:block; height:100%; background:var(--accent); width:0; transition:width .3s; }
+
+  .node { cursor:pointer; transition:opacity .15s, box-shadow .15s; }
+  .node.selected { outline:2px solid var(--blue); outline-offset:2px; }
+  .dag.has-selection .node:not(.selected) { opacity:.42; }
+
+  .outputs-head { display:flex; align-items:center; justify-content:space-between; margin:0 0 14px; }
+  .outputs-head h2 { margin:0; }
+  .outputs-head .hint { font-size:11px; color:var(--muted2); font-weight:500; text-transform:none; letter-spacing:0; }
+  .outblock { border:1px solid var(--border); border-radius:12px; padding:14px 16px; margin-bottom:12px; background:#fff; }
+  .outblock:last-child { margin-bottom:0; }
+  details.outblock > summary.outhead { cursor:pointer; user-select:none; list-style:none; margin-bottom:0; }
+  details.outblock > summary.outhead::-webkit-details-marker { display:none; }
+  details.outblock > summary.outhead:hover .oname { color:var(--blue); }
+  details.outblock[open] > summary.outhead { margin-bottom:10px; }
+  .outhead .ochev { color:var(--blue); font-size:12px; transition:transform .18s; flex:0 0 auto; }
+  details.outblock[open] > summary .ochev { transform:rotate(90deg); }
+  .outhead { display:flex; align-items:center; gap:9px; margin-bottom:10px; }
+  .avatar-sm { width:24px; height:24px; border-radius:7px; background:var(--accent,#2563eb); color:#fff; font-weight:800;
+               font-size:12px; display:flex; align-items:center; justify-content:center; flex:0 0 auto; }
+  .outblock .oname { font-weight:700; font-size:13px; flex:1; }
+  .outbody { white-space:pre-wrap; font-size:13px; color:#334155; line-height:1.5; max-height:360px; overflow-y:auto;
+             border-top:1px dashed var(--border); padding-top:10px; }
+  .outbody.muted { color:var(--muted2); border-top:0; padding-top:0; font-style:italic; }
+
+  /* Structured asset rendering (readable view of the contract JSON) */
+  .asset { font-size:12.5px; color:#334155; line-height:1.5; }
+  .asset-meta { font-size:10.5px; font-weight:700; letter-spacing:.03em; text-transform:uppercase; color:#64748b; margin-bottom:8px; }
+  .asset-summary { background:#f8fafc; border-left:3px solid var(--accent,#2563eb); border-radius:6px;
+                   padding:9px 11px; margin-bottom:13px; color:#1e293b; }
+  .asset-sec { margin-bottom:13px; } .asset-sec:last-child { margin-bottom:0; }
+  .asset code { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:11.5px;
+                background:#eef2f7; border:1px solid #e2e8f0; border-radius:4px; padding:0 4px; }
+  .asset strong { font-weight:700; color:#0f172a; }
+  .asset-sec > h5 { margin:0 0 6px; font-size:10.5px; font-weight:700; text-transform:uppercase;
+                    letter-spacing:.03em; color:#475569; }
+  .asset .blist { list-style:none; margin:0; padding:0; }
+  .asset .blist > li { margin:0 0 6px; }
+  .asset ul:not(.blist) { margin:3px 0; padding-left:18px; } .asset ul:not(.blist) > li { margin:1px 0; }
+  .asset-sec.warn > h5 { color:#b45309; } .asset-sec.warn li { color:#92400e; }
+  .asset-collapse > summary { cursor:pointer; font-size:10.5px; font-weight:700; text-transform:uppercase;
+                              letter-spacing:.03em; color:#b45309; list-style:none; user-select:none; }
+  .asset-collapse > summary::-webkit-details-marker { display:none; }
+  .asset-collapse > summary::before { content:"\25B8  "; }
+  .asset-collapse[open] > summary::before { content:"\25BE  "; }
+  .asset-collapse > ul { margin-top:7px; }
+  .cls { display:inline-block; font-size:9px; font-weight:700; padding:1px 6px; border-radius:5px;
+         margin-right:6px; text-transform:uppercase; letter-spacing:.02em; background:#f1f5f9; color:#475569; }
+  .cls-sourced-fact { background:#ecfdf5; color:#047857; }
+  .cls-calculation { background:#ecfeff; color:#0e7490; }
+  .cls-assumption { background:#fef9c3; color:#a16207; }
+  .cls-agent-interpretation { background:#fff1f2; color:#be123c; }
+  .sref { color:#94a3b8; font-style:italic; }
+  .kvgrid { display:grid; grid-template-columns:max-content 1fr; gap:3px 14px; align-items:start; }
+  .kvgrid .k { color:#64748b; font-weight:600; } .kvgrid .v { color:#1e293b; }
+  .asset-obj { margin:4px 0; padding-left:10px; border-left:2px solid var(--border); }
+  .rawout { margin:0; white-space:pre-wrap; word-break:break-word; font-size:11.5px; line-height:1.5;
+            font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+
+  .hitl { background:linear-gradient(180deg,#fffdf5,#fffbeb); border:1px solid #fcd34d; border-radius:16px; padding:20px;
+          margin-bottom:18px; box-shadow:0 4px 14px #f59e0b1f; }
+  .hitl h3 { margin:0 0 4px; color:#b45309; font-size:15px; }
+  .hitl .sub { margin:0 0 12px; font-size:12px; color:#92764a; }
+  .detail { background:#fff; border:1px solid #fde68a; border-radius:10px; padding:14px; font-size:13px;
+            color:#334155; white-space:pre-wrap; margin-bottom:14px; max-height:240px; overflow-y:auto; line-height:1.5; }
+  textarea { width:100%; border:1px solid var(--border2); border-radius:10px; padding:10px 12px; font-size:13px;
+             font-family:inherit; margin-bottom:12px; resize:vertical; min-height:70px; }
+  textarea:focus { outline:none; border-color:var(--amber); box-shadow:0 0 0 3px #f59e0b22; }
+  .actions { display:flex; gap:9px; align-items:center; }
+  /* --- Per-agent group review --- */
+  .gbulk { display:flex; gap:8px; margin-bottom:12px; }
+  .gbulk button { font-size:11px; padding:5px 11px; }
+  .gagent { background:#fff; border:1px solid #fde68a; border-radius:12px; padding:12px 14px; margin-bottom:10px; }
+  .gagent.revise { border-color:#93c5fd; }
+  .gagent.reject { border-color:#fca5a5; }
+  .gagent.approve { border-color:#bbf7d0; }
+  .gahead { display:flex; align-items:center; gap:9px; }
+  .gahead .oname { font-weight:700; font-size:13px; flex:1; }
+  .gapick { display:inline-flex; gap:0; border:1px solid var(--border2); border-radius:8px; overflow:hidden; flex:0 0 auto; }
+  .gapick-btn { background:#fff; color:var(--muted); border:0; border-right:1px solid var(--border); padding:6px 12px;
+                font-size:11px; font-weight:600; cursor:pointer; }
+  .gapick-btn:last-child { border-right:0; }
+  .gapick-btn:hover { background:#f8fafc; }
+  .gapick-btn.sel.approve { background:var(--green); color:#fff; }
+  .gapick-btn.sel.revise { background:var(--blue); color:#fff; }
+  .gapick-btn.sel.reject { background:var(--orange); color:#fff; }
+  .gaout { font-size:12px; color:#475569; margin-top:9px; padding-top:8px; border-top:1px dashed var(--border);
+           line-height:1.4; max-height:340px; overflow:auto; }
+  .gaout pre { margin:0; white-space:pre-wrap; word-break:break-word; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+               font-size:11.5px; line-height:1.5; }
+  .gaout.muted { color:var(--muted2); font-style:italic; border-top:0; }
+  .gafb { margin-top:9px; margin-bottom:0; min-height:52px; }
+  .result { background:linear-gradient(180deg,#f0fdf4,#ecfdf5); border:1px solid #bbf7d0; border-radius:16px; padding:18px;
+            margin-bottom:18px; font-size:13px; color:#14532d; line-height:1.5; }
+  .result-body { white-space:pre-wrap; }
+  /* Collapsible section cards (Result, Timeline) */
+  .secsum { cursor:pointer; user-select:none; list-style:none; display:flex; align-items:center; gap:8px; margin:0; }
+  .secsum::-webkit-details-marker { display:none; }
+  .secsum h2 { margin:0; }
+  .secsum .ochev { color:var(--blue); font-size:12px; transition:transform .18s; flex:0 0 auto; }
+  details[open] > .secsum .ochev { transform:rotate(90deg); }
+  details.result[open] > .secsum, details.logs[open] > .secsum { margin-bottom:12px; }
+  .logs .log { font-size:12px; font-family:ui-monospace,monospace; color:#475569; padding:4px 0; border-top:1px solid #f1f5f9; }
+  .logs .log:first-child { border-top:0; }
+  .logs .log .n { color:var(--blue); font-weight:700; }
+  .logs .log .ts { color:var(--muted2); }
+
+  /* Output version history */
+  .outblock .vcount { font-size:10px; font-weight:700; color:#7c3aed; background:#f5f3ff;
+                      border:1px solid #ede9fe; border-radius:6px; padding:2px 7px; }
+  .ver { border:1px solid var(--border); border-radius:10px; padding:10px 12px; margin-bottom:10px; background:#fafbfd; }
+  .ver:last-child { margin-bottom:0; }
+  .verhead { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+  .verhead .vtag { font-weight:800; font-size:12px; color:#1e40af; background:#e0e7ff; border-radius:6px; padding:2px 8px; }
+  .verhead .vkind { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  .verhead .ts { font-size:11px; color:var(--muted2); font-family:ui-monospace,monospace; margin-left:auto; }
+  .vercomment { font-size:12px; color:#334155; background:#fffbeb; border:1px solid #fde68a;
+                border-radius:8px; padding:7px 10px; margin-bottom:8px; }
+  .empty { color:var(--muted); margin-top:60px; text-align:center; }
+  .spinner { display:inline-block; width:14px; height:14px; border:2px solid #cbd5e1; border-top-color:var(--orange);
+             border-radius:50%; animation:spin .8s linear infinite; vertical-align:middle; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>🧭 Multi-Agent Orchestrator</h1>
+  <div class="topnav">
+    <button id="navCampaigns" class="navbtn active" onclick="showCampaignsView && showCampaignsView()">Sessions</button>
+    <button id="navObs" class="navbtn" onclick="showObsView && showObsView()">📊 Observability</button>
+  </div>
+  <input id="topic" type="text" value="Design a serverless data pipeline on AWS" />
+  <button id="start">Start session</button>
+  <div class="spacer"></div>
+  <span id="user" class="user"></span>
+  <button id="logout" class="ghost" style="display:none">Log out</button>
+</header>
+<script src="/auth-config.js"></script>
+<main>
+  <div class="sidebar" id="sidebar"></div>
+  <div class="content"><div class="wrap"><div id="wrap"><div class="empty">Loading…</div></div></div></div>
+</main>
+<div id="obsView" style="display:none"></div>
+<script>
+let current = null;
+let workflow = { agents:{}, steps:[] };
+let idToken = null;
+let lastSig = null, feedbackDraft = "";
+let selectedNode = null, lastNodes = {}, lastHistory = {};
+let groupDraft = {}, groupIds = [], groupGateNode = null;  // per-agent group-gate review
+
+async function api(path, opts = {}) {
+  const headers = Object.assign({}, opts.headers || {});
+  if (idToken) headers["Authorization"] = "Bearer " + idToken;
+  const r = await fetch(path, Object.assign({}, opts, { headers }));
+  if (r.status === 401) { cognitoLogin(); return; }
+  if (!r.ok) throw new Error((await r.json().catch(()=>({}))).error || r.statusText);
+  return r.json();
+}
+
+function cognitoLogin() {
+  const cfg = window.AUTH_CONFIG;
+  const base = `https://${cfg.domainPrefix}.auth.${cfg.region}.amazoncognito.com`;
+  const params = new URLSearchParams({
+    client_id: cfg.clientId,
+    response_type: "code",
+    scope: "openid email profile",
+    redirect_uri: window.location.origin,
+  });
+  window.location.href = `${base}/login?${params}`;
+}
+
+function cognitoLogout() {
+  const cfg = window.AUTH_CONFIG;
+  const base = `https://${cfg.domainPrefix}.auth.${cfg.region}.amazoncognito.com`;
+  const params = new URLSearchParams({
+    client_id: cfg.clientId,
+    logout_uri: window.location.origin,
+  });
+  idToken = null;
+  localStorage.removeItem("cognito_id_token");
+  localStorage.removeItem("cognito_access_token");
+  window.location.href = `${base}/logout?${params}`;
+}
+
+async function exchangeCode(code) {
+  const cfg = window.AUTH_CONFIG;
+  const base = `https://${cfg.domainPrefix}.auth.${cfg.region}.amazoncognito.com`;
+  const body = new URLSearchParams({
+    grant_type: "authorization_code",
+    client_id: cfg.clientId,
+    code,
+    redirect_uri: window.location.origin,
+  });
+  const resp = await fetch(`${base}/oauth2/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body,
+  });
+  if (!resp.ok) { cognitoLogin(); return; }
+  const tokens = await resp.json();
+  localStorage.setItem("cognito_id_token", tokens.id_token);
+  localStorage.setItem("cognito_access_token", tokens.access_token);
+  return tokens.id_token;
+}
+
+function parseJwt(token) {
+  try { return JSON.parse(atob(token.split(".")[1].replace(/-/g,"+").replace(/_/g,"/"))); }
+  catch { return {}; }
+}
+
+async function initAuth() {
+  const cfg = window.AUTH_CONFIG || { enabled:false };
+  if (!cfg.enabled) return;
+
+  // Handle OAuth2 authorization code callback
+  const params = new URLSearchParams(window.location.search);
+  if (params.has("code")) {
+    const token = await exchangeCode(params.get("code"));
+    history.replaceState({}, document.title, window.location.pathname);
+    if (!token) return;
+    idToken = token;
+  } else {
+    idToken = localStorage.getItem("cognito_id_token");
+  }
+
+  // Validate token expiry
+  if (idToken) {
+    const claims = parseJwt(idToken);
+    if (claims.exp && claims.exp * 1000 < Date.now()) {
+      localStorage.removeItem("cognito_id_token");
+      localStorage.removeItem("cognito_access_token");
+      idToken = null;
+    }
+  }
+
+  if (!idToken) { cognitoLogin(); return; }
+
+  const claims = parseJwt(idToken);
+  const u = document.getElementById("user"); if (u) u.textContent = claims.email || claims["cognito:username"] || claims.sub || "";
+  const lo = document.getElementById("logout");
+  if (lo) { lo.style.display="inline-block"; lo.onclick = cognitoLogout; }
+}
+
+async function loadWorkflow() { try { workflow = await api("/api/workflow"); } catch {} }
+
+// "Start session" kicks off a run with the topic in the input box.
+document.getElementById("start").onclick = startSession;
+
+async function startSession() {
+  const btn = document.getElementById("start");
+  btn.disabled = true;
+  const topic = document.getElementById("topic").value.trim() || "Untitled";
+  try {
+    const { session_id } = await api("/api/sessions", {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({ topic }),
+    });
+    current = session_id; lastSig = null; feedbackDraft = ""; selectedNode = null;
+    await refreshList(); refreshDetail();
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function refreshList() {
+  const sessions = await api("/api/sessions").catch(()=>[]);
+  document.getElementById("sidebar").innerHTML = sessions.map(s => `
+    <div class="sess ${s.session_id===current?"active":""}" onclick="select('${s.session_id}')">
+      <button class="sessdel" title="Delete this run" onclick="deleteSession(event,'${s.session_id}')">🗑</button>
+      <div class="topic">${esc(s.topic)}</div>
+      <div class="id">${s.session_id}</div>
+      <div style="margin-top:6px">${badge(s.overall)}</div>
+    </div>`).join("") || '<div class="empty" style="margin-top:24px">No sessions yet</div>';
+}
+
+function select(id) { current = id; lastSig = null; feedbackDraft = ""; selectedNode = null; refreshList(); refreshDetail(); }
+
+async function deleteSession(ev, id) {
+  ev.stopPropagation();   // don't select the row we're deleting
+  if (!confirm("Delete this run? Its status and timeline are removed permanently.")) return;
+  try {
+    await api(`/api/sessions/${id}`, { method: "DELETE" });
+  } catch (e) { alert(e.message); return; }
+  if (current === id) { current = null; lastSig = null; selectedNode = null; }
+  await refreshList(); refreshDetail();
+}
+
+function badge(status) {
+  const s = status || "pending";
+  return `<span class="badge b-${s}"><span class="dot"></span>${s.replace("_"," ")}</span>`;
+}
+
+function nodeCard(nodes, agentId) {
+  const meta = workflow.agents[agentId] || { name:agentId, kind:"" };
+  const d = nodes[agentId] || { status:"pending", pct:0, output:"" };
+  const modelShort = meta.model ? String(meta.model).split(".").pop().replace(/-\d+-v\d+:\d+$/,"") : "";
+  const srcLabel = (!meta.mcp && !meta.rag) ? agentSource(meta) : "";
+  const tags = [
+    meta.kind ? `<span class="tag">${esc(meta.kind)}</span>` : "",
+    meta.runtime==="dedicated" ? `<span class="tag dedicated">dedicated</span>` : "",
+    meta.mcp ? `<span class="tag mcp">mcp:${esc(meta.mcp)}</span>` : "",
+    meta.rag ? `<span class="tag rag">rag:${esc(meta.rag)}</span>` : "",
+    (srcLabel && srcLabel !== "—") ? `<span class="tag src">${esc(srcLabel.toLowerCase())}</span>` : "",
+    modelShort ? `<span class="tag model">${esc(modelShort)}</span>` : "",
+  ].join("");
+  const bar = d.status==="running" ? `<div class="bar"><i style="width:${d.pct||6}%"></i></div>` : "";
+  const monogram = monogramFor(meta.name);
+  return `<div class="node ${d.status}" data-id="${agentId}" onclick="selectNode('${agentId}', event)">
+    <div class="head">
+      <div class="avatar">${monogram}</div>
+      <div class="title">${esc(meta.name)}</div>
+    </div>
+    <div class="tags" style="margin-top:10px">${tags}</div>
+    ${bar}
+    <div class="nstatus">${badge(d.status)}</div>
+  </div>`;
+}
+
+// A stage = one workflow step. Single-agent steps render one node; parallel
+// steps render a labeled dashed group with a grid of nodes. A numbered badge
+// marks the stage order and a "Review" pill marks a HITL gate after the stage.
+function stageHtml(step, i, nodes) {
+  const numBadge = `<div class="stage-num">${i + 1}</div>`;
+  const gate = step.hitl ? '<div class="stage-gate" title="Human review gate after this stage">🔒 Review</div>' : "";
+
+  // Parallel group: agents stacked VERTICALLY (they run concurrently).
+  if (step.parallel) {
+    const ids = step.parallel;
+    const title = "⇉ " + esc(step.gateName || "Parallel") + " · " + ids.length + " parallel";
+    const cards = ids.map(id => nodeCard(nodes, id)).join("");
+    return `<div class="stage-body">${numBadge}${gate}
+      <div class="stage-group"><div class="stage-group-title">${title}</div>
+        <div class="stage-col">${cards}</div></div></div>`;
+  }
+
+  // Sequence group: agents left-to-right with arrows (they run in order).
+  if (step.sequence) {
+    const ids = step.sequence;
+    const title = "→ " + esc(step.gateName || "Sequential") + " · " + ids.length + " in sequence";
+    const seqArrow = '<div class="seq-arrow"><svg viewBox="0 0 24 18"><line x1="0" y1="9" x2="16" y2="9" stroke="currentColor" stroke-width="2.5"/><path d="M14 3 L23 9 L14 15 Z" fill="currentColor"/></svg></div>';
+    const cards = ids.map(id => nodeCard(nodes, id)).join(seqArrow);
+    return `<div class="stage-body">${numBadge}${gate}
+      <div class="stage-group seq"><div class="stage-group-title">${title}</div>
+        <div class="stage-row">${cards}</div></div></div>`;
+  }
+
+  // Single agent.
+  return `<div class="stage-body">${numBadge}${gate}${nodeCard(nodes, step.agent)}</div>`;
+}
+
+function dagHtml(nodes) {
+  const arrow = '<div class="arrow"><svg viewBox="0 0 30 22"><line x1="0" y1="11" x2="21" y2="11" stroke="currentColor" stroke-width="2.5"/><path d="M19 4 L29 11 L19 18 Z" fill="currentColor"/></svg></div>';
+  return (workflow.steps || []).map((step, i) => stageHtml(step, i, nodes)).join(arrow);
+}
+
+function prettyOutput(text) {
+  if (typeof text !== "string") return renderVal(text);
+  let d; try { d = JSON.parse(text); } catch { return text; }
+  return renderVal(d);
+}
+// Unwrap MCP content-blocks / KB payloads / nested JSON into readable text.
+function renderVal(d, depth = 0) {
+  if (depth > 6) return String(d);
+  if (typeof d === "string") {
+    const t = d.trim();
+    if ((t.startsWith("{") || t.startsWith("[")) && t.length > 1) {
+      try { return renderVal(JSON.parse(t), depth + 1); } catch { return d; }
+    }
+    return d;
+  }
+  if (Array.isArray(d)) {
+    return d.map(x => (x && typeof x === "object" && "text" in x) ? renderVal(x.text, depth + 1) : renderVal(x, depth + 1))
+            .filter(Boolean).join("\n");
+  }
+  if (d && typeof d === "object") {
+    if (Array.isArray(d.results)) return d.results.map(r => r && r.text ? r.text : "").filter(Boolean).join("\n\n———\n\n");
+    if (typeof d.text === "string") return renderVal(d.text, depth + 1);
+    return JSON.stringify(d, null, 2);
+  }
+  return String(d ?? "");
+}
+
+// --- Structured asset view -------------------------------------------------
+// Agent outputs are contract assets. Render them as a readable layout —
+// executive summary, findings (with evidence-class chips), fields, sources, and
+// data limitations — instead of raw JSON. Falls back to formatted text when the
+// output isn't a JSON object.
+const ASSET_ENVELOPE = new Set(["assetId","assetType","version","status",
+  "createdAt","createdByAgent","executiveSummary","summary","findings","dataLimitations",
+  "sources","sourceAssetIds","artifacts"]);
+
+function humanizeKey(k){
+  return String(k).replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, c => c.toUpperCase()).trim();
+}
+function clsChip(c){
+  const key = String(c || "").toLowerCase().replace(/[^a-z]+/g, "-").replace(/^-|-$/g, "");
+  return `<span class="cls cls-${esc(key)}">${esc(c || "n/a")}</span>`;
+}
+function renderAssetVal(v){
+  if (v === null || v === undefined || v === "") return `<span class="muted">—</span>`;
+  if (Array.isArray(v)){
+    if (!v.length) return `<span class="muted">—</span>`;
+    if (v.every(x => x === null || typeof x !== "object"))
+      return `<ul>${v.map(x => `<li>${mdInline(String(x))}</li>`).join("")}</ul>`;
+    return v.map(x => `<div class="asset-obj">${renderAssetVal(x)}</div>`).join("");
+  }
+  if (typeof v === "object"){
+    const rows = Object.entries(v).filter(([, val]) =>
+      val !== null && val !== "" && !(Array.isArray(val) && !val.length));
+    if (!rows.length) return `<span class="muted">—</span>`;
+    return `<div class="kvgrid">${rows.map(([k, val]) =>
+      `<div class="k">${esc(humanizeKey(k))}</div><div class="v">${renderAssetVal(val)}</div>`).join("")}</div>`;
+  }
+  return mdInline(String(v));
+}
+function renderAsset(d){
+  const P = [];
+  const meta = [];
+  if (d.assetType) meta.push(humanizeKey(d.assetType));
+  if (d.version) meta.push("v" + d.version);
+  if (d.status) meta.push(String(d.status));
+  if (meta.length) P.push(`<div class="asset-meta">${esc(meta.join("  ·  "))}</div>`);
+  const summary = d.executiveSummary || d.summary;
+  if (summary) P.push(`<div class="asset-summary">${mdInline(summary)}</div>`);
+  if (Array.isArray(d.findings) && d.findings.length){
+    P.push(`<div class="asset-sec"><h5>Findings</h5><ul class="blist">${d.findings.map(f =>
+      `<li>${clsChip(f.classification)}${esc(f.statement || "")}` +
+      `${f.sourceRef ? ` <span class="sref">— ${esc(f.sourceRef)}</span>` : ""}</li>`).join("")}</ul></div>`);
+  }
+  // Any remaining business fields, in document order.
+  for (const [k, v] of Object.entries(d)){
+    if (ASSET_ENVELOPE.has(k)) continue;
+    if (v === null || v === "" || (Array.isArray(v) && !v.length)) continue;
+    P.push(`<div class="asset-sec"><h5>${esc(humanizeKey(k))}</h5>${renderAssetVal(v)}</div>`);
+  }
+  if (Array.isArray(d.sources) && d.sources.length){
+    P.push(`<div class="asset-sec"><h5>Sources</h5><ul class="blist">${d.sources.map(s =>
+      `<li>${esc(s.sourceName || s.sourceType || "source")}` +
+      `${s.sourceType ? ` <span class="muted">(${esc(s.sourceType)})</span>` : ""}</li>`).join("")}</ul></div>`);
+  }
+  if (Array.isArray(d.dataLimitations) && d.dataLimitations.length){
+    P.push(`<details class="asset-sec warn asset-collapse"><summary>Data limitations (${
+      d.dataLimitations.length})</summary><ul class="blist">${
+      d.dataLimitations.map(x => `<li>${esc(x)}</li>`).join("")}</ul></details>`);
+  }
+  return `<div class="asset">${P.join("")}</div>`;
+}
+// Parse a raw agent output and render it structured; fall back to formatted text.
+function renderAssetHtml(raw){
+  const text = typeof raw === "string" ? raw : JSON.stringify(raw || "");
+  if (!text.trim()) return "";
+  let d; try { d = JSON.parse(text); } catch { d = null; }
+  if (!d || typeof d !== "object" || Array.isArray(d))
+    return `<pre class="rawout">${esc(prettyOutput(text))}</pre>`;
+  return renderAsset(d);
+}
+
+// Short human label for where an agent gets its data. The BFF ships a compact,
+// display-ready `source`; fall back to deriving it from mcp/rag/access.
+function agentSource(meta){
+  if (meta.source) return meta.source;
+  if (meta.mcp) return "MCP · " + meta.mcp;
+  if (meta.rag) return "Knowledge Base · " + meta.rag;
+  const acc = (Array.isArray(meta.access) && meta.access[0]) || "";
+  if (/session/i.test(acc)) return "Session input";
+  if (/upstream/i.test(acc)) return "Upstream agent outputs";
+  return acc ? acc.split(/[:(]/)[0].trim() : "—";
+}
+
+async function refreshDetail() {
+  const wrap = document.getElementById("wrap");
+  if (!current) { if (lastSig!=="__empty"){ wrap.innerHTML='<div class="empty">Start a session or pick one on the left.</div>'; lastSig="__empty"; } return; }
+  let snap; try { snap = await api(`/api/sessions/${current}`); } catch { return; }
+
+  const s = sig(snap);
+  if (s === lastSig) return;   // nothing changed — don't clobber the textarea/focus
+  lastSig = s;
+
+  const nodes = snap.nodes || {};
+  lastNodes = nodes;
+  lastHistory = snap.history || {};
+  const overall = snap.overall || "";
+  const hitl = buildHitl(snap, nodes);
+
+  const result = snap.result ? `<details class="result"><summary class="secsum"><span class="ochev">▸</span><strong>Result</strong></summary><div class="result-body">${esc(snap.result)}</div></details>` : "";
+  const logs = (snap.logs||[]).slice(-40).map(l => `<div class="log"><span class="ts">${esc(fmtET(l.ts))}</span> <span class="n">${esc(l.node||"-")}</span> · ${esc(l.msg)}</div>`).join("");
+
+  wrap.innerHTML = `
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:12px">
+        ${badge(overall)}
+        <span style="font-weight:700;font-size:15px">${esc(snap.topic)}</span>
+        ${overall==="running" ? '<span class="spinner"></span>' : ''}
+        <span style="flex:1"></span>
+        ${["running","waiting_human","cancelling"].includes(overall)
+          ? '<button class="deny" onclick="cancelSession()" title="Stop this workflow immediately">⏹ Stop workflow</button>' : ''}
+      </div>
+    </div>
+    <div class="card"><h2>Agent workflow</h2><div class="dag" id="dag">${dagHtml(nodes)}</div></div>
+    ${hitl}
+    <div class="card">
+      <div class="outputs-head"><h2 id="outputsTitle">All outputs</h2>
+        <span class="hint">Click a node to focus its output · click empty space to show all</span></div>
+      <div id="outputs"></div>
+    </div>
+    ${result}
+    <details class="card logs"><summary class="secsum"><span class="ochev">▸</span><h2>Timeline</h2></summary>${logs || '<div class="log">…</div>'}</details>`;
+
+  const ta = document.getElementById("feedback");
+  if (ta) { ta.value = feedbackDraft; ta.oninput = () => { feedbackDraft = ta.value; }; }
+  applySelection();
+}
+
+function allNodeIds() {
+  return (workflow.steps || []).flatMap(s => s.parallel || s.sequence || [s.agent]);
+}
+
+// Format a timestamp as Eastern-Time "YYYY-MM-DD HH:MM:SS".
+function fmtET(ts) {
+  if (ts == null || ts === "") return "";
+  if (typeof ts === "string") {
+    const head = ts.split("#")[0].trim();
+    const m = head.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})/);
+    if (m) return `${m[1]} ${m[2]}`;
+    ts = parseInt(head, 10);
+  }
+  let ms = ts < 1e12 ? ts * 1000 : ts;
+  if (!ms || isNaN(ms)) return "";
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+  }).formatToParts(new Date(ms));
+  const g = t => (parts.find(x => x.type === t) || {}).value || "";
+  let hh = g("hour") === "24" ? "00" : g("hour");
+  return `${g("year")}-${g("month")}-${g("day")} ${hh}:${g("minute")}:${g("second")}`;
+}
+
+function renderOutputs() {
+  const box = document.getElementById("outputs");
+  const title = document.getElementById("outputsTitle");
+  if (!box) return;
+  const ids = selectedNode ? [selectedNode] : allNodeIds();
+  if (title) {
+    const m = selectedNode ? (workflow.agents[selectedNode] || {}) : null;
+    title.textContent = selectedNode ? `Output — ${m.name || selectedNode} (${selectedNode})` : "All outputs";
+  }
+  box.innerHTML = ids.map(id => {
+    const meta = workflow.agents[id] || { name:id };
+    const d = lastNodes[id] || {};
+    const mono = monogramFor(meta.name || id);
+    const hist = lastHistory[id] || [];
+    let body;
+    if (hist.length > 1) {
+      body = hist.map(h => `<div class="ver">
+        <div class="verhead"><span class="vtag">v${h.version}</span>
+          <span class="vkind">${h.version === 1 ? "initial" : "revision"}</span>
+          <span class="ts">${esc(fmtET(h.at))}</span></div>
+        ${h.comment ? `<div class="vercomment"><b>Review:</b> ${esc(h.comment)}</div>` : ""}
+        <div class="outbody">${renderAssetHtml(h.output || "")}</div>
+      </div>`).join("");
+    } else {
+      const outHtml = renderAssetHtml(d.output || "");
+      body = outHtml ? `<div class="outbody">${outHtml}</div>`
+                     : `<div class="outbody muted">No output yet.</div>`;
+    }
+    return `<details class="outblock"${selectedNode ? " open" : ""}>
+      <summary class="outhead"><span class="ochev">▸</span><span class="avatar-sm">${esc(mono)}</span>
+        <span class="oname">${esc(meta.name)}</span>
+        ${hist.length > 1 ? `<span class="vcount">${hist.length} versions</span>` : ""}
+        ${badge(d.status)}</summary>
+      ${body}
+    </details>`;
+  }).join("");
+}
+
+function applySelection() {
+  const dag = document.getElementById("dag");
+  if (dag) dag.classList.toggle("has-selection", !!selectedNode);
+  document.querySelectorAll(".node").forEach(n =>
+    n.classList.toggle("selected", n.dataset.id === selectedNode));
+  renderOutputs();
+}
+
+function selectNode(id, ev) {
+  if (ev) ev.stopPropagation();
+  selectedNode = id;
+  applySelection();
+}
+
+function sig(snap) {
+  const n = Object.entries(snap.nodes||{}).map(([k,v]) => `${k}:${v.status}:${v.pct||0}:${(v.output||"").length}`);
+  const vers = Object.values(snap.history||{}).reduce((a,v) => a + (v?v.length:0), 0);
+  return JSON.stringify([snap.overall, snap.hitl?snap.hitl.node:"", n, (snap.logs||[]).length, !!snap.result, vers]);
+}
+
+// A HITL gate is either a single agent (approve/revise/deny) or a parallel
+// GROUP, where each agent can be approved / revised / re-run independently.
+function buildHitl(snap, nodes) {
+  if (!snap.hitl) return "";
+  const gstep = (workflow.steps || []).find(s => s.parallel && s.gateId === snap.hitl.node);
+  if (gstep) return groupHitlHtml(gstep, snap, nodes);
+  const sstep = (workflow.steps || []).find(s => s.sequence && s.gateId === snap.hitl.node);
+  if (sstep) return sequenceHitlHtml(sstep, snap, nodes);
+  return singleHitlHtml(snap, nodes);
+}
+
+// A sequence gate is a SINGLE decision after the last agent of the sequence
+// (same approve/revise/deny UX as a single-agent gate); revise re-runs the
+// whole chain from the first agent.
+function sequenceHitlHtml(step, snap, nodes) {
+  const gname = step.gateName || snap.hitl.node;
+  const ids = step.sequence;
+  const last = ids[ids.length - 1];
+  const gateOut = prettyOutput((nodes[last] || {}).output || "");
+  return `<div class="hitl">
+      <h3>⏸ Human review — ${esc(gname)}</h3>
+      <p class="sub">${esc(ids.join(" → "))} ran in sequence. Approve to continue, revise to
+        re-run the sequence with your feedback, or deny to halt.</p>
+      ${gateOut ? `<div class="detail">${esc(gateOut)}</div>` : ""}
+      <textarea id="feedback" placeholder="If revising: what should change?"></textarea>
+      <div class="actions">
+        <button class="approve" onclick="decide('approve')">Approve</button>
+        <button class="revise" onclick="decide('revise')" title="Provide feedback and re-run the sequence">Revise &amp; re-run</button>
+        <button class="deny" onclick="decide('deny')">Deny (halt)</button>
+      </div></div>`;
+}
+
+function singleHitlHtml(snap, nodes) {
+  const gateOut = prettyOutput((nodes[snap.hitl.node] || {}).output || "");
+  const meta = workflow.agents[snap.hitl.node] || {};
+  return `<div class="hitl">
+      <h3>⏸ Human review — ${esc(meta.name || snap.hitl.node)} (${esc(snap.hitl.node)})</h3>
+      <p class="sub">Approve to continue, revise to re-run this agent with your feedback, or deny to halt.</p>
+      ${gateOut ? `<div class="detail">${esc(gateOut)}</div>` : ""}
+      <textarea id="feedback" placeholder="If revising: what should change?"></textarea>
+      <div class="actions">
+        <button class="approve" onclick="decide('approve')">Approve</button>
+        <button class="revise" onclick="decide('revise')" title="Provide feedback and re-run this agent">Revise &amp; re-run</button>
+        <button class="deny" onclick="decide('deny')">Deny (halt)</button>
+      </div></div>`;
+}
+
+function groupHitlHtml(step, snap, nodes) {
+  groupIds = step.parallel;
+  groupGateNode = snap.hitl.node;
+  groupDraft = {};
+  groupIds.forEach(id => { groupDraft[id] = { decision: "approve", comment: "" }; });
+  const gname = step.gateName || snap.hitl.node;
+  return `<div class="hitl">
+      <h3>⏸ Human review — ${esc(gname)}</h3>
+      <p class="sub">Per agent: <b>Approve</b>, <b>Revise</b> (re-run with feedback), or <b>Re-run</b> (redo).
+        The stage continues only when every agent is approved.</p>
+      <div class="gbulk">
+        <button class="ghost" onclick="setGAAll('approve')">Approve all</button>
+        <button class="ghost" onclick="setGAAll('revise')">Revise all</button>
+        <button class="ghost" onclick="setGAAll('reject')">Re-run all</button>
+      </div>
+      <div id="gagents">${groupAgentsHtml(groupIds)}</div>
+      <div class="actions">
+        <button class="approve" onclick="submitGroupReview()">Submit review</button>
+        <button class="deny" onclick="decide('deny')">Deny (halt)</button>
+      </div></div>`;
+}
+
+function groupAgentsHtml(ids) {
+  return ids.map(id => {
+    const meta = workflow.agents[id] || { name: id };
+    const d = lastNodes[id] || {};
+    const dec = (groupDraft[id] || {}).decision || "approve";
+    const outHtml = renderAssetHtml(d.output || "");
+    const mono = monogramFor(meta.name);
+    const pick = (val, label) =>
+      `<button class="gapick-btn ${dec === val ? "sel " + val : ""}" onclick="setGA('${id}','${val}')">${label}</button>`;
+    return `<div class="gagent ${dec}">
+      <div class="gahead">
+        <span class="avatar-sm">${esc(mono)}</span><span class="oname">${esc(meta.name)}</span>${badge(d.status)}
+        <span class="gapick">${pick("approve", "Approve")}${pick("revise", "Revise")}${pick("reject", "Re-run")}</span>
+      </div>
+      ${outHtml ? `<div class="gaout">${outHtml}</div>` : `<div class="gaout muted">No output yet.</div>`}
+      ${dec === "revise"
+        ? `<textarea class="gafb" placeholder="What should ${esc(meta.name)} change?" oninput="setGAComment('${id}', this.value)">${esc((groupDraft[id] || {}).comment || "")}</textarea>`
+        : ""}
+    </div>`;
+  }).join("");
+}
+
+function renderGroupAgents() {
+  const el = document.getElementById("gagents");
+  if (el) el.innerHTML = groupAgentsHtml(groupIds);
+}
+function setGA(id, decision) { (groupDraft[id] = groupDraft[id] || {}).decision = decision; renderGroupAgents(); }
+function setGAAll(decision) { groupIds.forEach(id => (groupDraft[id] = groupDraft[id] || {}).decision = decision); renderGroupAgents(); }
+function setGAComment(id, val) { (groupDraft[id] = groupDraft[id] || {}).comment = val; }
+
+async function submitGroupReview() {
+  for (const id of groupIds) {
+    const g = groupDraft[id] || {};
+    if (g.decision === "revise" && !(g.comment || "").trim()) {
+      alert("Add feedback for " + ((workflow.agents[id] || {}).name || id) + " (or use Re-run instead).");
+      return;
+    }
+  }
+  document.querySelectorAll(".hitl button").forEach(b => b.disabled = true);
+  const decisions = {};
+  groupIds.forEach(id => {
+    const g = groupDraft[id] || {};
+    decisions[id] = { decision: g.decision || "approve", comment: (g.comment || "").trim() };
+  });
+  try {
+    await api(`/api/sessions/${current}/decision`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ decisions }),
+    });
+    lastSig = null;  // force a fresh render on next poll
+  } catch (e) {
+    alert(e.message);
+    document.querySelectorAll(".hitl button").forEach(b => b.disabled = false);
+  }
+}
+
+async function decide(decision) {
+  const ta = document.getElementById("feedback");
+  const comment = ta ? ta.value.trim() : "";
+  if (decision==="revise" && !comment) { ta && ta.focus(); alert("Add feedback so the agent knows what to change."); return; }
+  document.querySelectorAll(".hitl button").forEach(b => b.disabled = true);
+  try {
+    await api(`/api/sessions/${current}/decision`, {
+      method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify({ decision, comment })
+    });
+    feedbackDraft = ""; lastSig = null;  // force a fresh render on next poll
+  } catch (e) { alert(e.message); document.querySelectorAll(".hitl button").forEach(b => b.disabled = false); }
+}
+
+async function cancelSession() {
+  if (!current) return;
+  if (!confirm("Stop this workflow? A stopped session can't be resumed.")) return;
+  const btn = document.querySelector('.card button.deny');
+  if (btn) { btn.disabled = true; btn.textContent = "Stopping…"; }
+  try {
+    await api(`/api/sessions/${current}/cancel`, { method:"POST" });
+    lastSig = null;               // force a fresh render on next poll
+  } catch (e) { alert(e.message); if (btn) { btn.disabled=false; btn.textContent="⏹ Stop workflow"; } }
+}
+
+// Compact 1–2 letter monogram from a display name.
+function monogramFor(name){
+  return String(name || "").split(/[^A-Za-z0-9]+/).filter(Boolean)
+    .slice(0, 2).map(w => w[0]).join("").toUpperCase() || "?";
+}
+
+function esc(s){ return String(s ?? "").replace(/[&<>"']/g, m => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m])); }
+// Safe inline markdown: HTML-escape FIRST, then render the light markdown the
+// model emits — **bold**/__bold__, *italic*/_italic_, `code` — and strip a stray
+// leading list/heading marker.
+function mdInline(s){
+  let t = esc(String(s ?? ""));
+  t = t.replace(/^\s*(?:[-*+\u2022]\s+|#{1,6}\s+|\d+\.\s+)/, "");
+  t = t.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+       .replace(/__(.+?)__/g, "<strong>$1</strong>")
+       .replace(/(^|[^*_`])[*_](?!\s)([^*_`]+?)[*_](?![*_])/g, "$1<em>$2</em>")
+       .replace(/`([^`]+?)`/g, "<code>$1</code>");
+  return t;
+}
+
+// Click anywhere that isn't a node clears the focus and shows all outputs again.
+document.addEventListener("click", (e) => {
+  if (e.target.closest(".node")) return;
+  if (selectedNode !== null) { selectedNode = null; applySelection(); }
+});
+
+(async () => { await initAuth(); await loadWorkflow(); refreshList(); refreshDetail();
+  setInterval(refreshList, 3000); setInterval(refreshDetail, 1500); })();
+</script>
+<!-- Observability tab: self-contained (charts, cost/latency/token drilldown).
+     All of its code lives in observability.js; Chart.js is loaded from CDN. -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="/observability.js"></script>
+</body>
+</html>

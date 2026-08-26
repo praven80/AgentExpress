@@ -1,0 +1,76 @@
+{
+  "orchestrator": {
+    "name": "multiagent_orchestrator",
+    "description": "The LangGraph engine that runs this workflow on Amazon Bedrock AgentCore Runtime. It reads this file, routes shared state between the agents, and runs the human-approval (HITL) gates. It is NOT itself an agent \u2014 it has no model or prompt; it only orchestrates. The per-agent models are defined in each entry under 'agents'. Infra-level values (the real runtime name, Memory id, DynamoDB tables, Gateway) are provisioned in Terraform; the fields here that the app actually consumes are 'defaultModel' and 'longStepSeconds' (both overridable by environment variables at deploy time). Each agent entry additionally documents its data 'sources' (where it gets its evidence), its 'access' mechanism (how it reaches that data \u2014 an MCP tool via the Gateway, RAG over the Bedrock Knowledge Base, or upstream graph-state assets), and, where it emits a contract asset, what it 'produces'; these are declarative documentation for lineage clarity, not consumed by the engine (the engine consumes 'mcp' for tool routing). A RAG agent also carries a 'rag' field naming the Knowledge Base corpus (doc_type) it is scoped to; like 'sources'/'access' this is declarative (the functional scope is the agent's own KB_FILTER) and is surfaced as a chip in the UI alongside the 'mcp' chip.",
+    "engine": "langgraph",
+    "runtime": "bedrock-agentcore",
+    "checkpointer": "agentcore-memory",
+    "progressStore": "dynamodb",
+    "defaultModel": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "longStepSeconds": 1.2
+  },
+  "agents": {
+    "intake": {
+      "name": "Request Intake",
+      "kind": "sync",
+      "runtime": "main",
+      "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+      "sources": ["The user's request/topic"],
+      "access": ["Session input (topic)"],
+      "produces": "request-brief"
+    },
+    "knowledge_research": {
+      "name": "Knowledge Base Research",
+      "kind": "sync",
+      "runtime": "dedicated",
+      "rag": "reference",
+      "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+      "sources": ["Reference documents (Bedrock Knowledge Base)"],
+      "access": ["RAG: Bedrock Knowledge Base (scoped to doc_type=reference)"],
+      "produces": "research-finding"
+    },
+    "web_research": {
+      "name": "External Research",
+      "kind": "sync",
+      "runtime": "dedicated",
+      "mcp": "knowledge",
+      "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+      "sources": ["Public documentation via an MCP server (AWS Knowledge MCP by default)"],
+      "access": ["MCP: remote MCP server (via AgentCore Gateway)"],
+      "produces": "research-finding"
+    },
+    "analysis": {
+      "name": "Analysis",
+      "kind": "sync",
+      "runtime": "main",
+      "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+      "sources": ["request-brief (intake)", "both research findings (knowledge_research, web_research)"],
+      "access": ["Upstream assets (orchestrator graph state)"],
+      "produces": "analysis"
+    },
+    "recommendation": {
+      "name": "Recommendation",
+      "kind": "sync",
+      "runtime": "main",
+      "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+      "sources": ["analysis output", "request-brief"],
+      "access": ["Upstream assets (orchestrator graph state)"],
+      "produces": "recommendation"
+    },
+    "report": {
+      "name": "Report",
+      "kind": "sync",
+      "runtime": "main",
+      "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+      "sources": ["recommendation output", "analysis output", "request-brief"],
+      "access": ["Upstream assets (orchestrator graph state)"],
+      "produces": "report"
+    }
+  },
+  "steps": [
+    { "agent": "intake", "hitl": true },
+    { "parallel": ["knowledge_research", "web_research"], "hitl": true, "gateId": "research", "gateName": "Research" },
+    { "sequence": ["analysis", "recommendation"], "hitl": true, "gateId": "analysis_reco", "gateName": "Analysis & Recommendation" },
+    { "agent": "report" }
+  ]
+}

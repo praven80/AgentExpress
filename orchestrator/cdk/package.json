@@ -1,0 +1,25 @@
+{
+  "name": "multiagent-orchestrator-cdk",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AWS CDK (TypeScript) deployment for the multi-agent orchestrator sample",
+  "bin": {
+    "orchestrator": "bin/orchestrator.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "synth": "cdk synth",
+    "deploy": "cdk deploy",
+    "destroy": "cdk destroy"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.0",
+    "aws-cdk": "^2.1000.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.170.0",
+    "constructs": "^10.3.0"
+  }
+}

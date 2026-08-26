@@ -1,0 +1,6 @@
+# Local development only (running the dev server + optional real MCP).
+# Installs the runtime deps plus the local web server and MCP adapters.
+-r requirements.txt
+fastapi>=0.110
+uvicorn[standard]>=0.29
+langchain-mcp-adapters>=0.1.0

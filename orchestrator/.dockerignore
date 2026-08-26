@@ -1,0 +1,20 @@
+# The container only needs requirements.txt + the app/ package.
+.venv/
+venv/
+__pycache__/
+*.pyc
+.env
+*.env
+.creds.env
+*.md
+
+# Not needed at runtime (image ships only app/ + requirements.txt):
+terraform/
+cdk/
+bff/
+web/
+kb_docs/
+kb_lambda/
+node_modules/
+cdk.out/
+requirements-dev.txt

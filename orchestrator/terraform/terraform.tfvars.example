@@ -1,0 +1,42 @@
+# Example Terraform variables — copy to terraform.tfvars and fill in your values.
+#   cp terraform.tfvars.example terraform.tfvars
+#
+# terraform.tfvars is gitignored (it holds tenant-specific values); THIS example
+# file is safe to commit. The M2M client SECRET is never stored in either file —
+# pass it at apply time:  export TF_VAR_cognito_gateway_client_secret=...
+#
+# Leaving the cognito_* values empty deploys with NO authentication (open UI/API),
+# which is fine for a quick local trial but not for a shared deployment.
+
+# ---------------------------------------------------------------------------
+# Cognito — end-user SPA login (protects the UI + /api/*)
+# Create a Cognito User Pool with an App Client (public, no secret). After the
+# first apply, add the CloudFront URL (terraform output ui_url) to that client's
+# Allowed Callback URLs and Allowed Sign-out URLs.
+# ---------------------------------------------------------------------------
+cognito_user_pool_id        = "us-east-1_XXXXXXXXX"
+cognito_user_pool_client_id = "YOUR_USER_POOL_APP_CLIENT_ID"
+cognito_domain_prefix       = "your-app-domain"
+
+# ---------------------------------------------------------------------------
+# Cognito — machine-to-machine (agent -> AgentCore Gateway)
+# Create a Resource Server on the User Pool (its identifier becomes the scope
+# prefix), then create an App Client WITH a secret, authorized for that scope.
+# Required when enable_gateway = true. The client SECRET goes in
+# TF_VAR_cognito_gateway_client_secret, NOT here.
+# ---------------------------------------------------------------------------
+cognito_gateway_client_id = "YOUR_M2M_APP_CLIENT_ID"
+cognito_gateway_scope     = "gateway/invoke"
+
+# ---------------------------------------------------------------------------
+# Optional overrides (defaults shown; uncomment to change)
+# ---------------------------------------------------------------------------
+# region               = "us-east-1"
+# agent_name           = "multiagent_orchestrator"
+# model_id             = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+# container_engine     = "finch"                 # or "docker" / "podman"
+# memory_event_expiry_days = 30
+# enable_gateway       = true                     # false = no Gateway/KB (MCP calls run simulated)
+# gateway_mcp_endpoint = "https://knowledge-mcp.global.api.aws"  # front a different MCP server here
+
+# To front your own MCP server or REST API through the Gateway, see the inline notes in gateway.tf.
