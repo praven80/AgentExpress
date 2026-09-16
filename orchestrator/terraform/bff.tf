@@ -149,6 +149,12 @@ resource "aws_iam_role_policy" "bff" {
   })
 }
 
+# Owned explicitly so `destroy` removes it. See var.log_retention_days.
+resource "aws_cloudwatch_log_group" "bff" {
+  name              = "/aws/lambda/AgentCoreBFF-${var.agent_name}"
+  retention_in_days = var.log_retention_days
+}
+
 resource "aws_lambda_function" "bff" {
   function_name    = "AgentCoreBFF-${var.agent_name}"
   role             = aws_iam_role.bff.arn

@@ -503,6 +503,48 @@ describe("constants duplicated across languages", () => {
       .toContain('"start"');
   });
 
+  it("every Lambda log group is stack-owned with retention, on BOTH paths", () => {
+    // Left implicit, Lambda creates /aws/lambda/<name> itself with NEVER-EXPIRE
+    // retention and no stack ownership, so a destroy leaves it accruing cost forever.
+    // A verified full destroy of this stack orphaned EIGHT such groups.
+    const stack = read(path.join(__dirname, "..", "lib", "orchestrator-stack.ts"));
+    const tp = read(path.join(__dirname, "..", "lib", "tool-plane.ts"));
+
+    // Every lambda.Function must declare a logGroup. Sliced rather than regexed over
+    // the whole construct, so a formatting change cannot make this pass vacuously.
+    for (const [file, src] of [["orchestrator-stack.ts", stack], ["tool-plane.ts", tp]]) {
+      let found = 0;
+      for (let i = src.indexOf("new lambda.Function"); i !== -1;
+           i = src.indexOf("new lambda.Function", i + 1)) {
+        found++;
+        const head = src.slice(i, i + 500);
+        expect(head).toContain("logGroup:");
+      }
+      expect(found).toBeGreaterThan(0);
+      expect(src).toContain("removalPolicy: cdk.RemovalPolicy.DESTROY");
+      void file;
+    }
+
+    // The two LOG_RETENTION constants are duplicated (a shared import would be
+    // circular), so they must agree.
+    const a = stack.match(/const LOG_RETENTION = logs\.RetentionDays\.(\w+)/)![1];
+    const b = tp.match(/LOG_RETENTION = logs\.RetentionDays\.(\w+)/)![1];
+    expect(a).toBe(b);
+
+    // And Terraform owns the same groups, with a configurable retention.
+    for (const [f, name] of [
+      ["bff.tf", "AgentCoreBFF-"],
+      ["kb.tf", "AgentCoreKBRetrieve-"],
+      ["tools.tf", "ToolLambda-"],
+    ]) {
+      const hcl = read(path.join(TF, f));
+      expect(hcl).toContain("aws_cloudwatch_log_group");
+      expect(hcl).toContain(`/aws/lambda/${name}`);
+      expect(hcl).toContain("retention_in_days = var.log_retention_days");
+    }
+    expect(read(path.join(TF, "variables.tf"))).toContain('variable "log_retention_days"');
+  });
+
   it("the web search regions match", () => {
     const fromTs = read(path.join(__dirname, "..", "lib", "orchestrator-stack.ts"))
       .match(/const WEB_SEARCH_REGIONS = \[([^\]]*)\]/)![1]

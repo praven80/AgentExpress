@@ -21,6 +21,17 @@ import { HttpJwtAuthorizer } from "aws-cdk-lib/aws-apigatewayv2-authorizers";
 import { ToolPlane, ToolSpec, ToolType } from "./tool-plane";
 
 /** Regions where the managed AgentCore Web Search connector is available. */
+/**
+ * Retention for the log groups of the Lambdas this stack creates.
+ *
+ * Every Lambda here declares its log group explicitly. Left implicit, Lambda creates
+ * `/aws/lambda/<name>` itself with NEVER-EXPIRE retention and no stack ownership, so
+ * `cdk destroy` leaves it behind accruing cost forever — a full destroy of this stack
+ * was verified to orphan eight such groups. Keep in step with
+ * terraform/variables.tf var.log_retention_days.
+ */
+const LOG_RETENTION = logs.RetentionDays.ONE_MONTH;
+
 const WEB_SEARCH_REGIONS = ["us-east-1", "eu-west-1", "ap-northeast-1"];
 const TOOL_TYPES: ToolType[] = ["kb", "websearch", "mcp", "openapi", "lambda"];
 /** Property types the AgentCore inline tool schema accepts. */
@@ -1049,8 +1060,21 @@ export class OrchestratorStack extends cdk.Stack {
           `and have bff/handler.py read it from there.`
       );
     }
+    // Own every Lambda log group explicitly. Left implicit, Lambda creates
+    // /aws/lambda/<name> itself with NEVER-EXPIRE retention and no stack ownership,
+    // so `cdk destroy` leaves it behind accruing cost forever — verified: a full
+    // destroy of this stack orphaned eight such groups. Mirrors the
+    // aws_cloudwatch_log_group resources on the Terraform path (var.log_retention_days).
+    const lambdaLogGroup = (id: string, fnName: string) =>
+      new logs.LogGroup(this, id, {
+        logGroupName: `/aws/lambda/${fnName}`,
+        retention: LOG_RETENTION,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      });
+
     const bff = new lambda.Function(this, "Bff", {
       functionName: bffFunctionName,
+      logGroup: lambdaLogGroup("BffLogGroup", bffFunctionName),
       runtime: lambda.Runtime.PYTHON_3_13,
       handler: "handler.handler",
       code: lambda.Code.fromAsset(path.join(ORCH_ROOT, "bff")),
@@ -1190,6 +1214,12 @@ export class OrchestratorStack extends cdk.Stack {
       `};\n`;
 
     new s3deploy.BucketDeployment(this, "UiDeploy", {
+      // The CDK framework Lambda behind this construct also leaves a never-expire log
+      // group behind on destroy unless we own it.
+      logGroup: new logs.LogGroup(this, "UiDeployLogGroup", {
+        retention: LOG_RETENTION,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }),
       destinationBucket: uiBucket,
       distribution,
       distributionPaths: ["/*"],
@@ -1246,6 +1276,12 @@ export class OrchestratorStack extends cdk.Stack {
     // deploying into an account where Transaction Search is already on, is a
     // clean no-op instead of an error.
     const tsHandler = new lambda.Function(this, "TransactionSearchHandler", {
+      // Unnamed function -> CDK generates the name, so let it generate the log group
+      // too and just pin retention + removal.
+      logGroup: new logs.LogGroup(this, "TransactionSearchHandlerLogGroup", {
+        retention: LOG_RETENTION,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }),
       runtime: lambda.Runtime.PYTHON_3_13,
       handler: "index.handler",
       timeout: cdk.Duration.minutes(2),

@@ -26,6 +26,20 @@ variable "memory_event_expiry_days" {
   default     = 30
 }
 
+variable "log_retention_days" {
+  description = <<-EOT
+    Retention for the log groups of the Lambdas this stack creates.
+
+    Without an explicit log group, Lambda creates `/aws/lambda/<name>` itself with
+    NEVER-EXPIRE retention and no owner — so `terraform destroy` leaves it behind
+    accruing cost forever. Verified: a full destroy of this stack orphaned eight such
+    groups. Declaring them here makes them stack-owned, so they are retained for this
+    many days and removed with everything else.
+  EOT
+  type        = number
+  default     = 30
+}
+
 variable "transaction_search_indexing_percentage" {
   description = "Percentage of spans indexed for CloudWatch Transaction Search (0-100). Enabling Transaction Search is what delivers agent spans to the aws/spans log group, which AgentCore Observability and the Evaluations/Insights features read. 1% is free; the default 100 gives full trace coverage for a low-volume deployment — lower it to reduce cost at higher volume."
   type        = number

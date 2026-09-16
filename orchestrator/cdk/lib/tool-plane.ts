@@ -7,6 +7,7 @@ import {
   aws_dynamodb as dynamodb,
   aws_iam as iam,
   aws_lambda as lambda,
+  aws_logs as logs,
   aws_s3 as s3,
   aws_s3_deployment as s3deploy,
   aws_s3vectors as s3vectors,
@@ -399,6 +400,10 @@ export class ToolPlane extends Construct {
       );
 
       const docsDeployment = new s3deploy.BucketDeployment(this, "KbDocsDeploy", {
+        logGroup: new logs.LogGroup(this, "KbDocsDeployLogGroup", {
+          retention: LOG_RETENTION,
+          removalPolicy: cdk.RemovalPolicy.DESTROY,
+        }),
         destinationBucket: docsBucket,
         sources: [
           s3deploy.Source.asset(kbDocsDir, { exclude: [".DS_Store", "**/.DS_Store"] }),
@@ -489,6 +494,10 @@ export class ToolPlane extends Construct {
         physicalResourceId: cr.PhysicalResourceId.of(`kb-ingest-${corpusHash}`),
       };
       const ingest = new cr.AwsCustomResource(this, "KbIngest", {
+        logGroup: new logs.LogGroup(this, "KbIngestLogGroup", {
+          retention: LOG_RETENTION,
+          removalPolicy: cdk.RemovalPolicy.DESTROY,
+        }),
         onCreate: ingestCall,
         onUpdate: ingestCall,
         policy: cr.AwsCustomResourcePolicy.fromStatements([
@@ -503,6 +512,13 @@ export class ToolPlane extends Construct {
       ingest.node.addDependency(dataSource);
 
       kbLambda = new lambda.Function(this, "KbRetrieve", {
+        // Owned explicitly so `destroy` removes it — see LOG_RETENTION in
+        // lib/orchestrator-stack.ts for why an implicit group is a cost leak.
+        logGroup: new logs.LogGroup(this, "KbRetrieveLogGroup", {
+          logGroupName: `/aws/lambda/AgentCoreKBRetrieve-${agentName}`,
+          retention: LOG_RETENTION,
+          removalPolicy: cdk.RemovalPolicy.DESTROY,
+        }),
         functionName: `AgentCoreKBRetrieve-${agentName}`,
         runtime: lambda.Runtime.PYTHON_3_13,
         handler: "handler.lambda_handler",
@@ -543,6 +559,11 @@ export class ToolPlane extends Construct {
           );
         }
         const fn = new lambda.Function(this, `ToolLambda-${name}`, {
+          logGroup: new logs.LogGroup(this, `ToolLambdaLogGroup-${name}`, {
+            logGroupName: `/aws/lambda/ToolLambda-${agentName}-${name}`,
+            retention: LOG_RETENTION,
+            removalPolicy: cdk.RemovalPolicy.DESTROY,
+          }),
           // Prefixed to match this function's own IAM role (ToolLambda-…) and the
           // other framework-owned functions (AgentCoreBFF-…, AgentCoreKBRetrieve-…).
           // Without a prefix the name is just "<agentName>-<tool>", which a scoped
@@ -917,6 +938,15 @@ export function cedarStatement(name: string, spec: ToolSpec, gatewayArn: string)
  *                             location and a document id.
  * Nothing filters on either (this framework's only filter is `doc_type`).
  */
+/**
+ * Retention for the log groups of the Lambdas this construct creates.
+ *
+ * Duplicated rather than imported from lib/orchestrator-stack.ts, which imports THIS
+ * file — the reverse import would be circular. cdk/test/parity.test.ts asserts the two
+ * stay equal.
+ */
+export const LOG_RETENTION = logs.RetentionDays.ONE_MONTH;
+
 export const KB_NON_FILTERABLE = ["AMAZON_BEDROCK_TEXT", "AMAZON_BEDROCK_METADATA"];
 
 /**

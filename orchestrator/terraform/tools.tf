@@ -755,6 +755,12 @@ resource "aws_iam_role_policy" "tool_lambda" {
   })
 }
 
+resource "aws_cloudwatch_log_group" "tool" {
+  for_each          = local.builtin_lambda_tools
+  name              = "/aws/lambda/ToolLambda-${var.agent_name}-${each.key}"
+  retention_in_days = var.log_retention_days
+}
+
 resource "aws_lambda_function" "tool" {
   for_each = local.builtin_lambda_tools
   # Prefixed to match this function's own IAM role (ToolLambda-…) and the other

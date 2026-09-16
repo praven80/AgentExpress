@@ -268,6 +268,12 @@ resource "aws_iam_role_policy" "kb_lambda" {
   })
 }
 
+resource "aws_cloudwatch_log_group" "kb_retrieve" {
+  count             = local.kb_enabled ? 1 : 0
+  name              = "/aws/lambda/AgentCoreKBRetrieve-${var.agent_name}"
+  retention_in_days = var.log_retention_days
+}
+
 resource "aws_lambda_function" "kb_retrieve" {
   count            = local.kb_enabled ? 1 : 0
   function_name    = "AgentCoreKBRetrieve-${var.agent_name}"

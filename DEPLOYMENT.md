@@ -521,6 +521,29 @@ re-apply creates a new `ui_url`; Terraform re-wires the Cognito callback URLs fo
 > Disable it manually if you want to (`aws xray update-trace-segment-destination
 > --destination XRay`).
 
+> **What a teardown leaves behind.** Verified by running a full destroy of this stack:
+> every resource that holds your data — DynamoDB tables, both S3 buckets, the S3
+> Vectors bucket and index, the Knowledge Base, the Gateway and its targets, all four
+> AgentCore runtimes, the Memory stores, the Cognito pool — is removed. What survives
+> is CloudWatch **log groups** that this stack does not create:
+>
+> * `/aws/bedrock-agentcore/runtimes/<runtime>-DEFAULT` (one per runtime) — created by
+>   the AgentCore service under a generated id, so the stack cannot pre-declare them.
+> * three CDK/Terraform framework helper Lambdas' groups (the custom-resource provider,
+>   the S3 auto-delete handler, the Transaction Search provider).
+>
+> The log groups for the Lambdas this project *does* create are declared explicitly
+> (retention `var.log_retention_days` / `LOG_RETENTION`, default 30 days) and go with
+> the stack. Left implicit they would persist with NEVER-EXPIRE retention — a real
+> cost leak, which is why they are declared. To clear the residue:
+>
+> ```bash
+> aws logs describe-log-groups \
+>   --query "logGroups[?contains(logGroupName,'<agent_name>')].logGroupName" --output text \
+>   | xargs -n1 aws logs delete-log-group --log-group-name
+> ```
+
+
 ---
 
 # Deploy with CDK (full — same surface as Terraform)
@@ -612,7 +635,10 @@ Without the group step you can log in but the approval controls stay disabled. S
 [step 6 of the Terraform path](#6-create-a-login-user) for the full action → group table
 and the Auth0 `groupsClaim` caveat.
 
-**Tear down:** `cdk destroy`.
+**Tear down:** `cdk destroy`. A destroy + re-deploy mints a new CloudFront URL, API
+endpoint and Cognito pool, so re-create your login user afterwards. The same residue
+note as the Terraform path applies — see
+[what a teardown leaves behind](#what-a-teardown-leaves-behind) above.
 
 ---
 
