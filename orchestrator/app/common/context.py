@@ -9,6 +9,7 @@ agent's `agentcore` block from workflow.json and is a no-op when the feature is
 disabled. An agent can therefore call them unconditionally.
 """
 
+import json as _json
 import re
 
 from app.common.llm import run_llm
@@ -89,8 +90,17 @@ class AgentContext:
             system = system + (
                 "\n\n=== RELEVANT PAST INSIGHTS (long-term memory) ===\n"
                 + "\n---\n".join(self.recalled_memory)
-                + "\n(Use only as background context; prefer the current inputs "
-                  "and never present a recalled figure as a new sourced fact.)"
+                + "\n(These are UNVERIFIED recollections from earlier runs, not "
+                  "evidence. They may be stale, may belong to a different "
+                  "request, and may assert things the user never said. Use them "
+                  "only to orient yourself. Never present a recalled item as a "
+                  "sourced fact, as a fact about the user, or as the rationale "
+                  "for a recommendation — an observed failure asserted 'the "
+                  "user's background (hands-on with AWS serverless, Lambda, "
+                  "DynamoDB) suggests custom-built on Lambda is feasible' when "
+                  "the entire request was five words long. If a recalled detail "
+                  "matters, it belongs in your open questions as something to "
+                  "confirm, not in your findings.)"
             )
         return await run_llm(name or self.agent_id, system, user,
                              model=model or self.model,
@@ -246,7 +256,10 @@ class AgentContext:
     async def memory_store(self, content: str) -> None:
         """Store an insight in long-term memory (scoped to this agent + subject)
         for future sessions. One stored turn feeds ALL enabled strategies (each
-        extracts into its own namespace). No-op if disabled. Recorded for the UI."""
+        extracts into its own namespace). No-op if disabled. Recorded for the UI.
+
+        `content` is the agent's raw output — an asset JSON document. It is
+        condensed to a short prose insight first; see _insight_from()."""
         strategies = self._longterm_strategies()
         if not strategies:
             return
@@ -254,18 +267,92 @@ class AgentContext:
 
         from app.features.memory import store
         actor = self._memory_actor()
+        insight = self._insight_from(content)
+        if not insight:
+            return
         start = _t.perf_counter()
         # store() writes ONE short-term event under this actor; every matching
         # strategy (semantic, summary, …) then extracts from it asynchronously.
         targets = ", ".join(self._namespace_for(s) for s in strategies)
         try:
-            await store(self.session_id, actor, content)
+            await store(self.session_id, actor, insight)
         except Exception as e:  # noqa: BLE001 - memory must never break a run
             self._record_memory("store", targets, "", f"(store error: {type(e).__name__})",
                                 int((_t.perf_counter() - start) * 1000))
             return
-        self._record_memory("store", targets, "", content,
+        self._record_memory("store", targets, "", insight,
                             int((_t.perf_counter() - start) * 1000))
+
+    # Fields that are bookkeeping, not knowledge. Storing the whole asset put these
+    # in front of the extraction model, which is why recall came back as
+    # "asset ID: asset-analysis-…-v2, version 2, status: in-review" — true, and
+    # worthless to a later run.
+    _INSIGHT_MAX_CHARS = 700
+
+    # Sentences ABOUT the requester or about this system's own run history are the
+    # one thing that must never reach long-term memory: a prompt rule can be
+    # re-tried next run, but a poisoned memory record is recalled by every future
+    # run until someone deletes it (and a run count written today is wrong
+    # tomorrow). Observed writes this drops: "the user ... has completed four
+    # prior runs on this subject", "the user's background (hands-on with AWS
+    # serverless) suggests ...". Sentence-level, so the rest of the summary
+    # survives.
+    _ABOUT_REQUEST = re.compile(
+        r"\b(the user|the requester|the client)\b.*\b(has|have|is|are|was|were|"
+        r"prefers|knows|wants|background|experience|familiar)\b"
+        r"|\b(prior|previous|earlier|past)\s+run",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _drop_meta_sentences(cls, text: str) -> str:
+        """Remove sentences that assert facts about the requester or the run
+        history, keeping the rest. See _ABOUT_REQUEST."""
+        sentences = re.split(r"(?<=[.!?])\s+", (text or "").strip())
+        kept = [s for s in sentences if s and not cls._ABOUT_REQUEST.search(s)]
+        return " ".join(kept).strip()
+
+    def _insight_from(self, content: str) -> str:
+        """Condense an agent's asset output into a short prose insight worth
+        recalling on a LATER run.
+
+        Long-term memory used to receive `asset.model_dump_json()` verbatim. The
+        extraction model was therefore reading a wall of JSON, and it did two bad
+        things with it: it surfaced asset bookkeeping (ids, versions, statuses) as
+        the "insight", and it inferred user attributes that nobody had stated —
+        observed live asserting that the user "has basic familiarity with LLMs" and
+        "is interested in contemporary AI approaches from 2024 onwards" for a
+        request whose entire text was five words. Passing prose that names the topic
+        and the open unknowns gives the strategy something true to extract, and
+        makes the semantic recall query (the run's topic) match on substance.
+        """
+        obj = None
+        try:
+            parsed = _json.loads(content or "")
+            obj = parsed if isinstance(parsed, dict) else None
+        except (TypeError, ValueError):
+            obj = None
+        if obj is None:
+            # Not an asset (a plain-text agent). Store it as-is, capped.
+            return self._drop_meta_sentences(content)[:self._INSIGHT_MAX_CHARS]
+
+        parts: list[str] = []
+        topic = str(obj.get("title") or self.topic or "").strip()
+        if topic:
+            parts.append(f"Request topic: {topic}.")
+        gist = self._drop_meta_sentences(
+            str(obj.get("executiveSummary") or obj.get("summary") or ""))
+        if gist:
+            parts.append(gist)
+        # What the run could NOT establish is the most reusable thing here: it tells
+        # a later run what to ask for up front.
+        for key in ("openQuestions", "limitations", "dataLimitations"):
+            items = [self._drop_meta_sentences(str(x)) for x in (obj.get(key) or [])]
+            items = [x for x in items if x]
+            if items:
+                parts.append("Unresolved: " + "; ".join(items[:3]))
+                break
+        return " ".join(parts).strip()[:self._INSIGHT_MAX_CHARS]
 
     async def get_identity_token(self, provider: str = "") -> str:
         """Get an OAuth token via AgentCore Workload Identity, for calling an
