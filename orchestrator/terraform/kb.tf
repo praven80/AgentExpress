@@ -5,11 +5,11 @@
 # own documents — each TOP-LEVEL FOLDER becomes a corpus (a filterable doc_type),
 # and an agent is scoped to one via its `corpus` field. No code or IaC change.
 #
-# The RAG research agent (knowledge_research) retrieves from a Bedrock Knowledge
-# Base backed by S3 Vectors (serverless, no OCU floor). Retrieval is exposed as a
-# tool through the
-# same Cognito-authed AgentCore Gateway via a Lambda target. All declarative — no
-# vector index bootstrap script required (S3 Vectors index is a native resource).
+# An agent bound to the `kb` tool retrieves from a Bedrock Knowledge Base backed by
+# S3 Vectors (serverless, no OCU floor). Retrieval is exposed as a tool through the
+# same JWT-authed AgentCore Gateway (Cognito or Auth0 — see identity.tf) via a Lambda
+# target. All declarative: no vector-index bootstrap script, because the S3 Vectors
+# index is a native resource.
 
 locals {
   # Provisioned only when workflow.json declares a tool with type="kb".
@@ -25,15 +25,20 @@ locals {
   kb_storage_digest = substr(sha256("${local.kb_dims}|${join(",", sort(local.kb_non_filterable))}"), 0, 8)
   kb_index_name     = "kb-index-${local.kb_storage_digest}"
   # The KB carries the SAME digest: its storage_configuration points at the index ARN
-  # and is immutable, so replacing the index replaces the KB too. Matches kbName().
+  # and is immutable, so replacing the index replaces the KB too. Matches
+  # knowledgeBaseName() in cdk/lib/tool-plane.ts.
   kb_name     = "${replace(var.agent_name, "_", "-")}-kb-${local.kb_storage_digest}"
   embed_model = "arn:aws:bedrock:${var.region}::foundation-model/amazon.titan-embed-text-v2:0"
 
   # Corpus files, recursive (subfolders included), excluding macOS noise that
   # Bedrock ingestion would reject.
+  # Corpus documents. Sidecars are EXCLUDED: this module generates one
+  # "<key>.metadata.json" per document, so treating a hand-written sidecar as a
+  # document would ingest it as content and then give it its own sidecar.
   kb_files = [
     for f in fileset("${path.module}/../kb_docs", "**") : f
-    if !endswith(f, ".DS_Store")
+    if !endswith(f, ".DS_Store") && !endswith(f, ".metadata.json")
+    && !startswith(basename(f), ".")
   ]
 }
 
@@ -59,19 +64,9 @@ resource "aws_s3vectors_index" "kb" {
   dimension       = local.kb_dims
   distance_metric = "cosine"
 
-  # S3 Vectors caps FILTERABLE metadata at 2048 bytes per vector, and both of these
-  # grow with the document, so both must be excluded:
-  #   AMAZON_BEDROCK_TEXT     - the chunk's own text.
-  #   AMAZON_BEDROCK_METADATA - a JSON blob carrying `text`, `parentText`, the
-  #                             source location and a document id.
-  #
-  # Only TEXT was listed here, which is why ingestion silently accepted the two
-  # small sample documents and then FAILED on a larger one with
-  #   "Invalid record ...: Filterable metadata must have at most 2048 bytes
-  #    (Service: S3Vectors, Status Code: 400)"
-  # - one document failed, the job went to FAILED, and the KB simply never returned
-  # that content. Nothing filters on either key (the only filter this framework
-  # uses is `doc_type`), so excluding both costs nothing.
+  # See local.kb_non_filterable above for why both keys are excluded. Miss one and
+  # ingestion accepts small documents, then FAILS on a larger one while the deploy
+  # still reports success.
   metadata_configuration {
     non_filterable_metadata_keys = local.kb_non_filterable
   }
@@ -146,9 +141,15 @@ resource "aws_iam_role_policy" "kb" {
         Resource = [local.embed_model]
       },
       {
-        Sid      = "S3VectorsData"
-        Effect   = "Allow"
-        Action   = ["s3vectors:*"]
+        Sid    = "S3VectorsData"
+        Effect = "Allow"
+        # The verbs a Knowledge Base uses. The wildcard also granted DeleteIndex and
+        # DeleteVectorBucket, which a KB never calls. Mirrors cdk/lib/tool-plane.ts.
+        Action = [
+          "s3vectors:GetVectorBucket", "s3vectors:GetIndex", "s3vectors:ListIndexes",
+          "s3vectors:PutVectors", "s3vectors:GetVectors", "s3vectors:ListVectors",
+          "s3vectors:QueryVectors", "s3vectors:DeleteVectors"
+        ]
         Resource = [aws_s3vectors_vector_bucket.kb[0].vector_bucket_arn, "${aws_s3vectors_vector_bucket.kb[0].vector_bucket_arn}/*"]
       },
       {

@@ -41,14 +41,17 @@ locals {
     # Compact feature-flag list the UI uses to gate the "Evaluate" button (kept as
     # a short id array to stay under Lambda's 4 KB env limit).
     evalAgents = [for id, a in local.workflow_def.agents : id if try(a.agentcore.evaluations.enabled, false)]
-    # In-app assistant config for the BFF tool loop + the UI gate. Kept MINIMAL for
-    # the 4 KB Lambda env: enabled + model + only the DISABLED tool flags (the
-    # backend defaults any missing tool to ON). greeting/placeholder fall back to
-    # UI-side defaults rather than being shipped.
+    # In-app assistant config for the BFF tool loop + the UI. Kept lean for the 4 KB
+    # Lambda env: enabled + model + only the DISABLED tool flags (the backend
+    # defaults any missing tool to ON). greeting/placeholder ARE shipped — they were
+    # not, which made those two workflow.json keys decorative: a customer edited
+    # them and the UI kept showing its own hardcoded strings.
     chatbot = try(local.workflow_def.orchestrator.chatbot.enabled, null) == null ? null : {
-      enabled = local.workflow_def.orchestrator.chatbot.enabled
-      model   = try(local.workflow_def.orchestrator.chatbot.model, null)
-      tools   = { for k, v in try(local.workflow_def.orchestrator.chatbot.tools, {}) : k => v if v == false }
+      enabled     = local.workflow_def.orchestrator.chatbot.enabled
+      model       = try(local.workflow_def.orchestrator.chatbot.model, null)
+      greeting    = try(local.workflow_def.orchestrator.chatbot.greeting, null)
+      placeholder = try(local.workflow_def.orchestrator.chatbot.placeholder, null)
+      tools       = { for k, v in try(local.workflow_def.orchestrator.chatbot.tools, {}) : k => v if v == false }
     }
     # RBAC rules for bff/authz.py. Shipped ONLY when something is actually
     # restricted: with no `actions` map the module is a no-op, and null keeps those
@@ -158,6 +161,9 @@ resource "aws_lambda_function" "bff" {
 
   environment {
     variables = {
+      # The assistant's tool-use loop runs in this Lambda, so it needs the
+      # deployment's model rather than its own copy of the id.
+      MODEL_ID        = var.model_id
       STATUS_TABLE    = aws_dynamodb_table.status.name
       EVENTS_TABLE    = aws_dynamodb_table.events.name
       TELEMETRY_TABLE = aws_dynamodb_table.telemetry.name

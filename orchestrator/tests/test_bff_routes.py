@@ -155,13 +155,16 @@ def test_api_me_reports_what_this_caller_may_do(bff):
     status, body = call(bff, "GET", "/api/me", groups=["approvers"])
     assert status == 200
     assert body == {"user": "user@example.com", "groups": ["approvers"],
-                    "permittedActions": ["decision", "rerun", "cancel"],
+                    # `start` is not named in the fixture's authorization block, so it
+                    # is unrestricted and every caller may do it.
+                    "permittedActions": ["start", "decision", "rerun", "cancel"],
                     "authzEnabled": True}
 
 
 def test_api_me_for_a_caller_with_nothing(bff):
     _, body = call(bff, "GET", "/api/me", groups=[])
-    assert body["permittedActions"] == []
+    # Only the actions the config leaves unrestricted.
+    assert body["permittedActions"] == ["start"]
 
 
 def test_the_chat_route_is_told_what_the_caller_may_do(bff, monkeypatch):
@@ -179,7 +182,7 @@ def test_the_chat_route_is_told_what_the_caller_may_do(bff, monkeypatch):
     status, _ = call(bff, "POST", "/api/chat", groups=["operators"],
                      body={"message": "hi"})
     assert status == 200
-    assert seen["permitted"] == ["cancel", "evaluate", "insights", "delete"]
+    assert seen["permitted"] == ["start", "cancel", "evaluate", "insights", "delete"]
 
 
 # --- with no authorization block, nothing is gated -------------------------
@@ -214,4 +217,4 @@ def test_api_me_reports_authz_disabled(open_bff):
     _, body = call(open_bff, "GET", "/api/me", groups=None)
     assert body["authzEnabled"] is False
     assert body["permittedActions"] == [
-        "decision", "rerun", "cancel", "evaluate", "insights", "delete"]
+        "start", "decision", "rerun", "cancel", "evaluate", "insights", "delete"]

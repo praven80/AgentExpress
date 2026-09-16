@@ -239,6 +239,7 @@ describe("constants duplicated across languages", () => {
       "evaluate",
       "insights",
       "rerun",
+      "start",
     ]);
     expect(fromTf).toEqual(fromPython);
     expect(fromTs).toEqual(fromPython);
@@ -431,6 +432,75 @@ describe("constants duplicated across languages", () => {
       expect(cdkOutputs.has(cdkName)).toBe(true);
       expect(tfOutputs.has(tfName)).toBe(true);
     }
+  });
+
+  it("the BFF gets a Bedrock model grant on BOTH paths", () => {
+    // The in-app assistant's tool-use loop runs IN the BFF Lambda (bff/chatbot.py
+    // calls bedrock-runtime Converse). Terraform granted it; the CDK path did not —
+    // so a CDK deployment served the chat UI and every reply was
+    // "couldn't reach the model (AccessDeniedException)". The route-list test above
+    // could not catch it, because the route existed and returned 200.
+    const tf = read(path.join(TF, "bff.tf"));
+    const stack = read(path.join(__dirname, "..", "lib", "orchestrator-stack.ts"));
+    expect(tf).toContain("bedrock:InvokeModel");
+    // On the CDK side the grant must be attached to the BFF, not only to the runtime
+    // roles — assert the call, not just the string.
+    expect(stack).toMatch(/bff\.addToRolePolicy\([\s\S]{0,400}?bedrock:InvokeModel/);
+  });
+
+  it("the BFF gets the deployment's model id on BOTH paths", () => {
+    // bff/chatbot.py falls back to $MODEL_ID rather than carrying its own copy of the
+    // model literal, so both paths have to inject it.
+    expect(read(path.join(TF, "bff.tf"))).toContain("MODEL_ID        = var.model_id");
+    expect(read(path.join(__dirname, "..", "lib", "orchestrator-stack.ts")))
+      .toContain("MODEL_ID: props.modelId");
+  });
+
+  it("both paths inject TOOLS_JSON with the same field projection", () => {
+    // How to CALL each tool. The CDK path did not inject it at all, so the app fell
+    // back to the workflow.json baked into the image — which keeps a NARROWER set of
+    // fields, making a request-level option work under Terraform and silently do
+    // nothing under CDK.
+    const tf = read(path.join(TF, "main.tf"));
+    const stack = read(path.join(__dirname, "..", "lib", "orchestrator-stack.ts"));
+    expect(tf).toContain("TOOLS_JSON = local.tools_env");
+    expect(stack).toContain("TOOLS_JSON: JSON.stringify(toolsEnv(");
+
+    // The projected field set must match the app's keep-list, or a field survives on
+    // one path and is dropped on the other.
+    const { toolsEnv } = require("../lib/orchestrator-stack");
+    const projected = toolsEnv({
+      kb: { type: "kb", corpora: ["a"] },
+      ws: {
+        type: "websearch", maxResults: 5, includeDomains: ["x"], excludeDomains: ["y"],
+        publishedFrom: "2026-01-01", publishedTo: "2026-02-01",
+      },
+      mcp: { type: "mcp", endpoint: "https://e", call: "c", arg: "q", args: { r: 1 } },
+    });
+    expect(Object.keys(projected.ws).sort()).toEqual([
+      "excludeDomains", "includeDomains", "maxResults", "publishedFrom",
+      "publishedTo", "type",
+    ]);
+    expect(Object.keys(projected.mcp).sort()).toEqual(["arg", "args", "call", "type"]);
+    expect(projected.kb).toEqual({ type: "kb", corpora: ["a"] });
+
+    const keep = read(path.join(ORCH_ROOT, "app", "common", "config.py"))
+      .match(/keep = \(([\s\S]*?)\)/)![1]
+      .match(/"(\w+)"/g)!
+      .map((x) => x.replace(/"/g, ""));
+    for (const f of Object.keys(projected.ws).concat(Object.keys(projected.mcp))) {
+      expect(keep).toContain(f);
+    }
+  });
+
+  it("the RBAC action list includes `start` in all four places", () => {
+    // Starting a run is the most expensive action in the app. It had no action name,
+    // so it could not be restricted from config while every cheaper action could.
+    expect(read(path.join(ORCH_ROOT, "bff", "authz.py"))).toContain('"start"');
+    expect(read(path.join(ORCH_ROOT, "bff", "handler.py"))).toContain('_forbidden("start", event)');
+    expect(read(path.join(TF, "identity.tf"))).toContain('"start"');
+    expect(read(path.join(__dirname, "..", "lib", "orchestrator-stack.ts")))
+      .toContain('"start"');
   });
 
   it("the web search regions match", () => {

@@ -81,13 +81,15 @@ def test_gate_nodes_are_named_from_the_config():
 
 # --- gate routers ----------------------------------------------------------
 # The routers are the HITL semantics: approve continues, deny ends the run, revise
-# loops back. Pure functions of state, so they can be asserted directly.
+# loops back. Pure functions of state, so they can be asserted directly. One factory
+# serves all three gate kinds; they differ only in the revise target, which is why
+# these tests pass it in.
 
 def test_single_agent_router_semantics():
     with workflow(wf([{"agent": "a", "hitl": True}, {"agent": "b"}])) as imp:
         gb = imp("app.orchestrator.graph_builder")
         from langgraph.graph import END
-        route = gb._make_router("a", ["b"])
+        route = gb._make_router("a", ["b"], lambda _s: "a")
         assert route({"decisions": {"a": "approve"}}) == ["b"]
         assert route({}) == ["b"]                            # no decision -> continue
         assert route({"decisions": {"a": "deny"}}) == END
@@ -101,7 +103,9 @@ def test_group_router_reruns_only_the_flagged_subset():
                       {"agent": "d"}])) as imp:
         gb = imp("app.orchestrator.graph_builder")
         from langgraph.graph import END
-        route = gb._make_group_router("g", ["a", "b", "c"], ["d"])
+        # The group's revise target: the flagged subset, else the whole group.
+        route = gb._make_router("g", ["d"], lambda s:
+            (s.get("group_rerun") or {}).get("g") or ["a", "b", "c"])
         assert route({"decisions": {"g": "approve"}}) == ["d"]
         assert route({"decisions": {"g": "deny"}}) == END
         assert route({"decisions": {"g": "revise"},
@@ -116,7 +120,7 @@ def test_sequence_router_loops_back_to_the_start_of_the_chain():
                       {"agent": "c"}])) as imp:
         gb = imp("app.orchestrator.graph_builder")
         from langgraph.graph import END
-        route = gb._make_sequence_router("g", "a", ["c"])
+        route = gb._make_router("g", ["c"], lambda _s: "a")
         assert route({"decisions": {"g": "approve"}}) == ["c"]
         assert route({"decisions": {"g": "deny"}}) == END
         # Not "b": revising a sequence re-runs the whole chain, since a later
@@ -128,4 +132,5 @@ def test_router_on_the_last_step_ends_the_run():
     with workflow(wf([{"agent": "a", "hitl": True}])) as imp:
         gb = imp("app.orchestrator.graph_builder")
         from langgraph.graph import END
-        assert gb._make_router("a", [END])({"decisions": {"a": "approve"}}) == END
+        assert gb._make_router("a", [END], lambda _s: "a")(
+            {"decisions": {"a": "approve"}}) == END

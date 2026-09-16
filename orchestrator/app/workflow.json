@@ -27,7 +27,9 @@
     "heading": "🧭 Multi-Agent Orchestrator",
     "defaultTopic": "Design a serverless data pipeline on AWS",
     "topicPlaceholder": "What should the workflow work on?",
-    "assistantTitle": "Run Assistant"
+    "subjectPlaceholder": "Subject (optional, for memory)",
+    "assistantTitle": "Run Assistant",
+    "assistantSubtitle": "Ask about status, cost, evals — or run actions"
   },
   "guardrail": {
     "blockedInputMessage": "This request was blocked by the content guardrail.",

@@ -27,6 +27,11 @@
   // "allowed" when index.html hasn't defined them, so this file still works alone.
   const authzCan = (a) => (window.can ? window.can(a) : true);
   const authzGate = (a) => (window.gate ? window.gate(a) : "");
+  /* A JS STRING LITERAL inside an inline handler: onclick="f(${jsq(x)})". esc() is
+     the wrong tool there and undoes itself — the HTML parser decodes attribute
+     entities BEFORE the JS is compiled, so esc()'s &#39; becomes a live quote that
+     closes the argument. Returns the quoted literal; add no quotes of your own. */
+  const jsq = window.jsq || ((v) => esc(JSON.stringify(String(v == null ? "" : v))));
 
   const fmtUsd = (x) => "$" + Number(x || 0).toLocaleString(undefined,
     { minimumFractionDigits: 2, maximumFractionDigits: 6 });
@@ -39,10 +44,12 @@
   // Shift a YYYY-MM-DD string by N days (noon-UTC anchor avoids tz/DST edges).
   const shiftDays = (ymd, days) => { const d = new Date(ymd + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() + days); return d.toISOString().slice(0, 10); };
 
-  // Generic disclaimer shown on every cost view.
-  const LEGEND = "These cost and token figures are estimates for planning — they "
-    + "will not match your actual AWS bill (private pricing, region, and caching "
-    + "discounts differ).";
+  // The estimate disclaimer, in two halves so the banner (which sets the lead-in in
+  // bold) and the per-table note can share one wording rather than keeping two copies.
+  const LEGEND_LEAD = "Costs and token counts are estimates for planning.";
+  const LEGEND_DETAIL = "They will not match your actual AWS bill (private pricing, "
+    + "region, and caching discounts differ).";
+  const LEGEND = LEGEND_LEAD + " " + LEGEND_DETAIL;
 
   // Price-book provenance, displayed with every cost figure. These describe the
   // PRICE BOOK, not the deploy region: the rates in
@@ -56,10 +63,14 @@
   // tab is visually consistent with the rest of the product.
   const CSS = `
   .topnav { display:inline-flex; gap:4px; margin-left:14px; }
-  .navbtn { background:transparent; border:1px solid transparent; color:#cbd5e1; font-weight:600;
-            font-size:13px; padding:6px 12px; border-radius:8px; cursor:pointer; transition:background .15s; }
-  .navbtn:hover { background:rgba(255,255,255,.08); }
-  .navbtn.active { background:#fff; color:#0f172a; box-shadow:0 1px 3px #0f172a22; }
+  /* The header is rgba(255,255,255,.85) — near-white. This palette was written for a
+     dark header: #cbd5e1 text gave ~1.6:1 contrast (WCAG AA wants 4.5:1) so the
+     inactive tab was nearly invisible, and a white hover was no feedback at all. */
+  .navbtn { background:transparent; border:1px solid transparent; color:#475569; font-weight:600;
+            font-size:13px; padding:6px 12px; border-radius:8px; cursor:pointer; transition:background .15s, color .15s; }
+  .navbtn:hover { background:#e2e8f0; color:#0f172a; }
+  .navbtn:focus-visible { outline:2px solid var(--blue,#2563eb); outline-offset:2px; }
+  .navbtn.active { background:linear-gradient(135deg,#1e3a8a,#2563eb); color:#fff; box-shadow:0 1px 3px #0f172a22; }
 
   #obsView { flex:1; overflow-y:auto; background:linear-gradient(160deg,var(--bg1,#eef2f9),var(--bg2,#e6ebf5)); }
   .obs-inner { padding:26px 30px 60px; max-width:1240px; margin:0 auto; }
@@ -266,8 +277,7 @@
   .obs-ins-span > code { font-size:10.5px; color:#0f766e; }
   .obs-note.warn { color:#b45309; }
 
-  /* Est. marker + notes */
-  .obs-est { color:var(--muted2,#94a3b8); font-style:italic; }
+  /* Notes + empty states */
   .obs-note { font-size:11.5px; color:var(--muted2,#94a3b8); margin-top:10px; line-height:1.55; }
   .obs-empty { color:var(--muted2,#94a3b8); padding:40px; text-align:center; font-size:13px; }
 
@@ -333,8 +343,7 @@
 
       <div class="obs-banner">
         <div class="ck">i</div>
-        <div class="bt"><b>Costs and token counts are estimates for planning.</b>
-          They will not match your actual AWS bill (private pricing, region, and caching discounts differ).
+        <div class="bt"><b>${esc(LEGEND_LEAD)}</b> ${esc(LEGEND_DETAIL)}
           <span class="meta">Price book: AWS list prices, ${esc(PRICES_REGION)}, as of ${esc(PRICES_AS_OF)}.</span></div>
       </div>
 
@@ -433,14 +442,14 @@
     document.querySelector("main").style.display = "none";
     $("obsView").style.display = "flex";
     $("navObs").classList.add("active"); $("navCampaigns").classList.remove("active");
-    goto(tab, true);
+    goto(tab);
   }
   function showCampaigns() {
     $("obsView").style.display = "none";
     document.querySelector("main").style.display = "";
     $("navCampaigns").classList.add("active"); $("navObs").classList.remove("active");
   }
-  function goto(t, force) {
+  function goto(t) {
     tab = t;
     $("obsTabOverview").classList.toggle("active", t === "overview");
     $("obsTabFlow").classList.toggle("active", t === "flow");
@@ -467,13 +476,13 @@
     }), { cost: 0, inp: 0, out: 0, calls: 0 });
     const runs = Number(data.totalSessions || 0);
 
-    const bucketLabel = { date: "Active days", model: "Models used", user: "Users" }[by] || "Groups";
+    const bucketLabel = { date: "Active days", model: "Models used", user: "Users" }[by];
     $("obsKpis").innerHTML = kpi(fmtUsd(tot.cost), "Total cost", "#2563eb")
       + kpi(fmtInt(runs), "Runs", "#7c3aed")
       + kpi(fmtInt(tot.inp + tot.out), "Total tokens", "#0891b2",
             fmtInt(tot.inp) + " in · " + fmtInt(tot.out) + " out")
       + kpi(fmtInt(tot.calls), "Calls", "#059669")
-      + kpi(esc(String(buckets.length)), bucketLabel, "#d97706");
+      + kpi(buckets.length, bucketLabel, "#d97706");
 
     renderProjection(tot.cost, runs);
 
@@ -647,10 +656,10 @@
       <th>Agent</th><th>Model(s)</th><th class="num">Input</th><th class="num">Output</th>
       <th class="num">Tools</th><th class="num">Latency</th><th class="num">Cost</th></tr></thead><tbody>${
       agents.map((a) => `
-        <tr class="obs-agent" onclick="obsToggle('${esc(a.agentId)}')">
+        <tr class="obs-agent" onclick="obsToggle(${jsq(a.agentId)})">
           <td><span class="caret" id="caret-${esc(a.agentId)}">▸</span> ${esc(friendlyAgent(a.agentId))}${
             a.agentId === "__session__" ? "" :
-            `<button class="obs-io" onclick="event.stopPropagation();obsAgentIO('${esc(a.agentId)}')" title="View this agent's system prompt, input, output and evaluation scores">⤢ Prompts &amp; I/O</button>`}</td>
+            `<button class="obs-io" onclick="event.stopPropagation();obsAgentIO(${jsq(a.agentId)})" title="View this agent's system prompt, input, output and evaluation scores">⤢ Prompts &amp; I/O</button>`}</td>
           <td>${(a.models || []).map((m) => esc(shortModel(m))).join(", ") || "—"}</td>
           <td class="num">${fmtInt(a.inputTokens)}</td>
           <td class="num">${fmtInt(a.outputTokens)}</td>
@@ -777,13 +786,16 @@
   }
 
   // ---- cost projection -------------------------------------------------------
+  const DEFAULT_RUNS_PER_DAY = 10;
+  const PROJECTION_DAYS = 30;
   let projAvg = 0;
+  const monthly = (perDay) => projAvg * perDay * PROJECTION_DAYS;
   function renderProjection(totalCost, runs) {
     projAvg = runs > 0 ? totalCost / runs : 0;
     const el = $("obsProj");
     if (!el) return;
     if (!runs) { el.innerHTML = `<div class="obs-note" style="margin:0">Run a session to see per-run cost and a monthly projection.</div>`; return; }
-    const perDay = Number(($("obsRunsPerDay") && $("obsRunsPerDay").value) || 10);
+    const perDay = Number(($("obsRunsPerDay") && $("obsRunsPerDay").value) || DEFAULT_RUNS_PER_DAY);
     el.innerHTML = `
       <div class="obs-proj">
         <div class="pcol"><span class="pv">${fmtUsd(projAvg)}</span><span class="pl">Avg cost / run</span></div>
@@ -795,13 +807,15 @@
           <span class="pl">Planned volume</span>
         </div>
         <div class="psep"></div>
-        <div class="pcol"><span class="pbig" id="obsProjMonthly">${fmtUsd(projAvg * perDay * 30)}</span><span class="pl">Projected / month (30 days)</span></div>
+        <div class="pcol"><span class="pbig" id="obsProjMonthly">${fmtUsd(monthly(perDay))}</span><span class="pl">Projected / month (30 days)</span></div>
       </div>`;
   }
   function reproject() {
-    const perDay = Number(($("obsRunsPerDay") && $("obsRunsPerDay").value) || 0);
+    // Same default as renderProjection: these disagreed (10 vs 0), so clearing the
+    // input dropped the projection to $0.00 instead of back to the rendered figure.
+    const perDay = Number(($("obsRunsPerDay") && $("obsRunsPerDay").value) || DEFAULT_RUNS_PER_DAY);
     const m = $("obsProjMonthly");
-    if (m) m.textContent = fmtUsd(projAvg * perDay * 30);
+    if (m) m.textContent = fmtUsd(monthly(perDay));
   }
 
   // ---- export (client-side download) -----------------------------------------
@@ -819,12 +833,11 @@
     };
     return rows.map((r) => r.map(cell).join(",")).join("\r\n");
   }
-  function stamp() { return etStamp(); }   // ET timestamp for export filenames
 
   function exportOverview(fmt) {
     if (!lastBuckets.length) return;
     if (fmt === "json") {
-      download(`observability-${lastBy}-${stamp()}.json`,
+      download(`observability-${lastBy}-${etStamp()}.json`,
         JSON.stringify({ groupedBy: lastBy, buckets: lastBuckets }, null, 2), "application/json");
       return;
     }
@@ -835,24 +848,24 @@
       if (lastBy === "model") r.push(b.inRate, b.outRate);
       return r;
     }));
-    download(`observability-${lastBy}-${stamp()}.csv`, toCsv(rows), "text/csv");
+    download(`observability-${lastBy}-${etStamp()}.csv`, toCsv(rows), "text/csv");
   }
 
   function exportFlow(fmt) {
     const sid = resolveSessionId();
     if (!flowCalls.length) return;
     if (fmt === "json") {
-      download(`run-${sid}-${stamp()}.json`, JSON.stringify(flowCalls, null, 2), "application/json");
+      download(`run-${sid}-${etStamp()}.json`, JSON.stringify(flowCalls, null, 2), "application/json");
       return;
     }
     const head = ["agent_id", "kind", "label", "mode", "status", "version", "prompt",
       "input_tokens", "output_tokens", "system_tokens", "system_tokens_exact",
       "embed_tokens_est", "in_rate", "out_rate", "latency_ms", "cost_usd", "value",
-      "namespace", "finish_reason", "ts"];
+      "eval_label", "namespace", "finish_reason", "ts"];
     // embed_tokens_est = estimated KB-query embedding tokens (tool rows);
     // value = the evaluator score (eval rows); namespace = memory rows.
     const rows = [head].concat(flowCalls.map((c) => head.map((k) => c[k])));
-    download(`run-${sid}-${stamp()}.csv`, toCsv(rows), "text/csv");
+    download(`run-${sid}-${etStamp()}.csv`, toCsv(rows), "text/csv");
   }
 
   // ---- per-agent "Prompts & I/O" inspector -----------------------------------
@@ -901,7 +914,7 @@
 
     // ---- one model call ----
     let blocks = llm.map((c, i) => {
-      const temp = (c.temperature != null && c.temperature !== "") ? Number(c.temperature) : null;
+      const temp = c.temperature != null ? Number(c.temperature) : null;
       const meta = `<div class="obs-metagrid">
         ${kv("Input tokens", fmtInt(c.input_tokens) + ` <small>${fmtInt(c.system_tokens)} sys</small>`)}
         ${kv("Output tokens", fmtInt(c.output_tokens))}
@@ -1022,7 +1035,8 @@
   function agentVersions(agentId) {
     const set = new Set();
     flowCalls.forEach((c) => { if (c.agent_id === agentId) set.add(callVersion(c)); });
-    const arr = [...set].filter((v) => v > 0).sort((a, b) => a - b);
+    // No filter needed: callVersion() already maps 0/absent to 1.
+    const arr = [...set].sort((a, b) => a - b);
     return arr.length ? arr : [1];
   }
 
@@ -1081,6 +1095,11 @@
     return chips + legacyNote + versionHeader(agentId, sel, versions) + body + evalSection(agentId, sel);
   }
 
+  // When to re-read telemetry after starting an evaluation. Scoring is asynchronous
+  // (LLM judge, then a CloudWatch read), so there is nothing to show immediately.
+  // One place to tune, rather than a magic number per call site.
+  const EVAL_POLL_MS = [25000, 50000];
+
   // ---- AgentCore Evaluations (LLM-as-judge) ----------------------------------
   // Per-evaluator score bar + label + explanation, plus an on-demand "Evaluate"
   // button. Eval rows are kind="eval" telemetry written by the runtime
@@ -1091,7 +1110,6 @@
   // Helpful") — it is authoritative. Only when it is absent do we derive a band
   // from the score, which means inventing thresholds the evaluator never set.
   function evalBand(c) {
-    if (c.status && c.status !== "ok" && c.status !== "error") return c.status;
     if (c.eval_label) return c.eval_label;
     const v = Number(c.value || 0);
     return v >= 0.7 ? "strong" : (v >= 0.4 ? "moderate" : "weak");
@@ -1169,7 +1187,7 @@
   function promptEvalBlock(agentId, prompt, sel) {
     const rows = evalRowsFor(agentId, prompt, sel);
     const cards = evalCards(rows);
-    const runBtn = `<button class="obs-eval-run"${authzGate("evaluate")} onclick="obsRunEval('${esc(agentId)}','${esc(prompt)}')">${rows.length ? "Re-evaluate" : "Evaluate"}</button>`;
+    const runBtn = `<button class="obs-eval-run"${authzGate("evaluate")} onclick="obsRunEval(${jsq(agentId)},${jsq(prompt)})">${rows.length ? "Re-evaluate" : "Evaluate"}</button>`;
     const title = prompt ? `Prompt <code>${esc(prompt)}</code>` : "Prompt";
     const emptyMsg = `Not evaluated yet${prompt ? ` for <code>${esc(prompt)}</code>` : ""} at <b>Version ${esc(String(sel))}</b>. Click <b>Evaluate</b> to score it.`;
     return `<div style="border-top:1px solid #eef0f3;padding-top:10px;margin-top:10px">
@@ -1190,8 +1208,8 @@
       });
       if (r && r.ok === false) { alert(r.error || "Evaluation is not available here."); return; }
       // Scoring is asynchronous (LLM judge + CloudWatch reads); poll twice.
-      setTimeout(() => refreshEval(agentId), 25000);
-      setTimeout(() => refreshEval(agentId), 50000);
+      const shown = selectedVersion[agentId] || agentVersions(agentId).slice(-1)[0];
+      EVAL_POLL_MS.forEach((ms) => setTimeout(() => refreshEval(agentId, sid, shown), ms));
     } catch (e) {
       alert("Couldn't start evaluation: " + e.message);
     } finally {
@@ -1203,11 +1221,15 @@
     }
   }
 
-  async function refreshEval(agentId) {
-    try { const d = await api(`/api/sessions/${resolveSessionId()}/telemetry`); flowCalls = d.calls || []; }
+  // `sid` is passed in from the click that started the evaluation rather than
+  // re-resolved: the user may have typed a different run into the session box while
+  // the judge was still scoring, and re-resolving would write another run's calls
+  // into flowCalls. `version` is likewise the version the modal is SHOWING — this
+  // used to jump to the latest, silently moving a reviewer off Version 1.
+  async function refreshEval(agentId, sid, version) {
+    try { const d = await api(`/api/sessions/${sid}/telemetry`); flowCalls = d.calls || []; }
     catch (e) { return; }
-    // Re-render the open modal body (if still open) so new eval rows appear.
-    if ($("obsIOBody")) $("obsIOBody").innerHTML = agentIOBody(agentId, agentVersions(agentId).slice(-1)[0]);
+    if ($("obsIOBody")) $("obsIOBody").innerHTML = agentIOBody(agentId, version);
   }
 
   // ---- the modal itself ------------------------------------------------------
@@ -1219,13 +1241,14 @@
       `<option value="${v}"${v === sel ? " selected" : ""}>Version ${esc(String(v))}` +
       `${v === versions[versions.length - 1] ? " (latest)" : ""}${v === 1 ? " · initial" : ""}</option>`).join("");
     return `<div class="obs-vercontrols"><label for="obsVerSel">Show version</label>
-      <select id="obsVerSel" class="obs-verselect" onchange="obsPickVersion('${esc(agentId)}', Number(this.value))">${opts}</select>
+      <select id="obsVerSel" class="obs-verselect" onchange="obsPickVersion(${jsq(agentId)}, Number(this.value))">${opts}</select>
       <span class="obs-vercount">${versions.length} versions</span></div>`;
   }
 
   function openAgentIO(agentId) {
     const versions = agentVersions(agentId);
     const sel = versions[versions.length - 1];
+    selectedVersion[agentId] = sel;
     const html = `<div class="obs-modal-back" id="obsModalBack">
       <div class="obs-modal" role="dialog" aria-modal="true">
         <div class="obs-modal-head">
@@ -1242,8 +1265,12 @@
     document.addEventListener("keydown", escClose);
   }
 
-  // Re-render just the modal body for the picked version (dropdown onchange).
+  // Which version each agent's modal is currently showing, so an async eval refresh
+  // re-renders the version the reviewer is looking at rather than the latest.
+  const selectedVersion = {};
+
   function pickVersion(agentId, v) {
+    selectedVersion[agentId] = v;
     const el = $("obsIOBody");
     if (el) el.innerHTML = agentIOBody(agentId, v);
   }
@@ -1271,7 +1298,7 @@
     if (available === false) {
       return `<span class="obs-sesslink obs-sesslink-dead" title="This run is no longer available (aged out of retention or deleted) — nothing to open">${s} · n/a</span>`;
     }
-    return `<a href="#" class="obs-sesslink" onclick="obsOpenSession('${s}');return false;" title="Open run detail for ${s}">${s}</a>`;
+    return `<a href="#" class="obs-sesslink" onclick="obsOpenSession(${jsq(sid)});return false;" title="Open run detail for ${s}">${s}</a>`;
   }
 
   function sectionHead(title, subtitle, n) {
@@ -1371,10 +1398,13 @@
   // Jump from an insights cluster to the Run detail tab for a given session.
   function openSession(sid) {
     if (!sid) return;
-    goto("flow");
+    // Set the target BEFORE switching tabs. goto("flow") auto-loads whatever the
+    // session box currently holds, so setting it afterwards fired a fetch for the
+    // PREVIOUS run and raced the correct one — last response won, which could leave
+    // the table showing the wrong session.
     const inp = $("obsSession");
     if (inp) { sessionMap[sid] = sid; inp.value = sid; }
-    loadFlow();
+    goto("flow");
   }
 
   function insightsHtml(data) {
@@ -1383,8 +1413,13 @@
       const note = data.note ? ` ${esc(String(data.note))}` : "";
       return `<div class="obs-note" style="margin:0">No insights run yet. Pick a window and click <b>Run insights</b> — it analyzes recent runs for failure patterns, user intents, and behavior summaries.${note}</div>`;
     }
-    if (st === "IN_PROGRESS" || st === "PENDING") return `<div class="obs-note" style="margin:0"><span class="obs-mchip">Running…</span> AgentCore is analyzing recent runtime traces (a few minutes). Click <b>Refresh</b> to check.</div>`;
+    // The statuses insights.py can actually store: none | IN_PROGRESS | COMPLETED |
+    // COMPLETED_WITH_ERRORS | FAILED | STOPPED. STOPPED used to fall through to the
+    // findings renderer and report "No clusters returned for this window", which
+    // reads like an empty result rather than a cancelled job.
+    if (st === "IN_PROGRESS") return `<div class="obs-note" style="margin:0"><span class="obs-mchip">Running…</span> AgentCore is analyzing recent runtime traces (a few minutes). Click <b>Refresh</b> to check.</div>`;
     if (st === "FAILED") return `<div class="obs-note warn" style="margin:0">Insights run failed. Ensure at least one run has completed and Transaction Search is enabled, then try again.</div>`;
+    if (st === "STOPPED") return `<div class="obs-note warn" style="margin:0">The insights run was stopped before it finished, so there are no findings. Start a new one when you're ready.</div>`;
     const f = data.findings || {};
     const s = f.sessions || {};
     const total = Number(s.total || 0), analyzed = Number(s.completed || 0), skipped = Number(s.failed || 0);

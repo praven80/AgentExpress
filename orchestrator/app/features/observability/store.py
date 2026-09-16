@@ -9,11 +9,18 @@ pre-computed cost per row.
 from __future__ import annotations
 
 import os
+import time
 from decimal import Decimal
 
 from app.features.observability.records import CallRecord
 
 TELEMETRY_TABLE = os.getenv("TELEMETRY_TABLE", "")
+
+# How long a telemetry row lives. Both IaC paths enable DynamoDB TTL on a `ttl`
+# attribute, but NOTHING wrote one — so rows carrying captured system prompts, user
+# input and model output were retained forever on a table whose whole point is
+# short-term cost/quality inspection. 0 disables expiry (keep everything).
+TELEMETRY_TTL_DAYS = int(os.getenv("TELEMETRY_TTL_DAYS", "90"))
 
 _table = None
 
@@ -69,10 +76,17 @@ def _fit(item: dict) -> dict:
     return item
 
 
+def _with_ttl(item: dict) -> dict:
+    """Stamp the DynamoDB TTL attribute the tables are already configured for."""
+    if TELEMETRY_TTL_DAYS > 0:
+        item["ttl"] = int(time.time()) + TELEMETRY_TTL_DAYS * 86400
+    return item
+
+
 def put(record: CallRecord) -> None:
     if not TELEMETRY_TABLE:
         return
     try:
-        _tbl().put_item(Item=_clean(_fit(record.to_item())))
+        _tbl().put_item(Item=_clean(_with_ttl(_fit(record.to_item()))))
     except Exception as e:  # noqa: BLE001 - telemetry must never break a run
         print(f"[observability] telemetry write failed: {type(e).__name__}: {e}")

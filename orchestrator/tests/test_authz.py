@@ -84,22 +84,42 @@ def test_holding_any_one_of_the_listed_groups_is_enough(monkeypatch):
 
 
 def test_a_user_with_no_groups_can_do_nothing_restricted(monkeypatch):
+    """"Nothing RESTRICTED" — an action the config does not name stays open, which is
+    the documented backwards-compatible default."""
     authz = load_authz(RULES, monkeypatch)
-    assert authz.permitted_actions(event([])) == []
-    assert authz.permitted_actions(event()) == []
+    unrestricted = [a for a in authz.ACTIONS if a not in RULES["actions"]]
+    assert authz.permitted_actions(event([])) == unrestricted
+    assert authz.permitted_actions(event()) == unrestricted
+    for action in RULES["actions"]:
+        assert authz.permitted(action, event([])) is False
+        assert authz.permitted(action, event()) is False
 
 
 def test_permitted_actions_per_role(monkeypatch):
+    """Derived, not restated: an action the RULES fixture does not name is
+    UNRESTRICTED, so it is permitted to everyone and appears in every list. Computing
+    the expectation keeps this honest when a new action is added."""
     authz = load_authz(RULES, monkeypatch)
-    assert authz.permitted_actions(event(["approvers"])) == ["decision", "rerun", "cancel"]
-    assert authz.permitted_actions(event(["operators"])) == [
-        "cancel", "evaluate", "insights", "delete"]
+    unrestricted = [a for a in authz.ACTIONS if a not in RULES["actions"]]
+
+    def expected(*groups):
+        allowed = {a for a, gs in RULES["actions"].items() if set(gs) & set(groups)}
+        return [a for a in authz.ACTIONS if a in allowed or a in unrestricted]
+
+    assert authz.permitted_actions(event(["approvers"])) == expected("approvers")
+    assert authz.permitted_actions(event(["operators"])) == expected("operators")
     assert authz.permitted_actions(event(["approvers", "operators"])) == list(authz.ACTIONS)
+    # And the fixture really does restrict something, or the test proves nothing.
+    assert expected("approvers") != list(authz.ACTIONS)
 
 
-def test_an_unrecognised_group_grants_nothing(monkeypatch):
+def test_an_unrecognised_group_grants_only_the_unrestricted_actions(monkeypatch):
     authz = load_authz(RULES, monkeypatch)
-    assert authz.permitted_actions(event(["interns"])) == []
+    unrestricted = [a for a in authz.ACTIONS if a not in RULES["actions"]]
+    assert authz.permitted_actions(event(["interns"])) == unrestricted
+    # Every action the config DOES restrict is refused.
+    for action in RULES["actions"]:
+        assert authz.permitted(action, event(["interns"])) is False
 
 
 def test_the_recognised_actions_are_exactly_the_ones_the_iac_validates(monkeypatch):
@@ -107,7 +127,7 @@ def test_the_recognised_actions_are_exactly_the_ones_the_iac_validates(monkeypat
     action is added here, those two lists must be updated too."""
     authz = load_authz(None, monkeypatch)
     assert sorted(authz.ACTIONS) == [
-        "cancel", "decision", "delete", "evaluate", "insights", "rerun"]
+        "cancel", "decision", "delete", "evaluate", "insights", "rerun", "start"]
 
 
 # --- claim shapes ----------------------------------------------------------
@@ -207,7 +227,7 @@ def test_an_action_tool_is_withheld_when_the_caller_lacks_the_group(monkeypatch)
     """Withholding beats refusing in the prompt: a tool the model was never given
     cannot be talked into being called."""
     chatbot = load_chatbot(monkeypatch)
-    names = enabled_names(chatbot, ["cancel", "evaluate", "insights", "delete"])
+    names = enabled_names(chatbot, ["start", "cancel", "evaluate", "insights", "delete"])
     assert "run_evaluation" in names          # operators may evaluate
     assert "submit_review" not in names       # but not approve
     assert "rerun_agents" not in names

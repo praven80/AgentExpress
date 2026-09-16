@@ -53,7 +53,11 @@ fi
 # The Gateway M2M secret must be resolvable for `destroy` to evaluate variables.
 # Empty is fine for destroy — nothing is being created. (When create_cognito is
 # true Terraform manages that client itself, so this is usually unset anyway.)
-export TF_VAR_cognito_gateway_client_secret="${TF_VAR_cognito_gateway_client_secret:-}"
+# The declared variable is `gateway_client_secret` (variables.tf). This used to name
+# a variable that does not exist, and Terraform silently ignores TF_VAR_ for an
+# undeclared variable — so the safeguard did nothing and only worked because the real
+# variable defaults to "".
+export TF_VAR_gateway_client_secret="${TF_VAR_gateway_client_secret:-}"
 
 # --- 1. terraform destroy --------------------------------------------------
 if [[ ! -f backend.hcl ]]; then

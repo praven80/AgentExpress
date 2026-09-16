@@ -17,7 +17,7 @@ approve -> continue, deny -> END, revise -> loop back and re-run with feedback
 
 from langgraph.graph import END, START, StateGraph
 
-from app.common.config import STEPS
+from app.common.config import STEPS, step_agents as agents_in
 from app.orchestrator.nodes import (
     make_agent_node,
     make_gate_node,
@@ -26,11 +26,6 @@ from app.orchestrator.nodes import (
 )
 from app.orchestrator.registry import load_agents
 from app.common.state import State
-
-
-def _agents_in(step: dict) -> list:
-    """Every agent in a step (parallel = all, sequence = all in order)."""
-    return step.get("parallel") or step.get("sequence") or [step["agent"]]
 
 
 def _entries(step: dict) -> list:
@@ -46,38 +41,21 @@ def _gate_id(step: dict, i: int) -> str:
     return step.get("gateId") or f"group{i}"
 
 
-def _make_router(agent_id: str, next_entries: list):
+def _make_router(decision_key: str, next_entries: list, revise_target):
+    """Route one gate's decision: deny -> END, revise -> `revise_target`, else onward.
+
+    `revise_target` is a callable over the state because that is the ONLY thing the
+    three gate kinds differ on — a single agent loops back to itself, a sequence to its
+    first agent, a parallel group to just the subset the reviewer flagged. This was
+    three copies of the same five lines, so deny/onward behaviour could drift between
+    gate kinds.
+    """
     def router(state: dict):
-        decision = (state.get("decisions") or {}).get(agent_id)
+        decision = (state.get("decisions") or {}).get(decision_key)
         if decision == "deny":
             return END
         if decision == "revise":
-            return agent_id  # loop back: re-run the agent with the feedback
-        return END if next_entries == [END] else next_entries
-    return router
-
-
-def _make_group_router(group_id: str, group_ids: list, next_entries: list):
-    def router(state: dict):
-        decision = (state.get("decisions") or {}).get(group_id)
-        if decision == "deny":
-            return END
-        if decision == "revise":
-            # Loop back to ONLY the agents the reviewer marked revise/reject;
-            # the gate re-runs after that subset completes.
-            rerun = (state.get("group_rerun") or {}).get(group_id)
-            return rerun or group_ids
-        return END if next_entries == [END] else next_entries
-    return router
-
-
-def _make_sequence_router(gate_id: str, first_id: str, next_entries: list):
-    def router(state: dict):
-        decision = (state.get("decisions") or {}).get(gate_id)
-        if decision == "deny":
-            return END
-        if decision == "revise":
-            return first_id  # loop back to the start of the sequence
+            return revise_target(state)
         return END if next_entries == [END] else next_entries
     return router
 
@@ -139,8 +117,9 @@ def build_graph(checkpointer=None):
             gname = gate_of[i]
             g.add_edge(aid, gname)  # agent -> its gate
             # Targets include `aid` so a "revise" decision can loop back to it.
-            g.add_conditional_edges(gname, _make_router(aid, next_entries),
-                                    list({*next_entries, END, aid}))
+            g.add_conditional_edges(
+                gname, _make_router(aid, next_entries, lambda _s, a=aid: a),
+                list({*next_entries, END, aid}))
         elif "parallel" in step and hitl:
             # Parallel group with a join gate: every agent -> gate; revise
             # re-runs the flagged agents.
@@ -149,8 +128,13 @@ def build_graph(checkpointer=None):
             group_ids = step["parallel"]
             for a in group_ids:
                 g.add_edge(a, gname)
-            g.add_conditional_edges(gname, _make_group_router(gid, group_ids, next_entries),
-                                    list({*next_entries, END, *group_ids}))
+            # revise re-runs ONLY the flagged agents; the gate re-runs after them.
+            g.add_conditional_edges(
+                gname,
+                _make_router(gid, next_entries,
+                             lambda s, k=gid, ids=group_ids:
+                                 (s.get("group_rerun") or {}).get(k) or ids),
+                list({*next_entries, END, *group_ids}))
         elif "sequence" in step and hitl:
             # Sequence group with one gate after the LAST agent; revise loops
             # back to the FIRST agent (the whole chain re-runs).
@@ -158,8 +142,9 @@ def build_graph(checkpointer=None):
             gname = gate_of[i]
             seq = step["sequence"]
             g.add_edge(seq[-1], gname)
-            g.add_conditional_edges(gname, _make_sequence_router(gid, seq[0], next_entries),
-                                    list({*next_entries, END, seq[0]}))
+            g.add_conditional_edges(
+                gname, _make_router(gid, next_entries, lambda _s, f=seq[0]: f),
+                list({*next_entries, END, seq[0]}))
         elif "sequence" in step:
             # Ungated sequence: last agent flows into the next step.
             for ne in next_entries:
@@ -167,7 +152,7 @@ def build_graph(checkpointer=None):
         else:
             # Ungated single agent or parallel group: each agent flows into the
             # next step's entries.
-            for a in _agents_in(step):
+            for a in agents_in(step):
                 for ne in next_entries:
                     g.add_edge(a, ne)
 
@@ -194,7 +179,7 @@ def build_graph(checkpointer=None):
 
 def _step_index_of(agent_id: str) -> int:
     for i, step in enumerate(STEPS):
-        if agent_id in _agents_in(step):
+        if agent_id in agents_in(step):
             return i
     return -1
 
@@ -218,7 +203,7 @@ def _predecessor_of_step(si: int) -> tuple[str, str | None]:
     # rewind across it would be ambiguous — reject it rather than guess.
     if "sequence" in prev:
         return prev["sequence"][-1], None
-    prev_agents = _agents_in(prev)
+    prev_agents = agents_in(prev)
     if len(prev_agents) != 1:
         raise ValueError(
             "cannot rewind across the previous step: it is a non-gated parallel "
@@ -252,7 +237,7 @@ def rerun_plan(agent_id: str) -> dict:
     step = STEPS[si]
     later_agents: list[str] = []
     for s in STEPS[si + 1:]:
-        later_agents += _agents_in(s)
+        later_agents += agents_in(s)
 
     seq = step.get("sequence")
     if seq and agent_id != seq[0]:
@@ -267,7 +252,7 @@ def rerun_plan(agent_id: str) -> dict:
 
     # The target is the step's entry: a single agent, any member of a parallel
     # group (the stage re-runs as a unit), or the first agent of a sequence.
-    step_agents = _agents_in(step)
+    step_agents = agents_in(step)
     as_node, decision_key = _predecessor_of_step(si)
     return {"as_node": as_node, "decision_key": decision_key,
             "step_agents": step_agents,
@@ -285,7 +270,7 @@ def group_rerun_plan(agent_ids: list[str]) -> dict:
 
     Mechanism: this reuses the group gate's existing subset routing. We seed the
     gate's decision to "revise" with group_rerun=<subset>, so the group router
-    (_make_group_router above) loops back to exactly that subset. The rewind
+    (_make_router above) loops back to exactly that subset. The rewind
     therefore attributes its state write to the group's OWN gate node.
 
     Returns:
@@ -318,7 +303,7 @@ def group_rerun_plan(agent_ids: list[str]) -> dict:
     group_id = _gate_id(step, si)
     downstream_agents: list[str] = list(ids)
     for s in STEPS[si + 1:]:
-        downstream_agents += _agents_in(s)
+        downstream_agents += agents_in(s)
 
     return {"as_node": f"{group_id}_gate", "group_id": group_id,
             "subset": ids, "downstream_agents": downstream_agents,

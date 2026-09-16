@@ -59,5 +59,9 @@ resource "aws_bedrockagentcore_policy" "tool" {
     aws_bedrockagentcore_gateway_target.websearch,
     aws_bedrockagentcore_gateway_target.mcp_server,
     aws_bedrockagentcore_gateway_target.openapi,
+    # A type="lambda" tool produces a Cedar statement like any other, so it belongs
+    # here too. Omitting it left the exact "unrecognized action" ordering failure
+    # this list exists to prevent reachable on a fresh single apply.
+    aws_bedrockagentcore_gateway_target.lambda_fn,
   ]
 }

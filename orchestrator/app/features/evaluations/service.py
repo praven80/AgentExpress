@@ -138,10 +138,11 @@ def runtime_trace_sources(agent_id: str | None = None) -> dict:
     """The app's AgentCore runtime CloudWatch source for the optimization APIs,
     scoped to ONE runtime service (required — the APIs cap serviceNames at 1).
 
-    Targets the given agent's OWN runtime: a `dedicated` agent's runtime, else the
-    MAIN orchestrator runtime (where all `main` agents run). Returns
-    {logGroupArns, logGroupNames, serviceNames:[one]} with up to 5 (newest) log
-    groups for that service (a re-created runtime leaves stale groups). Best-effort."""
+    `agent_id` targets that agent's OWN runtime when it is `dedicated`; omitted (the
+    only way insights calls it today) targets the MAIN orchestrator runtime, where all
+    `main` agents run. Returns {logGroupArns, logGroupNames, serviceNames:[one]} with
+    up to 5 (newest) log groups for that service — a re-created runtime leaves stale
+    groups behind. Best-effort."""
     if not _RUNTIME_LOG_PREFIX:
         return {"logGroupArns": [], "logGroupNames": [], "serviceNames": []}
     # service -> list of {name, arn, ct}
@@ -235,6 +236,9 @@ def _query_all_groups(query: str, lookback_hours: int = 6) -> list[dict]:
 def _fetch_agent_span(session_id: str, agent_id: str) -> dict | None:
     """Fetch the target agent's AGENT span by EXACT name, scoped to the session.
 
+    Only reached by the fallback path — which also fires when TELEMETRY_TABLE is unset
+    or the telemetry read failed, not just for a run that predates per-prompt tagging.
+
     Exact `name = "agent.<id>"` filtering is deterministic (unlike hunting for
     one span in a broad session download), so we reliably score the RIGHT agent.
     Retries because spans land a little after the agent completes.
@@ -297,8 +301,20 @@ def _telemetry_rows(session_id: str) -> list[dict]:
     try:
         import boto3
         from boto3.dynamodb.conditions import Key
-        return boto3.resource("dynamodb", region_name=REGION).Table(table).query(
-            KeyConditionExpression=Key("session_id").eq(session_id)).get("Items", [])
+        tbl = boto3.resource("dynamodb", region_name=REGION).Table(table)
+        # PAGINATE. A query returns at most 1 MB per page, and these rows carry the
+        # captured prompt/response text, so a long run exceeds one page easily. A
+        # single unpaginated query dropped the newest rows — which are precisely the
+        # ones evaluation needs, because _prompt_io takes the LAST match. The symptom
+        # was a stale or missing score with no error anywhere.
+        out, kw = [], {"KeyConditionExpression": Key("session_id").eq(session_id)}
+        while True:
+            page = tbl.query(**kw)
+            out.extend(page.get("Items", []))
+            lek = page.get("LastEvaluatedKey")
+            if not lek:
+                return out
+            kw["ExclusiveStartKey"] = lek
     except Exception as e:  # noqa: BLE001
         print(f"[evaluations] telemetry read failed: {type(e).__name__}: {e}")
         return []
@@ -419,7 +435,9 @@ def evaluate_agent(session_id: str, agent_id: str, user: str = "",
     - prompt given  -> evaluate just that named prompt.
     - prompt None   -> evaluate every prompt the agent issued this version.
 
-    Returns per-(prompt, evaluator) summaries. Best-effort: never raises.
+    Returns per-(prompt, evaluator) summaries. Each evaluator's failure is caught and
+    logged individually (see _score_spans), but this is not a blanket guarantee —
+    both callers still guard, because client construction and span synthesis can raise.
     """
     from app.features.observability.scope import set_scope
 

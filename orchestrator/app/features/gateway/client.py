@@ -97,7 +97,8 @@ def _gateway_token() -> str:
 
 
 async def _gateway_tools():
-    """Connect to the Gateway MCP endpoint with a Cognito token and list tools."""
+    """Connect to the Gateway MCP endpoint with a client-credentials token and list
+    its tools. The token flow is Cognito or Auth0 per GATEWAY_AUTH_FLOW."""
     from langchain_mcp_adapters.client import MultiServerMCPClient
 
     token = await asyncio.to_thread(_gateway_token)
@@ -113,10 +114,9 @@ async def _gateway_tools():
     return await client.get_tools()
 
 
-# How much evidence one tool call may contribute, in characters. The old code had a
-# hard 2000 here on its FALLBACK path, which is the path every real tool actually
-# took — so every tool's evidence was silently cut to 2000 characters mid-token.
-# Generous by default (roughly 5k tokens) and tunable per deployment.
+# How much evidence one tool call may contribute, in characters. Generous by default
+# (roughly 5k tokens) and tunable per deployment: too small and agents reason from
+# truncated sources and report it as a limitation of the SOURCE.
 MAX_EVIDENCE_CHARS = int(os.getenv("MAX_EVIDENCE_CHARS", "20000"))
 # Per-result cap, so one enormous document cannot crowd out the other results.
 MAX_RESULT_CHARS = int(os.getenv("MAX_RESULT_CHARS", "4000"))
@@ -137,17 +137,14 @@ _DATE_FIELDS = ("publishedDate", "published_date", "published", "lastUpdated")
 def _unwrap_mcp(result):
     """Peel the MCP content envelope off a tool result.
 
-    THE BUG THIS EXISTS FOR: a tool result does not arrive as the payload the tool
-    returned. It arrives wrapped by MCP as a list of content blocks —
+    A tool result does NOT arrive as the payload the tool returned. MCP wraps it as a
+    list of content blocks, with the real payload as a JSON *string* one level down:
 
         [{"type": "text", "text": "{\\"results\\": [...]}"}]
 
-    — with the real payload as a JSON *string* one level down. The previous code
-    only recognised a top-level dict with a "results" key, so this list matched
-    nothing, fell through to a `json.dumps(...)[:2000]` fallback, and every tool's
-    evidence was truncated to 2000 characters with its citations still buried
-    inside the JSON text. Verified against live telemetry: all four tools returned
-    exactly 2000 characters, and none produced a citation block.
+    Code that looks for a top-level dict with a "results" key therefore matches
+    nothing and falls through to a generic stringify — which is how citations end up
+    buried in JSON text instead of reaching the model as fields.
     """
     # A JSON string at any level: parse and recurse.
     if isinstance(result, str):
@@ -277,9 +274,9 @@ def _extract_chunks(result) -> str:
 def _clip(s: str, limit: int) -> str:
     """Cut to `limit`, on a word boundary where possible, and SAY it was cut.
 
-    A silent mid-token cut is what made the previous truncation so hard to spot:
-    the agents could see their evidence ended mid-word but had no way to tell
-    whether the source was incomplete or the framework had trimmed it.
+    The annotation matters: without it an agent sees evidence ending mid-word and
+    cannot tell whether the SOURCE was incomplete or the framework trimmed it — and
+    it reports the wrong one as a data limitation.
     """
     if len(s) <= limit:
         return s

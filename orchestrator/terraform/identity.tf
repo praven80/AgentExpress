@@ -97,7 +97,7 @@ locals {
   # Mirrors ACTIONS in bff/authz.py. Duplicated deliberately: Terraform cannot
   # read the Python, and a silently-ignored typo in `actions` is the failure this
   # list exists to catch.
-  authz_known_actions = ["cancel", "decision", "delete", "evaluate", "insights", "rerun"]
+  authz_known_actions = ["cancel", "decision", "delete", "evaluate", "insights", "rerun", "start"]
 
   # --- What the SPA needs (rendered into web/auth-config.js) --------------
   # One template serves every provider; unused fields are empty strings.

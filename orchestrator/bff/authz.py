@@ -43,7 +43,7 @@ import os
 # `delete` (removing a completed run and its timeline) is included because it is
 # irreversible; it is not an approval, but leaving it open while gating `cancel`
 # would be inconsistent.
-ACTIONS = ("decision", "rerun", "cancel", "evaluate", "insights", "delete")
+ACTIONS = ("start", "decision", "rerun", "cancel", "evaluate", "insights", "delete")
 
 _WF = json.loads(os.environ.get("WORKFLOW_JSON", "{}"))
 _AUTHZ = _WF.get("authorization") or {}

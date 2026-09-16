@@ -46,7 +46,10 @@ resource "aws_dynamodb_table" "telemetry" {
     projection_type = "ALL"
   }
 
-  # Optional: auto-expire old telemetry. Set a `ttl` epoch attr on rows to use it.
+  # Auto-expire old telemetry. The writer stamps `ttl` on every row
+  # (app/features/observability/store.py, TELEMETRY_TTL_DAYS, default 90 days) —
+  # this was enabled with nothing writing the attribute, so rows carrying captured
+  # prompts and model output were kept forever.
   ttl {
     attribute_name = "ttl"
     enabled        = true

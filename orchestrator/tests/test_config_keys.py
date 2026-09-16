@@ -60,6 +60,21 @@ ORCHESTRATOR_KEYS = {
     "policy": "policy.tf / tool-plane.ts - Cedar engine on/off + mode",
     "chatbot": "bff/chatbot.py + the UI gate",
 }
+# Presentation strings. Every one must have a reader, for the same reason as the
+# rest: `chatbot.greeting` and `chatbot.placeholder` sat in this file for a while
+# WITHOUT being shipped in the BFF projection, so a customer could edit them and the
+# UI would keep showing its own hardcoded copy. That is the failure mode this whole
+# module exists to catch, and `ui` was the one block it did not cover.
+UI_KEYS = {
+    "title": "index.html:applyUiConfig -> document.title",
+    "heading": "index.html:applyUiConfig -> header h1",
+    "defaultTopic": "config.py:DEFAULT_TOPIC, bff/handler.py:DEFAULT_TOPIC, applyUiConfig",
+    "topicPlaceholder": "index.html:applyUiConfig -> #topic placeholder + aria-label",
+    "subjectPlaceholder": "index.html:applyUiConfig -> #subject placeholder + aria-label",
+    "subjectHint": "index.html:applyUiConfig -> #subject title",
+    "assistantTitle": "index.html:initChatbot -> assistant panel title",
+    "assistantSubtitle": "index.html:initChatbot -> assistant panel subtitle",
+}
 
 
 def wf() -> dict:
@@ -92,6 +107,36 @@ def test_no_unread_agentcore_keys():
         unknown = found - set(AGENTCORE_KEYS)
         assert not unknown, (
             f"agent {aid!r} agentcore has key(s) nothing reads: {sorted(unknown)}.")
+
+
+def test_no_unread_ui_keys():
+    """Every `ui` string must reach the page. See UI_KEYS for why this exists."""
+    unknown = set(wf().get("ui", {})) - set(UI_KEYS)
+    assert not unknown, (
+        f"ui has key(s) nothing reads: {sorted(unknown)}. Either render them or "
+        f"remove them — a presentation key that does nothing is worse than absent, "
+        f"because a customer edits it and sees no change.")
+
+
+def test_ui_strings_shipped_to_the_browser_are_actually_read_there():
+    """The keys the UI consumes must survive the BFF projection.
+
+    Both IaC paths build a compact `ui`/`chatbot` projection for the 4 KB Lambda
+    env. A key present here but dropped there is invisible to the browser, which is
+    exactly how greeting/placeholder became decorative."""
+    import re
+
+    index = (ORCH_ROOT / "web" / "index.html").read_text()
+    for key in UI_KEYS:
+        # Any accessor: ui.<key>, uiCfg.<key>, cfg.<key>, ui["<key>"].
+        assert re.search(rf"[.\[]\s*\"?{re.escape(key)}\b", index), (
+            f"ui.{key} is declared in UI_KEYS but index.html never reads it")
+    # chatbot.greeting / .placeholder must be projected by BOTH IaC paths.
+    tf = (ORCH_ROOT / "terraform" / "bff.tf").read_text()
+    cdk = (ORCH_ROOT / "cdk" / "lib" / "orchestrator-stack.ts").read_text()
+    for field in ("greeting", "placeholder"):
+        assert f"chatbot.{field}" in tf, f"terraform/bff.tf does not ship chatbot.{field}"
+        assert f"{field}: cb.{field}" in cdk, f"the CDK path does not ship chatbot.{field}"
 
 
 def test_no_note_or_description_prose_in_agents():

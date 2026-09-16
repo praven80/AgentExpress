@@ -58,12 +58,31 @@ does not turn tests red.
 | `policy.mode` | same | `ENFORCE` obeys a DENY and blocks the call; `LOG_ONLY` evaluates and logs without blocking — the safe way to roll out. |
 | `chatbot.enabled` | `bff/chatbot.py`, UI | Shows the chat icon. |
 | `chatbot.model` | `bff/chatbot.py` | Model for the assistant's tool-use loop. |
-| `chatbot.greeting` / `placeholder` | UI | Optional; the page's own text is the fallback. |
+| `chatbot.greeting` / `chatbot.placeholder` | UI | The assistant's opening message and input placeholder. Shipped in the BFF projection by both IaC paths; the page keeps a short generic fallback if you omit them. |
 | `chatbot.tools.<name>` | `bff/chatbot.py` | One flag per assistant capability: `status`, `sessions`, `outputs`, `costs`, `latency`, `guardrails`, `evals`, `runEval`, `rerun`, `review`. Anything unlisted defaults to **on**. |
 
 You never write Cedar by hand — the rules are generated from the `tools` block.
 Every tool you declare is permitted; anything not declared is refused by Cedar's
 default-deny, including a tool name a prompt-injected instruction invents.
+
+## `ui`
+
+Every user-facing string in the shell, so re-branding is a config edit rather than an
+`index.html` edit. All optional — the page has a neutral fallback for each — and all
+guarded: `tests/test_config_keys.py` fails on a `ui` key nothing renders, because a
+presentation key that does nothing is worse than an absent one (you edit it and see
+no change, with nothing to tell you why).
+
+| Key | Where it shows |
+|---|---|
+| `title` | Browser tab title |
+| `heading` | The header, top left |
+| `defaultTopic` | Pre-filled topic, AND the server-side default when a run is started with no topic (`config.py`, `bff/handler.py`) |
+| `topicPlaceholder` | The topic input's placeholder and accessible name |
+| `subjectPlaceholder` | The subject input's placeholder and accessible name |
+| `subjectHint` | The subject input's tooltip |
+| `assistantTitle` | The assistant panel's title |
+| `assistantSubtitle` | The line under it |
 
 ## `agents.<id>`
 
@@ -257,7 +276,8 @@ a tool the agent cannot call — which shows up as an empty answer, not an error
 ## `authorization`
 
 Answers "may *this user* do this?", which the JWT authorizer does not. Six actions:
-`decision` (approve / revise / deny a gate), `rerun`, `cancel`, `evaluate`,
+`start` (begin a run), `decision` (approve / revise / deny a gate), `rerun`,
+`cancel`, `evaluate`,
 `insights`, `delete`.
 
 - An action **not listed** is unrestricted, so deleting the block restores the

@@ -191,8 +191,11 @@ class AgentContext:
     # Long-term strategy -> namespace prefix. Matches the strategy namespace
     # templates provisioned on the semantic memory (terraform/main.tf):
     #   semantic -> insights/{actorId}   summary -> summary/{actorId}/{sessionId}
-    _NS_PREFIX = {"semantic": "insights", "summary": "summary",
-                  "user_preference": "preferences"}
+    # Only the strategies both IaC paths actually provision (terraform/main.tf
+    # semantic_memory_strategy + summary_memory_strategy, and the CDK equivalents).
+    # `user_preference` was listed here without a provisioned strategy, so enabling
+    # it recalled from a namespace nothing ever writes — and reported success.
+    _NS_PREFIX = {"semantic": "insights", "summary": "summary"}
 
     def _longterm_strategies(self) -> list[str]:
         """The long-term strategies enabled for this agent in workflow.json.

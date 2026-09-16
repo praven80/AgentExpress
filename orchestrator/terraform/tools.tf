@@ -16,7 +16,8 @@
 
 locals {
   # ---- Parse + normalise the tools block ---------------------------------
-  # Tools only exist when there is a Gateway to host them.
+  # NOT gated on the Gateway: bff.tf reads this to build the UI's data-source
+  # labels even when no tool plane is deployed. The Gateway gate is on `tools` below.
   tools_raw = try(local.workflow_def.tools, {})
 
   # Normalise every entry to ONE shape, so the result is a homogeneous map that
@@ -163,15 +164,19 @@ locals {
   # the service invokes the function directly rather than by assuming the role.
   # For a cross-account function, the owning account adds the statement.
   # A framework-deployed function is always local, so it is always included.
+  # The ARN format precondition below guarantees 7 colon-separated fields, so the
+  # field-count guard this used to carry could never fail.
   external_lambda_tools_local = {
     for n, t in local.external_lambda_tools : n => t
-    if length(split(":", t.lambda_arn)) > 4 && split(":", t.lambda_arn)[4] == local.account_id
+    if split(":", t.lambda_arn)[4] == local.account_id
   }
 
   # Targets that reach a third-party endpoint and were given a key.
+  # auth="apikey" without a key is rejected by a precondition below, so a key being
+  # present is the only condition needed here.
   keyed_tools = {
     for n, t in local.tools : n => t
-    if(t.api_key != "" || t.auth == "apikey") && contains(["mcp", "openapi"], t.type)
+    if t.api_key != "" && contains(["mcp", "openapi"], t.type)
   }
 
   # ---- Cedar policy, generated ------------------------------------------
@@ -255,8 +260,8 @@ locals {
         { maxResults = t.max_results },
         length(t.include_domains) > 0 ? { includeDomains = t.include_domains } : {},
         length(t.exclude_domains) > 0 ? { excludeDomains = t.exclude_domains } : {},
-        try(t.published_from, "") != "" ? { publishedFrom = t.published_from } : {},
-        try(t.published_to, "") != "" ? { publishedTo = t.published_to } : {},
+        t.published_from != "" ? { publishedFrom = t.published_from } : {},
+        t.published_to != "" ? { publishedTo = t.published_to } : {},
       ) : {},
       t.call != "" ? { call = t.call } : {},
       t.arg != "" ? { arg = t.arg } : {},
@@ -411,6 +416,16 @@ resource "terraform_data" "tools_validation" {
       ])
       error_message = "A tools entry with auth=\"apikey\" needs its key in var.tool_api_keys, keyed by the tool name: export TF_VAR_tool_api_keys='{\"<tool>\":\"...\"}'."
     }
+    precondition {
+      # Only mcp/openapi targets get a credential provider (see keyed_tools). On any
+      # other type the key was accepted, vaulted nowhere, and the endpoint called
+      # unauthenticated — a silent security downgrade rather than an error.
+      condition = alltrue([
+        for n, t in local.tools : contains(["mcp", "openapi"], t.type)
+        if t.auth == "apikey" || t.api_key != ""
+      ])
+      error_message = "auth=\"apikey\" (or a key in var.tool_api_keys) is only supported for type=\"mcp\" and type=\"openapi\" — those are the target kinds that get a credential provider. Offending: ${join(", ", [for n, t in local.tools : n if(t.auth == "apikey" || t.api_key != "") && !contains(["mcp", "openapi"], t.type)])}."
+    }
   }
 }
 
@@ -452,7 +467,7 @@ resource "terraform_data" "workflow_validation" {
       # var.agent_name + "_" + agent id must fit the runtime name limit (48).
       condition = alltrue([
         for id, a in local.dedicated_agents :
-        length("${var.agent_name}_${lookup(a, "module", id)}") <= 48
+        length("${var.agent_name}_${id}") <= 48
       ])
       error_message = "A dedicated agent's AgentCore Runtime name is \"<agent_name>_<agent id>\" and must be 48 characters or fewer. Shorten var.agent_name or the agent id."
     }

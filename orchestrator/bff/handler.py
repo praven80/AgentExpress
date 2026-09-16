@@ -14,6 +14,11 @@ maps a JWT group claim to the actions a caller may take (workflow.json ->
 decides what they may DO. Actions not named in that block stay open to any
 authenticated caller, so an absent block behaves as it did before.
 
+That includes STARTING a run ("start"), which is the most expensive action in the
+app — it invokes the runtime and spends model tokens across every agent. It had no
+action name, so it could not be restricted from config at all while every cheaper
+action could.
+
 Endpoints:
   GET    /api/workflow                           -> workflow definition (agents+steps)
   GET    /api/me                                 -> {user, groups, permittedActions}
@@ -165,8 +170,14 @@ def _forbidden(action: str, event: dict) -> dict | None:
     if authz.permitted(action, event):
         return None
     body = authz.denial(action, event)
-    print(f"[authz] DENY {action} user={_user(event)!r} groups={body['yourGroups']} "
-          f"required={body['requiredGroups']} claim={body['groupsClaim']}")
+    # Log the SUBJECT claim, not the email. `_user()` prefers `email`, and these logs
+    # have no retention policy — a denial is usually a group-mapping mistake, so the
+    # groups are what makes it diagnosable; the address adds nothing but PII.
+    claims = (event.get("requestContext", {}).get("authorizer", {})
+              .get("jwt", {}).get("claims", {}))
+    print(f"[authz] DENY {action} sub={claims.get('sub', '?')!r} "
+          f"groups={body['yourGroups']} required={body['requiredGroups']} "
+          f"claim={body['groupsClaim']}")
     return _resp(403, body)
 
 
@@ -266,6 +277,10 @@ def _telemetry_session(sid: str) -> dict:
     return _resp(200, {"session_id": sid, "calls": items, "byAgent": by_agent, "totals": tot})
 
 
+# Widest date span the aggregate endpoint will serve (one GSI query per day).
+_MAX_AGGREGATE_DAYS = 92
+
+
 def _telemetry_aggregate(by: str, frm: str | None, to: str | None) -> dict:
     """Roll up by date / model / user over a date range (defaults to last 30 days).
     Uses the by_date GSI, one query per day in range, grouped in-memory."""
@@ -279,6 +294,14 @@ def _telemetry_aggregate(by: str, frm: str | None, to: str | None) -> dict:
         d, d1 = _dt.date.fromisoformat(frm), _dt.date.fromisoformat(to)
     except ValueError:
         return _resp(400, {"error": "from/to must be YYYY-MM-DD"})
+    # One GSI query PER DAY in the range, each paginated into memory. `?from=2020-01-01`
+    # is ~2000 sequential queries against a 60s timeout and a 256MB budget, which fails
+    # as an opaque 502. Cap the span with an actionable message instead.
+    if d1 < d:
+        return _resp(400, {"error": "`from` must not be after `to`"})
+    if (d1 - d).days + 1 > _MAX_AGGREGATE_DAYS:
+        return _resp(400, {"error": f"range too wide: {(d1 - d).days + 1} days, maximum "
+                                    f"{_MAX_AGGREGATE_DAYS}. Narrow `from`/`to`."})
     buckets: dict = {}
     bucket_sessions: dict = {}   # key -> set(session_id), for distinct run counts
     all_sessions: set = set()
@@ -345,6 +368,9 @@ def _api(event: dict, context) -> dict:
                            "authzEnabled": authz.ENABLED})
 
     if method == "POST" and path == "/api/sessions":
+        denied = _forbidden("start", event)
+        if denied:
+            return denied
         topic = body.get("topic") or DEFAULT_TOPIC
         # Optional grouping key; scopes long-term memory (insights/{agentId}-{subject}).
         subject_id = body.get("subjectId", "")
@@ -356,8 +382,15 @@ def _api(event: dict, context) -> dict:
         try:
             status_tbl.put_item(Item=item,
                                 ConditionExpression="attribute_not_exists(session_id)")
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001
+            # Only the id-collision race is expected here. Anything else (denied,
+            # throttled, malformed) used to be swallowed identically and the run was
+            # started anyway — so the UI polled a session that would never appear and
+            # nothing was logged. Fail loudly instead.
+            code = getattr(e, "response", {}).get("Error", {}).get("Code", "")
+            if code != "ConditionalCheckFailedException":
+                print(f"[sessions] status write failed: {type(e).__name__}: {e}")
+                return _resp(500, {"error": "could not create the session"})
         _self_invoke(context.function_name,
                      {"action": "start", "session_id": session_id, "topic": topic,
                       "subject_id": subject_id, "user": item["user"]})

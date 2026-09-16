@@ -22,8 +22,9 @@ locals {
 
 # Shared execution role for the dedicated agent runtimes. Narrower than the
 # orchestrator's: no Memory checkpointer, no DynamoDB progress store — a
-# dedicated agent just runs its model (and any Gateway MCP calls, which use
-# Cognito env credentials, not IAM).
+# dedicated agent just runs its model, writes telemetry (see observability.tf), and
+# makes any Gateway tool calls — which use the IdP's client-credentials token from
+# env (Cognito or Auth0), not IAM.
 resource "aws_iam_role" "subagent" {
   count = length(local.dedicated_agents) > 0 ? 1 : 0
   name  = "AgentCoreSubagent-${var.agent_name}"

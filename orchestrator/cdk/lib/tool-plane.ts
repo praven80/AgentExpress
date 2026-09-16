@@ -418,7 +418,13 @@ export class ToolPlane extends Construct {
       kbRole.addToPolicy(
         new iam.PolicyStatement({
           sid: "S3VectorsData",
-          actions: ["s3vectors:*"],
+          // The verbs a Knowledge Base uses. The wildcard also granted DeleteIndex and
+          // DeleteVectorBucket, which a KB never calls. Mirrors terraform/kb.tf.
+          actions: [
+            "s3vectors:GetVectorBucket", "s3vectors:GetIndex", "s3vectors:ListIndexes",
+            "s3vectors:PutVectors", "s3vectors:GetVectors", "s3vectors:ListVectors",
+            "s3vectors:QueryVectors", "s3vectors:DeleteVectors",
+          ],
           resources: [vectorBucket.attrVectorBucketArn, `${vectorBucket.attrVectorBucketArn}/*`],
         })
       );
@@ -579,7 +585,13 @@ export class ToolPlane extends Construct {
         // the function, so this is emitted for same-account functions only. A
         // cross-account function still works — its owner adds the statement. A
         // framework-deployed function is always local.
-        if (!spec.source && spec.lambdaArn!.split(":")[4] !== account) continue;
+        // Only SKIP when we can prove the function belongs to another account. With
+        // an env-agnostic stack `account` is an unresolved token, which never equals a
+        // real 12-digit id — so this used to skip a same-account function silently and
+        // the tool failed at first invoke with an authorization error. Line ~436 guards
+        // the same hazard for the Cognito domain prefix; this site did not.
+        if (!spec.source && !cdk.Token.isUnresolved(account)
+            && spec.lambdaArn!.split(":")[4] !== account) continue;
         new lambda.CfnPermission(this, `ToolLambdaPermission-${name}`, {
           functionName: arnOf(name, spec),
           action: "lambda:InvokeFunction",

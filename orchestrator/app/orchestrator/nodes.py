@@ -169,6 +169,19 @@ def make_agent_node(agent: Agent):
     return node
 
 
+def _decision_of(resumed) -> tuple[str, str]:
+    """(decision, comment) from an interrupt resume payload.
+
+    Both resume paths build a dict — runtime.invoke and server.decide — so the shape is
+    `{"decision", "comment", "decisions"}`. A bare string is still accepted because an
+    interrupt can be resumed by any client of the graph, and defaulting is kinder than
+    a TypeError deep inside a gate. This parse was copied into all three gate nodes.
+    """
+    if isinstance(resumed, dict):
+        return str(resumed.get("decision", "approve")), str(resumed.get("comment") or "")
+    return (str(resumed) if resumed else "approve"), ""
+
+
 def make_gate_node(agent_id: str, agent_name: str):
     """A generic human-in-the-loop gate placed after `agent_id`.
 
@@ -187,14 +200,8 @@ def make_gate_node(agent_id: str, agent_name: str):
         await emit(sid, {"type": "hitl_request", "node": agent_id, "question": question,
                          "log": f"Awaiting human review after {agent_id}"})
 
-        # Resume payload is {"decision": approve|deny|revise, "comment": str}.
-        # A bare string is accepted for backward compatibility.
         resumed = interrupt({"node": agent_id, "question": question})  # pauses here
-        if isinstance(resumed, dict):
-            decision = resumed.get("decision", "approve")
-            comment = resumed.get("comment", "") or ""
-        else:
-            decision, comment = (resumed or "approve"), ""
+        decision, comment = _decision_of(resumed)
 
         await emit(sid, {"type": "hitl_resolved", "node": agent_id,
                          "log": f"Human decision ({agent_id}): {decision}"})
@@ -238,11 +245,7 @@ def make_sequence_gate_node(gate_id: str, seq_ids: list[str], label: str):
                          "log": f"Awaiting human review after {label}"})
 
         resumed = interrupt({"node": gate_id, "sequence": seq_ids, "question": question})
-        if isinstance(resumed, dict):
-            decision = resumed.get("decision", "approve")
-            comment = resumed.get("comment", "") or ""
-        else:
-            decision, comment = (resumed or "approve"), ""
+        decision, comment = _decision_of(resumed)
 
         await emit(sid, {"type": "hitl_resolved", "node": gate_id,
                          "log": f"{label} review: {decision}"})

@@ -304,7 +304,7 @@ export function validateWorkflow(workflow: any, orchRoot: string, agentName: str
   }
   // Mirrors ACTIONS in bff/authz.py. A typo'd key looks like a restriction but
   // gates nothing, leaving the real action wide open — so reject it at synth.
-  const knownActions = ["cancel", "decision", "delete", "evaluate", "insights", "rerun"];
+  const knownActions = ["cancel", "decision", "delete", "evaluate", "insights", "rerun", "start"];
   const unknownActions = restricted.filter((a) => !knownActions.includes(a));
   if (unknownActions.length) {
     throw new Error(
@@ -613,6 +613,8 @@ export class OrchestratorStack extends cdk.Stack {
       partitionKey: { name: "session_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      // The writer stamps `ttl` on every row (app/features/observability/store.py,
+      // TELEMETRY_TTL_DAYS, default 90 days). Mirrors terraform/observability.tf.
       timeToLiveAttribute: "ttl",
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
@@ -833,6 +835,13 @@ export class OrchestratorStack extends cdk.Stack {
       // Cedar mode in effect at the Gateway, so the UI can label decisions.
       // Enforcement itself is server-side; this is display-only.
       GATEWAY_POLICY_MODE: toolPlane?.policyModeEnv ?? "",
+      // How to CALL each tool (argument shape, corpus, per-type options), so an
+      // agent reaches a newly declared data source with no code change. This was
+      // MISSING on the CDK path: app/common/config.py then falls back to the `tools`
+      // block of the workflow.json baked into the image, which keeps only a subset of
+      // the fields — so a request-level option set in config was silently dropped
+      // here while Terraform honoured it. Mirrors terraform/main.tf TOOLS_JSON.
+      TOOLS_JSON: JSON.stringify(toolsEnv(declaredTools)),
     };
 
     // ---- Shared IAM trust: bedrock-agentcore assumes runtime roles ----------
@@ -849,9 +858,13 @@ export class OrchestratorStack extends cdk.Stack {
         "bedrock:InvokeModelWithResponseStream",
         "bedrock:CountTokens",
       ],
+      // Inference profiles, not account-wide bedrock:* — that also covered custom
+      // models, provisioned throughput, agents, guardrails and prompts, none of which
+      // the runtime invokes. Mirrors terraform/main.tf.
       resources: [
         "arn:aws:bedrock:*::foundation-model/*",
-        `arn:aws:bedrock:${this.region}:${this.account}:*`,
+        `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/*`,
+        `arn:aws:bedrock:${this.region}:${this.account}:application-inference-profile/*`,
       ],
     });
     const observabilityPerms = (workloadSuffix: string): iam.PolicyStatement[] => [
@@ -864,6 +877,14 @@ export class OrchestratorStack extends cdk.Stack {
           "logs:DescribeLogGroups",
         ],
         resources: [`arn:aws:logs:${this.region}:${this.account}:log-group:/aws/bedrock-agentcore/runtimes/*`],
+      }),
+      new iam.PolicyStatement({
+        // AgentCore "unified" telemetry: AgentCore adds a CloudWatch Logs resource
+        // policy so X-Ray can deliver spans to the agent's own log group. Without
+        // this, unified spans never reach CloudWatch. Account-scoped API, so "*".
+        // Mirrors terraform/main.tf AgentCoreUnifiedSpanDelivery.
+        actions: ["logs:PutResourcePolicy"],
+        resources: ["*"],
       }),
       new iam.PolicyStatement({
         actions: ["xray:PutTraceSegments", "xray:PutTelemetryRecords", "xray:GetSamplingRules", "xray:GetSamplingTargets"],
@@ -1041,6 +1062,9 @@ export class OrchestratorStack extends cdk.Stack {
         TELEMETRY_TABLE: telemetryTable.tableName,
         RUNTIME_ARN: orchestratorArn,
         WORKFLOW_JSON: workflowJson,
+        // The assistant's tool-use loop runs in this Lambda, so it needs the
+        // deployment's model rather than its own copy of the id.
+        MODEL_ID: props.modelId,
       },
     });
     statusTable.grantReadWriteData(bff);
@@ -1056,6 +1080,22 @@ export class OrchestratorStack extends cdk.Stack {
     // circular dependency with its own execution role.
     bff.addToRolePolicy(
       new iam.PolicyStatement({ actions: ["lambda:InvokeFunction"], resources: [bffArn] })
+    );
+    // The in-app assistant's tool-use loop runs IN the BFF (bff/chatbot.py calls
+    // bedrock-runtime Converse), so the BFF needs its own model grant. Without it
+    // the chat UI deploys, accepts a message, and every reply is
+    // "couldn't reach the model (AccessDeniedException)" — which is exactly what a
+    // CDK deployment did, because only the runtime roles carried `bedrockInvoke`.
+    // Mirrors terraform/bff.tf. Scoped to the inference profile + foundation
+    // models, not the account-wide bedrock:* the runtime roles use.
+    bff.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+        resources: [
+          "arn:aws:bedrock:*::foundation-model/*",
+          `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/*`,
+        ],
+      })
     );
 
     const api = new HttpApi(this, "HttpApi", { apiName: `AgentCoreBFF-${agentName}` });
@@ -1458,8 +1498,11 @@ export function buildBffWorkflow(workflow: any): any {
     .filter(([, a]) => a?.agentcore?.evaluations?.enabled === true)
     .map(([id]) => id);
 
-  // In-app assistant. Minimal: enabled + model + only the DISABLED tool flags
-  // (the backend defaults any tool it isn't told about to ON).
+  // In-app assistant. Lean: enabled + model + greeting/placeholder + only the
+  // DISABLED tool flags (the backend defaults any tool it isn't told about to ON).
+  // greeting/placeholder ARE shipped — they were not, which made those two
+  // workflow.json keys decorative: a customer edited them and the UI kept showing
+  // its own hardcoded strings. Mirrors terraform/bff.tf.
   const cb = workflow.orchestrator?.chatbot;
   const chatbot =
     cb?.enabled === undefined
@@ -1467,6 +1510,8 @@ export function buildBffWorkflow(workflow: any): any {
       : {
           enabled: cb.enabled,
           model: cb.model ?? null,
+          greeting: cb.greeting ?? null,
+          placeholder: cb.placeholder ?? null,
           tools: Object.fromEntries(
             Object.entries<any>(cb.tools ?? {}).filter(([, v]) => v === false)
           ),
@@ -1484,6 +1529,35 @@ export function buildBffWorkflow(workflow: any): any {
     : null;
 
   return { agents: agentsOut, steps: workflow.steps, evalAgents, chatbot, ui, authorization };
+}
+
+/**
+ * The `tools` block projected down to what the APP needs: how to call each tool.
+ *
+ * Deploy-time detail (endpoint, policy, schema, credentials) is deliberately left
+ * out — the IaC consumes that, and the app must never send it in a request. Mirrors
+ * `tools_env` in terraform/tools.tf; `cdk/test/parity.test.ts` asserts the key sets
+ * agree, because a field present on one path and absent on the other is a config
+ * key that silently does nothing on half your deployments.
+ */
+export function toolsEnv(tools: Record<string, ToolSpec>): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const [name, t] of Object.entries(tools)) {
+    const spec: Record<string, any> = { type: t.type };
+    if (t.type === "kb") spec.corpora = t.corpora ?? [];
+    if (t.type === "websearch") {
+      spec.maxResults = t.maxResults ?? 10;
+      if (t.includeDomains?.length) spec.includeDomains = t.includeDomains;
+      if (t.excludeDomains?.length) spec.excludeDomains = t.excludeDomains;
+      if (t.publishedFrom) spec.publishedFrom = t.publishedFrom;
+      if (t.publishedTo) spec.publishedTo = t.publishedTo;
+    }
+    if (t.call) spec.call = t.call;
+    if (t.arg) spec.arg = t.arg;
+    if (t.args && Object.keys(t.args).length) spec.args = t.args;
+    out[name] = spec;
+  }
+  return out;
 }
 
 /**

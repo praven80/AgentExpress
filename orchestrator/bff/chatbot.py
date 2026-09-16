@@ -31,7 +31,11 @@ WORKFLOW = json.loads(os.environ.get("WORKFLOW_JSON", "{}"))
 CHATBOT = WORKFLOW.get("chatbot") or {}
 AGENTS = WORKFLOW.get("agents") or {}
 TOOLS_CFG = CHATBOT.get("tools") or {}
-DEFAULT_MODEL = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+UI = WORKFLOW.get("ui") or {}
+# Falls back to the deployment's own model (injected by both IaC paths) rather than a
+# third copy of the model literal, which is how this drifted from var.model_id / the
+# CDK context default.
+DEFAULT_MODEL = os.environ.get("MODEL_ID") or "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 MAX_TURNS = 6
 
 _ddb = boto3.resource("dynamodb", region_name=REGION)
@@ -350,8 +354,12 @@ def _system_prompt(ctx_session: str, enabled: dict,
                         f"(topic: {it.get('topic', '?')}, status: {it.get('overall', '?')}). "
                         f"Use it when the user says 'this/the run' and gives no other id.")
     return (
-        "You are the in-app assistant for a Multi-Agent Orchestrator built on Amazon Bedrock "
-        "AgentCore. You help users understand and operate their workflow runs.\n\n"
+        # The product name comes from workflow.json `ui.title` — the same key the page
+        # title and header use. Hardcoding it told a customer's users they were talking
+        # to something the deployment isn't called.
+        f"You are the in-app assistant for {UI.get('title') or 'this multi-agent workflow'}, "
+        "built on Amazon Bedrock AgentCore. You help users understand and operate their "
+        "workflow runs.\n\n"
         "You can ONLY use the provided tools to answer; never invent numbers, statuses, or outputs. "
         f"Available tools: {caps}.\n\n"
         # The ids AND the display names both come from workflow.json, so the mapping

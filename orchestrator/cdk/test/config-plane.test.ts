@@ -478,8 +478,24 @@ describe("buildBffWorkflow", () => {
     expect(buildBffWorkflow(w).chatbot).toEqual({
       enabled: true,
       model: "m",
+      greeting: null,
+      placeholder: null,
       tools: { costs: false },
     });
+  });
+
+  it("ships the assistant's greeting and placeholder", () => {
+    // These were NOT shipped, which made two workflow.json keys decorative: a
+    // customer reworded the assistant and the UI kept showing its own hardcoded
+    // copy. The UI still has a short generic fallback for when they are omitted.
+    const w = wf([{ agent: "a" }], {
+      orchestrator: {
+        chatbot: { enabled: true, greeting: "Hello there", placeholder: "Ask me…" },
+      },
+    });
+    const cb = buildBffWorkflow(w).chatbot!;
+    expect(cb.greeting).toBe("Hello there");
+    expect(cb.placeholder).toBe("Ask me…");
   });
 
   it("emits a null chatbot when the block is absent", () => {

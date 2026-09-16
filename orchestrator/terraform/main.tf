@@ -94,7 +94,8 @@ resource "null_resource" "build_push" {
     EOT
   }
 
-  depends_on = [aws_ecr_repository.orchestrator]
+  # No depends_on needed: triggers.image_uri -> local.image_uri -> the repository's
+  # own repository_url, which is an implicit dependency.
 }
 
 # --- IAM execution role ----------------------------------------------------
@@ -218,18 +219,29 @@ resource "aws_iam_role_policy" "runtime" {
         Sid    = "BedrockModelInvocation"
         Effect = "Allow"
         Action = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream", "bedrock:CountTokens"]
+        # Inference profiles, not account-wide bedrock:* — that also covered custom
+        # models, provisioned throughput, agents, guardrails and prompts, none of which
+        # the runtime invokes. bff.tf already used this narrower form.
         Resource = [
           "arn:aws:bedrock:*::foundation-model/*",
-          "arn:aws:bedrock:${var.region}:${local.account_id}:*"
+          "arn:aws:bedrock:${var.region}:${local.account_id}:inference-profile/*",
+          "arn:aws:bedrock:${var.region}:${local.account_id}:application-inference-profile/*"
         ]
       },
       {
-        Sid    = "ProgressStoreWrite"
-        Effect = "Allow"
-        # Scan (status only): Insights flags whether each analyzed session still
-        # exists in the status table, so the UI can disable dead links.
-        Action   = ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:GetItem", "dynamodb:Scan"]
+        Sid      = "ProgressStoreWrite"
+        Effect   = "Allow"
+        Action   = ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:GetItem"]
         Resource = [aws_dynamodb_table.status.arn, aws_dynamodb_table.events.arn]
+      },
+      {
+        # Scan is needed on the STATUS table only: Insights flags whether each
+        # analyzed session still exists, so the UI can disable dead links. The
+        # comment used to say "status only" while the grant covered both tables.
+        Sid      = "ProgressStoreScanStatus"
+        Effect   = "Allow"
+        Action   = ["dynamodb:Scan"]
+        Resource = [aws_dynamodb_table.status.arn]
       },
       {
         # Invoke the dedicated per-agent runtimes (runtime: "dedicated").

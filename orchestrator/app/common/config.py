@@ -148,8 +148,12 @@ def _load_tools() -> dict:
             pass
     # Local dev / BFF: fall back to the `tools` block of the workflow already
     # loaded above, keeping only the call-shape fields the app needs.
+    # Must match the projection both IaC paths build (terraform/tools.tf
+    # `tools_env`, cdk/lib/orchestrator-stack.ts `toolsEnv`). A field missing here
+    # is silently dropped on the fallback path, which is how `publishedFrom` /
+    # `publishedTo` came to work under one deployment and not the other.
     keep = ("type", "corpora", "maxResults", "includeDomains", "excludeDomains",
-            "call", "arg", "args")
+            "publishedFrom", "publishedTo", "call", "arg", "args")
     return {
         name: {k: v for k, v in (spec or {}).items() if k in keep}
         for name, spec in (WORKFLOW.get("tools") or {}).items()
