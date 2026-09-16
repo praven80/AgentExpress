@@ -65,6 +65,49 @@ def normalize_session_id(session_id: str) -> str:
     return session_id.ljust(_RUNTIME_SESSION_LEN, "0")[:_RUNTIME_SESSION_LEN]
 
 
+# Setting baggage does NOT by itself put anything on a span: something has to copy
+# baggage entries onto spans as they start. That something is BaggageSpanProcessor
+# (the pattern the AgentCore samples use in 01-features/06-observe.../01-observe/
+# baggage_context.py). Without it only the spans where we set session.id BY HAND
+# carried it — the agent spans — while the MCP tool spans and ADOT's automatic
+# Bedrock model spans did not, so a run's own model calls sat outside its session
+# in the CloudWatch Sessions View.
+#
+# No new dependency: opentelemetry-processor-baggage==0.65b0 is already pinned by
+# aws-opentelemetry-distro==0.19.0 (installed in the Dockerfile).
+#
+# We pass a predicate rather than ALLOW_ALL_BAGGAGE_KEYS deliberately. Baggage
+# travels in outgoing HTTP headers, so treating it as an open channel onto spans
+# means anything a future caller puts in baggage lands in telemetry. Only
+# `session.id` is copied.
+_BAGGAGE_SPAN_KEYS = ("session.id",)
+_baggage_processor_ready = False
+
+
+def _ensure_baggage_processor() -> None:
+    """Register BaggageSpanProcessor once, lazily.
+
+    Lazily for the same reason _get_tracer() is lazy: the real TracerProvider is
+    installed by `opentelemetry-instrument` at startup, and a provider fetched too
+    early can be the API's no-op proxy, which has no add_span_processor. Leaving
+    the flag False on failure means a later call simply tries again.
+    """
+    global _baggage_processor_ready
+    if _baggage_processor_ready:
+        return
+    try:
+        from opentelemetry.processor.baggage import BaggageSpanProcessor
+
+        tp = trace.get_tracer_provider()
+        if not hasattr(tp, "add_span_processor"):
+            return  # proxy/no-op provider — ADOT has not initialised yet
+        tp.add_span_processor(
+            BaggageSpanProcessor(lambda key: key in _BAGGAGE_SPAN_KEYS))
+        _baggage_processor_ready = True
+    except Exception:  # noqa: BLE001 - observability must never break a run
+        _baggage_processor_ready = True  # do not retry a hard failure every span
+
+
 def set_session(session_id: str):
     """Attach `session.id` to OTEL baggage so all spans emitted while it is
     active are grouped under this session in CloudWatch. The id is normalized to
@@ -73,6 +116,8 @@ def set_session(session_id: str):
     when the run/burst ends (or None if OTEL is absent)."""
     if not _OTEL or not session_id:
         return None
+    # Register the processor that copies this baggage onto spans (once per process).
+    _ensure_baggage_processor()
     try:
         ctx = baggage.set_baggage("session.id", normalize_session_id(session_id))
         return context.attach(ctx)
