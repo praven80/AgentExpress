@@ -180,3 +180,13 @@ class AssetEnvelope(Base):
     source_asset_ids: list[str] = Field(default_factory=list, alias="sourceAssetIds")
     artifacts: list[Artifact] = Field(default_factory=list)
     sources: list[Source] = Field(default_factory=list)
+
+    # Output rules this asset still breaks after the one repair attempt
+    # (app/common/rules.py + app/common/structured.py). Empty on the happy path.
+    #
+    # It lives on the ENVELOPE so it is uniform: every asset can say what is wrong
+    # with it, in one place a reviewer and the UI can both find, instead of each
+    # contract improvising a home for it. Provenance, like `sources` — the
+    # difference between a deliverable that is wrong and one that is wrong and
+    # says so is the whole value of a review step.
+    rule_violations: list[str] = Field(default_factory=list, alias="ruleViolations")

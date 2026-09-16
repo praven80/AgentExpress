@@ -233,7 +233,14 @@ def _extract_chunks(result) -> str:
     if results is None:
         # Unrecognised shape. Keep it readable and keep it whole (up to the cap)
         # instead of silently cutting it to a couple of thousand characters.
-        text = data if isinstance(data, str) else json.dumps(data, indent=2, default=str)
+        #
+        # ensure_ascii=False because this string BECOMES the evidence a research
+        # agent is shown, and the grounding rules test the agent's output against
+        # it (app/common/rules.py). Escaping non-ASCII put "\u2013" in the evidence
+        # where the source had an en dash, so an agent quoting "2–4 weeks" straight
+        # off the page was told the figure was unsupported.
+        text = (data if isinstance(data, str)
+                else json.dumps(data, indent=2, default=str, ensure_ascii=False))
         return _clip(text, MAX_EVIDENCE_CHARS)
 
     blocks: list[str] = []

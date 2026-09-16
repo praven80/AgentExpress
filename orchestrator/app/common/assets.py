@@ -27,6 +27,18 @@ from app.common.contracts.base import SOURCE_TYPES, Source
 # text back instead of a real value.
 KNOWN_SOURCE_TYPES = frozenset(SOURCE_TYPES)
 
+# The schema shows `"sourceType": "the kind of source"`, so a model that returns
+# that instruction verbatim has supplied no provenance at all and we fall back to
+# "other". Matched EXACTLY (case-insensitively) on purpose. The previous test was
+# "contains a space", which rewrote every legitimate multi-word kind — observed
+# live flattening "AWS documentation", "AWS web content", "AWS article",
+# "enterprise guide" and "resource guide" to "other" in a single run — the exact
+# coercion that keeping `Source.source_type` a plain str is meant to prevent.
+PLACEHOLDER_SOURCE_TYPES = frozenset({
+    "the kind of source", "kind of source", "the type of source", "type of source",
+    "source type", "sourcetype", "string", "...",
+})
+
 
 def slug(text: str, limit: int = 48) -> str:
     """Lowercase, hyphenated, length-capped — safe inside an assetId."""
@@ -188,10 +200,10 @@ def build_sources(payload: dict, *, verify_urls_against: str = "") -> list[Sourc
     for i, s in enumerate(payload.get("sources", []) or []):
         if not isinstance(s, dict):
             continue
-        st = str(s.get("sourceType") or "other").strip().lower()
-        # The schema shows the placeholder "the kind of source"; a model that
-        # echoes it back has told us nothing.
-        if " " in st and st not in KNOWN_SOURCE_TYPES:
+        # Casing is the customer's, not ours: lower-casing turned "AWS Bedrock KB"
+        # into "aws bedrock kb" on the way to the reader.
+        st = str(s.get("sourceType") or "other").strip()
+        if not st or st.lower() in PLACEHOLDER_SOURCE_TYPES:
             st = "other"
         url = str(s.get("url") or "").strip() or None
         if url and verify_urls_against and url not in verify_urls_against:
@@ -209,3 +221,32 @@ def build_sources(payload: dict, *, verify_urls_against: str = "") -> list[Sourc
 def str_list(payload: dict, key: str) -> list[str]:
     """A list-of-strings field, with blanks dropped."""
     return [str(x) for x in (payload.get(key) or []) if str(x).strip()]
+
+
+# Envelope fields that are ABOUT the asset rather than part of it, and that a
+# downstream agent must not read as evidence.
+#
+# `ruleViolations` is the one that matters. It records which output rules an
+# upstream asset still breaks (app/common/rules.py), for a human reviewer. Left in
+# the prompt it became part of the next agent's evidence: the analysis agent was
+# shown 'findings[2] restates the request brief rather than reporting evidence…'
+# as though it were a research finding. That is critique of a sibling agent, not
+# information about the subject, and it wastes context on every downstream call.
+_NOT_EVIDENCE = ("ruleViolations",)
+
+
+def for_prompt(parsed: dict) -> str:
+    """An upstream asset rendered for a downstream prompt, minus the fields that
+    are commentary on the asset rather than content of it. Returns "" if there is
+    nothing to render, so the caller can fall back to the raw string.
+    """
+    if not parsed:
+        return ""
+    # ensure_ascii=False so the model is shown the characters the upstream agent
+    # actually wrote. The default escapes them, and that silently broke figure
+    # grounding: an upstream asset saying "2\u20134 weeks" arrived as the literal
+    # six characters \u2013, so no downstream agent could ever quote a range with
+    # an en dash and have it recognised as supported. It also spent tokens on
+    # escape sequences for every dash, quote and accent in the inputs.
+    return json.dumps({k: v for k, v in parsed.items() if k not in _NOT_EVIDENCE},
+                      indent=2, default=str, ensure_ascii=False)

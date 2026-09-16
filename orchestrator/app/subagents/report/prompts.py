@@ -25,7 +25,13 @@ SYSTEM_PROMPT = (
     f"Produce these sections in order: {_SECTION_LIST}. Each section draws on the "
     "relevant upstream asset(s); pin the assetIds it uses. Write for a reader who "
     "has not seen the intermediate assets.\n\n"
-    "Never invent a figure you were not given. Return ONLY valid JSON."
+    "Never invent a figure you were not given.\n"
+    "DO NOT SCHEDULE, PHASE OR NUMBER THE WORK. A report is the last thing an "
+    "approver reads, so a sequence you introduce here is read as a plan somebody "
+    "agreed to. Carry the labels the upstream assets use, or order the work by "
+    "dependency and say so in prose — what must be answered first, what follows "
+    "from it — and state plainly that no timeline was supplied.\n"
+    "Return ONLY valid JSON."
 )
 
 SCHEMA = (

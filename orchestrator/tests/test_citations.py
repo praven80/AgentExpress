@@ -95,6 +95,36 @@ def test_a_source_type_that_is_just_the_schema_placeholder_becomes_other(build_s
     assert out[0].source_type == "other"
 
 
+def test_a_multi_word_source_type_survives(build_sources):
+    """The regression this exists for. The placeholder guard used to be
+    `" " in value`, so EVERY legitimate multi-word kind was rewritten to "other".
+    Observed live in one run: documentation_search returned "AWS documentation",
+    "AWS web content" and "AWS article", web_search returned "enterprise guide"
+    and "resource guide", and all five reached the downstream agent as "other" —
+    the exact coercion that opening sourceType to a plain str was meant to stop."""
+    for kind in ("AWS documentation", "AWS web content", "AWS article",
+                 "enterprise guide", "resource guide", "internal claim file"):
+        out = build_sources({"sources": [{"sourceType": kind, "sourceName": "n"}]})
+        assert out[0].source_type == kind, kind
+
+
+def test_the_placeholder_is_matched_exactly_not_by_shape(build_sources):
+    """Only the schema's own placeholder wording coerces — not anything that
+    merely looks like prose."""
+    for placeholder in ("the kind of source", "The Kind Of Source", "source type",
+                        "type of source", "...", "", "   "):
+        out = build_sources({"sources": [{"sourceType": placeholder, "sourceName": "n"}]})
+        assert out[0].source_type == "other", repr(placeholder)
+
+
+def test_source_type_casing_is_preserved(build_sources):
+    """Lower-casing lost the customer's own capitalisation ("AWS" -> "aws") on the
+    way to the reader."""
+    out = build_sources({"sources": [
+        {"sourceType": "AWS Bedrock KB", "sourceName": "n"}]})
+    assert out[0].source_type == "AWS Bedrock KB"
+
+
 def test_sources_get_stable_ids_and_skip_junk_entries(build_sources):
     out = build_sources({"sources": [
         {"sourceType": "knowledge-base", "sourceName": "a"},

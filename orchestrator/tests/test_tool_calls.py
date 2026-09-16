@@ -242,6 +242,19 @@ def test_evidence_is_no_longer_capped_at_2000_characters(client):
     assert len(out) > 2000
 
 
+def test_an_unrecognised_shape_keeps_the_characters_the_source_wrote(client):
+    """The evidence string IS the grounding baseline for that agent's output
+    (app/common/rules.py checks figures against it). Serialising it with
+    ensure_ascii defaults meant a source that wrote "2–4 weeks" reached the model
+    as "2\\u20134 weeks", so an agent quoting the page verbatim was told its figure
+    was unsupported. Any escaping here is invisible until it silently invalidates
+    a rule."""
+    out = client._extract_chunks(mcp({"unexpected": {
+        "note": "rollout takes 2\u20134 weeks \u2014 per the vendor\u2019s guide"}}))
+    assert "2\u20134 weeks" in out
+    assert "\\u2013" not in out
+
+
 def test_the_evidence_budget_is_enforced_and_labelled(client):
     """A cap is fine; a SILENT cap is not. The agents could see their evidence
     ended mid-word but could not tell whether the source was incomplete or the

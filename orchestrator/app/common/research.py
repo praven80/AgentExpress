@@ -19,13 +19,23 @@ from __future__ import annotations
 import json
 import re
 
-from app.common import assets, clock
+from app.common import assets, clock, rules, structured
 from app.common.config import TOOLS
 from app.common.contracts import EvidenceClass, Finding, ResearchOutput
 from app.common.contracts.base import AssetStatus
 from app.common.errors import ModelOutputUnusable
 
 _EVIDENCE = set(EvidenceClass.__args__)
+
+# The brief's own lists, so a stated count can be checked against them. A research
+# agent that writes "seven open questions" has no copy of them in its own payload;
+# the count is only resolvable against the brief it was given.
+_BRIEF_COUNT_KEYS = ("openQuestions", "keyQuestions", "constraints", "assumptions")
+
+
+def _brief_counts(brief: dict) -> dict[str, int]:
+    return {k: len(brief[k]) for k in _BRIEF_COUNT_KEYS
+            if isinstance(brief.get(k), list)}
 
 # How each tool type is labelled in the evidence block handed to the model, so the
 # model can attribute a finding to the right kind of source.
@@ -75,9 +85,11 @@ RESEARCH_INSTRUCTIONS = (
     "EVIDENCE block above. If a value is not present in these inputs, do not "
     "assert it; use 'assumption' or 'agent-interpretation', or omit it. Every "
     "finding's sourceRef must name an input actually shown above.\n"
-    "3. Do NOT echo the request back as findings. A finding must be YOUR domain "
-    "analysis for this request, or a fact drawn from a retrieved EVIDENCE block "
-    "above. Prefer 3-8 meaningful findings over a long list.\n"
+    "3. Do NOT echo the request back as findings — a finding about the brief "
+    "tells a downstream reader who already has the brief nothing. A finding must "
+    "be YOUR domain analysis for this request, or a fact drawn from a retrieved "
+    "EVIDENCE block above. A genuine gap in the brief belongs in "
+    "dataLimitations. Prefer 3-8 meaningful findings over a long list.\n"
     "3a. CITATIONS. Each evidence item is numbered and may carry 'title:', "
     "'url:' and 'published:'. When a finding comes from one, its sourceRef MUST "
     "be that item's url when it has one (copy it character for character), or "
@@ -85,9 +97,21 @@ RESEARCH_INSTRUCTIONS = (
     "not even a plausible-looking one. Reproduce every url you were given in "
     "`sources` so it can be displayed to the reader; omit `url` for an item "
     "that had none.\n"
+    "3b. Cite the item that ACTUALLY CONTAINS the claim. Before writing a "
+    "sourceRef, find the sentence you are relying on and use the url of the item "
+    "it sits in — not a related item, and not whichever item is most prominent. "
+    "An agent attributed 'Strands, CrewAI and LangGraph' to the Bedrock Agents "
+    "page when those names appeared only in a different retrieved article: the "
+    "claim was true, the citation sent the reader to the wrong document, and a "
+    "reviewer checking it finds nothing. If one finding rests on two items, name "
+    "both. If you cannot point to the item that carries it, it is not a "
+    "sourced-fact.\n"
     "4. dataLimitations: list ONLY genuinely missing evidence relevant to your "
     "job (e.g. the tool returned no relevant documents for this query). Return "
-    "[] if you had what you needed.\n"
+    "[] if you had what you needed. Do not name something as missing that the "
+    "evidence above actually shows.\n"
+    "5. Counts must match the lists they count. No figure and no numbered "
+    "sequence that the inputs above do not contain.\n"
 )
 
 
@@ -146,7 +170,9 @@ async def synthesize(ctx, *, system_prompt: str,
     contract — this runner is a convenience, not a requirement.
     """
     brief = assets.brief(ctx)
-    brief_text = json.dumps(brief, default=str) if brief else ctx.topic
+    # for_prompt drops the envelope fields that are commentary on the asset rather
+    # than content of it — see assets._NOT_EVIDENCE.
+    brief_text = assets.for_prompt(brief) if brief else ctx.topic
     query = assets.brief_query(brief, brief_text)
 
     evidence_parts: list[str] = []
@@ -189,8 +215,16 @@ async def synthesize(ctx, *, system_prompt: str,
     # structured JSON — summary + several classified findings + sources +
     # limitations — so too small a budget truncates it mid-JSON and it fails to
     # parse. Raise that agent's maxTokens rather than editing this line.
-    text = await ctx.llm(system_prompt, user)
-    payload = assets.extract_json(text) or {}
+    #
+    # `upstream` is the brief plus the evidence — exactly what the model was
+    # shown — because the grounding rules (a figure, an ordinal series) test the
+    # output against it. Passing anything else would make those rules lie.
+    payload, unrepaired = await structured.ask_json(
+        ctx, system_prompt, user,
+        rule_set=rules.RESEARCH,
+        upstream=f"{brief_text}\n{evidence}",
+        extra_counts=_brief_counts(brief),
+    )
 
     findings = _findings(payload, evidence)
     # `evidence` is passed so a citation URL can be verified against what the model
@@ -202,9 +236,9 @@ async def synthesize(ctx, *, system_prompt: str,
         # The model answered but produced nothing usable. Fail rather than emit an
         # empty asset that looks like a completed research step.
         raise ModelOutputUnusable(
-            f"{ctx.agent_id}: the model returned no parseable research JSON "
-            f"({len(text or '')} chars). Raising rather than emitting an empty asset, "
-            f"which downstream agents would treat as real findings.")
+            f"{ctx.agent_id}: the model returned no parseable research JSON. "
+            f"Raising rather than emitting an empty asset, which downstream agents "
+            f"would treat as real findings.")
 
     title = assets.brief_title(brief, ctx)
     version = assets.prior_version(ctx)
@@ -220,5 +254,6 @@ async def synthesize(ctx, *, system_prompt: str,
         findings=findings,
         dataLimitations=data_limits,
         sources=sources,
+        ruleViolations=unrepaired,
     )
     return json.dumps(asset.model_dump(by_alias=True, mode="json"), indent=2)

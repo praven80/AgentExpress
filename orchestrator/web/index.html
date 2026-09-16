@@ -740,7 +740,7 @@ function renderVal(d, depth = 0) {
 // output isn't a JSON object.
 const ASSET_ENVELOPE = new Set(["assetId","assetType","version","status",
   "createdAt","createdByAgent","executiveSummary","summary","findings","dataLimitations",
-  "sources","sourceAssetIds","artifacts"]);
+  "sources","sourceAssetIds","artifacts","ruleViolations"]);
 
 /* Only ever emit http(s) links. A citation url arrives from a model, so treating
    it as trusted markup would be an injection vector (javascript:, data:, …). */
@@ -780,6 +780,15 @@ function renderAsset(d){
   if (d.version) meta.push("v" + d.version);
   if (d.status) meta.push(String(d.status));
   if (meta.length) P.push(`<div class="asset-meta">${esc(meta.join("  ·  "))}</div>`);
+  // Output rules this asset still breaks (app/common/rules.py). Deliberately
+  // ABOVE the content and not collapsed: it is the reviewer's reason to look
+  // twice, so it has to arrive before the prose it is a warning about — unlike
+  // data limitations, which are context for content already read.
+  if (Array.isArray(d.ruleViolations) && d.ruleViolations.length){
+    P.push(`<div class="asset-sec warn"><h5>Output rules not met (${
+      d.ruleViolations.length})</h5><ul class="blist">${
+      d.ruleViolations.map(x => `<li>${esc(x)}</li>`).join("")}</ul></div>`);
+  }
   const summary = d.executiveSummary || d.summary;
   if (summary) P.push(`<div class="asset-summary">${mdInline(summary)}</div>`);
   if (Array.isArray(d.findings) && d.findings.length){

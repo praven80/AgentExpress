@@ -14,11 +14,11 @@ from __future__ import annotations
 
 import json
 
-from app.common import clock, synthesis
+from app.common import clock, rules, structured, synthesis
 from app.common.base import Agent
+from app.common.context import AgentContext
 from app.common.contracts import RequestBrief
 from app.common.contracts.base import AssetStatus
-from app.common.context import AgentContext
 
 from .prompts import SCHEMA, SYSTEM_PROMPT
 
@@ -32,8 +32,15 @@ class IntakeAgent(Agent):
             user += f"\n=== REVIEWER GUIDANCE ===\n{ctx.feedback}\n"
         user += f"\nReturn ONLY JSON matching this schema:\n{SCHEMA}"
 
-        text = await ctx.llm(SYSTEM_PROMPT, user)
-        payload = synthesis.extract_json(text) or {}
+        # Same checked path as every other agent (app/common/structured.py). The
+        # brief has no upstream assets, so the raw request IS its grounding: a
+        # figure or a numbered plan in the brief that the user never mentioned is
+        # invented, and this is the earliest point it can be caught — everything
+        # downstream treats the brief as authoritative.
+        payload, unrepaired = await structured.ask_json(
+            ctx, SYSTEM_PROMPT, user,
+            rule_set=rules.BRIEF, upstream=ctx.topic,
+        )
         version = synthesis.prior_version(ctx)
 
         title = str(payload.get("title") or ctx.topic or "Untitled request").strip()
@@ -58,6 +65,7 @@ class IntakeAgent(Agent):
             constraints=synthesis.str_list(payload, "constraints"),
             assumptions=synthesis.str_list(payload, "assumptions"),
             openQuestions=synthesis.str_list(payload, "openQuestions"),
+            ruleViolations=unrepaired,
         )
         return json.dumps(asset.model_dump(by_alias=True, mode="json"), indent=2)
 

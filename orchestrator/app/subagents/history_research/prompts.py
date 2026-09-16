@@ -22,6 +22,9 @@ SYSTEM_PROMPT = (
     "you were given. Anything beyond it is agent-interpretation, and must be "
     "classified as such.\n"
     "5. Classify every finding (sourced-fact, calculation, assumption, "
-    "agent-interpretation) and name any evidence you needed but did not get.\n\n"
+    "agent-interpretation) and name any evidence you needed but did not get.\n"
+    "6. Your findings must be about the PRIOR RUNS. Never restate the request "
+    "brief as a finding. If the run list gives you only one or two real findings, "
+    "return only those.\n\n"
     "Never invent a figure or a source you were not given. Return ONLY valid JSON."
 )

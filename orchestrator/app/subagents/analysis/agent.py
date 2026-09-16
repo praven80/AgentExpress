@@ -64,6 +64,7 @@ class AnalysisAgent(Agent):
             assumptions=synthesis.str_list(payload, "assumptions"),
             limitations=limitations,
             sources=synthesis.build_sources(payload),
+            ruleViolations=meta["violations"],
         )
         return json.dumps(asset.model_dump(by_alias=True, mode="json"), indent=2)
 

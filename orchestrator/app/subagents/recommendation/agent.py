@@ -62,6 +62,7 @@ class RecommendationAgent(Agent):
             risks=risks,
             assumptions=synthesis.str_list(payload, "assumptions"),
             sources=synthesis.build_sources(payload),
+            ruleViolations=meta["violations"],
         )
         return json.dumps(asset.model_dump(by_alias=True, mode="json"), indent=2)
 

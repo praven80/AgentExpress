@@ -1,0 +1,377 @@
+{
+ "_comment": [
+  "COMPLETE assets from the live run of 2026-09-16 18:22 (session f0eac651c263), the",
+  "first run executed with app/common/rules.py enforcing output rules, plus the",
+  "report from the run before the rules existed (_known_bad_report_17_51).",
+  "",
+  "`payload` is the model's parsed output, verbatim -- the same object rules.check",
+  "receives in production. Every field of every asset is here, including the parts",
+  "that are correct, because a corpus of known defects can only confirm the model",
+  "that wrote it: the false positive that actually shipped (the brief's own",
+  "`assumptions` flagged when a downstream agent carried them forward) was invisible",
+  "to a suite whose negative cases were false positives I could imagine.",
+  "",
+  "THERE IS NO HAND-TYPED `upstream` FIELD ANY MORE, and that is the point.",
+  "It used to be prose I abridged by hand, and the paraphrase hid a real defect:",
+  "assets.for_prompt serialises an upstream asset with json.dumps, which escaped",
+  "non-ASCII, so an en dash reached the model as the six characters \\u2013 and NO",
+  "figure written '2-4 weeks' with an en dash could ever be recognised as grounded.",
+  "My fixture had a literal en dash, so it tested the paraphrase and not the",
+  "pipeline. The test now assembles `upstream` through the SAME functions the",
+  "runners use:",
+  "  research agents  -> assets.for_prompt(intake payload) + `evidence`,",
+  "                      exactly research.synthesize",
+  "  synthesis agents -> synthesis.upstream_context over `upstreamFrom`,",
+  "                      exactly synthesis.synthesize",
+  "`evidence` is the tool output the agent was shown, abridged to the passages the",
+  "grounding rules test against (figures, ordinal labels) -- abridged but verbatim.",
+  "`upstreamFrom` is the real topology (config.upstream_of).",
+  "",
+  "_known_bad_report_17_51 keeps a literal `upstream`: it belongs to a DIFFERENT",
+  "run whose upstream assets are not in this corpus, and its job is only to prove",
+  "all five of its defects still fire."
+ ],
+ "intake": {
+  "profile": "BRIEF",
+  "topic": "Build a agentic ai application",
+  "payload": {
+   "title": "Agentic AI Application Development",
+   "executiveSummary": "The user requests the design and build of an agentic AI application, but the request lacks specificity around domain, use case, and technical requirements. Clarification is needed before proceeding.",
+   "objective": "Create a functional agentic AI application that can autonomously perform tasks, make decisions, and take actions with minimal human intervention.",
+   "keyQuestions": [
+    "What is the primary use case or domain for this agentic application?",
+    "What specific tasks should the agent autonomously perform?",
+    "What are the decision-making criteria and constraints for the agent?",
+    "What external systems or data sources must the agent interact with?",
+    "What is the desired level of human oversight or intervention?",
+    "What are the success metrics for the agent's performance?"
+   ],
+   "constraints": [],
+   "assumptions": [
+    "User wants a working application, not just theoretical design",
+    "User is familiar with basic AI/ML concepts",
+    "User has access to necessary APIs or data sources"
+   ],
+   "openQuestions": [
+    "What is the specific business problem or use case this agent will solve?",
+    "Do you have a preferred tech stack or LLM provider (OpenAI, Anthropic, open-source, etc.)?",
+    "What is your timeline and resource availability?",
+    "Should this be a proof-of-concept, MVP, or production-ready system?",
+    "What level of autonomy is acceptable—fully autonomous, human-in-the-loop, or human-supervised?",
+    "Are there existing systems or databases the agent must integrate with?"
+   ]
+  }
+ },
+ "history_research": {
+  "profile": "RESEARCH",
+  "evidence": "Run 50916b4519bc — topic: Build a agentic ai application — outcome: done — started: 2026-09-16 17:51:09\nRun 8a4bacc44a8b — outcome: done — started: 2026-09-16 16:49:29\nRun 327476def51b — outcome: done — started: 2026-09-16 15:32:11\nRun c7aa7cd84b08 — outcome: done — started: 2026-09-16 15:07:31\nRun 08edad49b3ac — outcome: done — started: 2026-09-16 14:44:05\nRun 50ce016e2622 — outcome: done — started: 2026-09-16 14:36:43\nRun 5ea421ce8290 — outcome: done — started: 2026-09-16 14:29:10",
+  "payload": {
+   "summary": "Seven prior runs on agentic AI application development completed successfully between 14:29 and 17:51 on 2026-09-16. All outcomes were 'done', indicating this system has delivered on similar requests.",
+   "findings": [
+    {
+     "statement": "Seven prior runs on the topic 'Build a agentic ai application' or 'How to build an Agentic AI application' all completed with outcome 'done' (run ids: 50916b4519bc, 8a4bacc44a8b, 327476def51b, c7aa7cd84b08, 08edad49b3ac, 50ce016e2622, 5ea421ce8290).",
+     "classification": "sourced-fact"
+    },
+    {
+     "statement": "No prior runs on agentic AI application development were denied, cancelled, or failed; all seven completed successfully.",
+     "classification": "sourced-fact"
+    },
+    {
+     "statement": "The request brief identifies six open questions spanning use case, task specification, decision-making criteria, external integrations, oversight level, and success metrics, but does not indicate whether prior completed runs addressed these same specification gaps.",
+     "classification": "agent-interpretation"
+    }
+   ],
+   "dataLimitations": [
+    "Prior run details (artifacts, outputs, parameters, or clarifications applied) are not available in the evidence block; only run id, topic, outcome, and start time are shown."
+   ]
+  }
+ },
+ "knowledge_research": {
+  "profile": "RESEARCH",
+  "evidence": "An agentic application adds three things: goal-directed control flow, tool use, state across steps. Core components: Model, Prompt, Tools, Memory, Orchestration, Guardrails, Authorization, Observability, Evaluation. Orchestration patterns: Sequential, Parallel (fan-out / fan-in), Router, Hierarchical (supervisor / subagent), Human-in-the-loop gate. Failure modes: fabricated facts or citations; silent truncation of evidence; prompt injection from retrieved content.",
+  "payload": {
+   "summary": "The request brief seeks design and build guidance for an agentic AI application but lacks domain and use-case specificity. The Knowledge Base contains architectural patterns and component guidance for agentic systems, but no evidence addressing technology stack selection, timeline estimation, resource planning, or domain-specific implementation.",
+   "findings": [
+    {
+     "statement": "Agentic applications require three core additions beyond standard LLM applications: goal-directed control flow (the system decides what to do next rather than following hardcoded paths), tool use (ability to query databases, call APIs, retrieve documents), and state across steps (context carried between actions).",
+     "classification": "sourced-fact"
+    },
+    {
+     "statement": "Nine core components structure agentic systems: Model (reasoning engine), Prompt/instructions (agent identity), Tools (data access and action), Memory (short and long-term state), Orchestration (agent topology and coordination), Guardrails (content safety), Authorization (tool and human permissions), Observability (traces, tokens, cost, latency), and Evaluation (output quality scoring).",
+     "classification": "sourced-fact"
+    },
+    {
+     "statement": "Five orchestration patterns are available: Sequential (each agent consumes the previous output), Parallel/fan-out/fan-in (independent agents run concurrently), Router (classifier picks which agent handles the request), Hierarchical/supervisor (coordinator delegates to specialists), and Human-in-the-loop gate (run pauses for approval before continuing).",
+     "classification": "sourced-fact"
+    },
+    {
+     "statement": "Fabricated facts and citations represent a documented failure mode in agentic systems; mitigation requires grounding every claim in retrieved evidence and verifying each citation against what the model was actually shown, with unverifiable claims dropped.",
+     "classification": "sourced-fact"
+    },
+    {
+     "statement": "The request brief assumes the user wants a working application rather than theoretical design and is familiar with basic AI/ML concepts, but the Knowledge Base provides no evidence about typical user skill levels.",
+     "classification": "agent-interpretation"
+    },
+    {
+     "statement": "The request identifies six key open questions (use case/domain, specific tasks, decision-making criteria, external systems, human oversight level, success metrics) but the Knowledge Base contains no guidance on how to elicit, prioritize, or validate answers to these questions during the discovery phase.",
+     "classification": "agent-interpretation"
+    }
+   ],
+   "dataLimitations": [
+    "Knowledge Base contains no evidence on technology stack selection criteria, LLM provider comparison, or framework recommendations (LangChain, CrewAI, LangGraph, etc.)",
+    "No evidence on timeline estimation methodologies or resource allocation for agentic AI projects",
+    "No evidence on domain-specific agentic patterns (e.g., customer service, data analysis, workflow automation)"
+   ]
+  }
+ },
+ "documentation_search": {
+  "profile": "RESEARCH",
+  "evidence": "Agentic AI refers to an autonomous AI system that can independently reason, plan, and execute complex, multi-step tasks. Single-agent: a single AI agent works alone. Multi-agent: multiple AI agents with specialized skills collaborate. Stage 1: More human oversight (Generative AI assistants). Stage 2: Generative AI agents. Stage 3: Agentic AI systems. Stage 4: Autonomous AI agents. Multi-agent orchestration frameworks such as: Strands, CrewAI, LangGraph, Custom orchestrations. Amazon Bedrock Agents Classic is no longer open to new customers.",
+  "payload": {
+   "summary": "The request brief seeks design and build guidance for an agentic AI application but lacks domain and use-case specificity. Retrieved documentation provides foundational definitions of agentic AI, architectural patterns, and maturity stages.",
+   "findings": [
+    {
+     "statement": "Agentic AI is defined as an autonomous system that independently reasons, plans, and executes multi-step tasks with minimal human supervision, distinguishing it from reactive generative AI assistants that require prompting and step-by-step guidance.",
+     "classification": "sourced-fact"
+    },
+    {
+     "statement": "Agentic AI systems evolve through four stages: Stage 1 (generative AI assistants with high human involvement), Stage 2 (generative AI agents with tool-use and guardrails), Stage 3 (agentic AI systems with proactive execution), and Stage 4 (autonomous multi-agent systems with minimal human intervention).",
+     "classification": "sourced-fact"
+    },
+    {
+     "statement": "Agentic systems can be deployed as single-agent (focused on one defined task) or multi-agent (specialized agents collaborating in vertical hierarchy or horizontal decentralized structures) configurations.",
+     "classification": "sourced-fact"
+    },
+    {
+     "statement": "Amazon Bedrock Agents (now in maintenance mode for new customers) provides a fully managed approach to building agents. Alternative frameworks for agentic pipelines include Strands, CrewAI, LangGraph, and custom orchestrations.",
+     "classification": "sourced-fact"
+    },
+    {
+     "statement": "Agentic workloads introduce operational complexity beyond traditional stateless applications due to persistent context, external tool dependencies, and dynamic execution paths.",
+     "classification": "sourced-fact"
+    },
+    {
+     "statement": "The request brief identifies six key questions (use case/domain, specific tasks, decision-making criteria, external system integration, human oversight level, success metrics) but the retrieved documentation does not address how to answer these questions for a specific business context.",
+     "classification": "agent-interpretation"
+    }
+   ],
+   "dataLimitations": [
+    "Retrieved documentation does not address specific technology stack recommendations (LLM providers, frameworks beyond AWS/Bedrock ecosystem, or language/platform choices).",
+    "No evidence provided on timeline estimation, resource requirements, or cost models for agentic AI development."
+   ]
+  }
+ },
+ "web_search": {
+  "profile": "RESEARCH",
+  "evidence": "published: 01:23PM, Saturday, August 30 2025, PDT. published: 04:00PM, Thursday, February 20 2025, PST. published: 05:00PM, Monday, May 11 2026, PDT. Building an agentic system from scratch follows seven steps: 1. Choose your LLM and configure it for tool calling. The ReAct pattern (Reasoning + Acting) is the most production-proven approach. LangGraph reached v0.4 in early 2026 with improved state persistence and human-in-the-loop support. CrewAI: Organize a supervised crew of roles (planner, researcher, analyst, reviewer). Claude, GPT-4, Gemini, and open-weight models like Llama all support tool calling. According to McKinsey research, agentic workflows now handle approximately 85% of routine tasks autonomously. Design for layered controls at input -> plan -> tool -> output. Step 1: Define the Agent's Goal and Constraints. Constraints include a maximum of 8 iterations. Step 2: Register Tools the Agent Can Use. LLaMA 3.3 or Mixtral 8x22.",
+  "payload": {
+   "summary": "The request brief seeks design and build guidance for an agentic AI application but lacks domain and use-case specificity. Web evidence provides current architectural patterns, component frameworks, and implementation approaches (2025–2026) that address the brief's scope of architecture, agent capabilities, tool integration, and deployment.",
+   "findings": [
+    {
+     "statement": "Agentic AI systems are defined as software architectures where one or more AI agents autonomously plan actions, use tools, maintain memory across sessions, and collaborate to complete complex goals—going beyond simple LLM wrapping to require a runtime environment, persistent state, and coordination logic.",
+     "classification": "sourced-fact"
+    },
+    {
+     "statement": "Core architectural components of agentic systems include a reasoning engine (LLM), planning module (ReAct or tree-of-thought patterns), tool use (APIs, database queries, code execution), reflection (evaluation of intermediate results), memory (persistence across steps and sessions), and orchestration (control flow sequencing).",
+     "classification": "sourced-fact"
+    },
+    {
+     "statement": "LangGraph is recommended for systems requiring explicit control, approval gates, branching logic, or deterministic state machines, with built-in checkpointing enabling pause, inspection, and resumption of workflows; it reached v0.4 in early 2026 with improved state persistence and human-in-the-loop support.",
+     "classification": "sourced-fact"
+    },
+    {
+     "statement": "Guardrails in agentic systems must enforce policy, compliance, and runtime controls at input, plan, tool, and output layers, with clear escalation, observability, and auditability.",
+     "classification": "sourced-fact"
+    },
+    {
+     "statement": "LLM model choice for agentic workloads should prioritize strong instruction following, reliable tool calling, and sufficient context window; Claude, GPT-4, Gemini, and open-weight models like Llama all support tool calling.",
+     "classification": "sourced-fact"
+    },
+    {
+     "statement": "McKinsey research indicates agentic workflows now handle approximately 85% of routine tasks autonomously, with human intervention reserved for exceptions and edge cases.",
+     "classification": "sourced-fact"
+    }
+   ],
+   "dataLimitations": [
+    "Web search returned no evidence on specific industry verticals, regulatory compliance frameworks, or domain-specific agentic implementations.",
+    "No evidence provided on cost-benefit analysis, ROI metrics, or organizational readiness assessments for agentic AI adoption."
+   ]
+  }
+ },
+ "analysis": {
+  "profile": "SYNTHESIS",
+  "upstreamFrom": [
+   "history_research",
+   "documentation_search",
+   "web_search",
+   "knowledge_research",
+   "intake"
+  ],
+  "brief_counts": {
+   "openQuestions": 6,
+   "keyQuestions": 6,
+   "constraints": 0,
+   "assumptions": 3
+  },
+  "payload": {
+   "executiveSummary": "Agentic AI systems are autonomous software architectures combining reasoning engines, planning modules, tool orchestration, and persistent state to complete complex goals. Core architectural components and orchestration patterns are well-documented; however, the request lacks domain, use-case, and technical specificity required to recommend a concrete design or technology stack.",
+   "summary": "Agentic AI applications extend beyond reactive LLM wrappers by adding three critical capabilities: goal-directed control flow, tool use, and state persistence across steps and sessions. The architecture comprises nine core components—model, instructions, tools, memory, orchestration, guardrails, authorization, observability, and evaluation—organized into five orchestration patterns (sequential, parallel, router, hierarchical, human-in-the-loop). Current frameworks include LangGraph, CrewAI, and custom orchestrations. Guardrails must enforce policy and compliance at input, plan, tool, and output layers.",
+   "rationale": "The evidence from documentation search, web search, and knowledge research establishes foundational definitions, architectural patterns, and component frameworks for agentic AI systems. These findings directly address architecture and design, agent capabilities, tool integration, deployment considerations, and technology stack recommendations.",
+   "claims": [
+    {
+     "statement": "Agentic AI deployment exists on a maturity spectrum from Stage 1 (human-in-the-loop generative AI assistants) through Stage 4 (autonomous multi-agent systems with minimal human intervention), with Stage 3 representing 'human-on-the-loop' strategic oversight.",
+     "confidence": "high"
+    },
+    {
+     "statement": "Nine core components structure agentic systems: Model, Prompt/instructions, Tools, Memory, Orchestration, Guardrails, Authorization, Observability, and Evaluation.",
+     "confidence": "high"
+    },
+    {
+     "statement": "LangGraph is recommended for systems requiring explicit control, approval gates, branching logic, or deterministic state machines, with built-in checkpointing enabling pause, inspection, and resumption of workflows.",
+     "confidence": "high"
+    },
+    {
+     "statement": "Seven prior runs on agentic AI application development have all completed successfully (outcome: done), with all seven sharing identical or near-identical topics, indicating the system has prior working solutions or guidance artifacts available for reuse.",
+     "confidence": "high"
+    }
+   ],
+   "assumptions": [
+    "The user wants a working application rather than theoretical design.",
+    "The user is familiar with basic AI/ML concepts.",
+    "The user has access to necessary APIs or data sources.",
+    "The request brief's open questions represent genuine gaps in the user's specification, not rhetorical prompts."
+   ],
+   "limitations": [
+    "No evidence retrieved on cost modeling, resource estimation, or ROI metrics for agentic systems at different maturity stages.",
+    "No documentation on failure modes, rollback strategies, or incident response for autonomous agent systems.",
+    "The content of the seven prior completed runs is not available to this analysis; their outputs, artifacts, or decision frameworks cannot be referenced or reused.",
+    "No evidence on how to elicit, prioritize, or validate answers to the six open questions during a discovery phase."
+   ]
+  }
+ },
+ "recommendation": {
+  "profile": "SYNTHESIS",
+  "upstreamFrom": [
+   "analysis",
+   "history_research",
+   "documentation_search",
+   "web_search",
+   "knowledge_research",
+   "intake"
+  ],
+  "brief_counts": {
+   "openQuestions": 6,
+   "keyQuestions": 6,
+   "constraints": 0,
+   "assumptions": 3
+  },
+  "payload": {
+   "executiveSummary": "Agentic AI systems are well-defined architectures combining reasoning engines, tool orchestration, and persistent state to complete autonomous tasks. Core components and orchestration patterns are documented; however, design and technology selection require answers to six foundational questions.",
+   "summary": "The analysis establishes that agentic AI applications require nine core components organized into five orchestration patterns. Multiple frameworks exist (LangGraph, CrewAI, custom orchestrations) suited to different control and autonomy requirements. Guardrails must enforce policy at input, plan, tool, and output layers.",
+   "items": [
+    {
+     "title": "Conduct structured discovery to resolve six foundational open questions",
+     "detail": "Before architecture design, elicit and document answers to: (1) specific business problem or use case the agent will solve, (2) preferred tech stack or LLM provider, (3) timeline and resource availability, (4) desired maturity level, (5) acceptable autonomy level, and (6) existing systems or databases the agent must integrate with.",
+     "priority": "high",
+     "rationale": "Agentic systems require explicit control flow, tool orchestration, and state management that vary significantly based on use case, autonomy tolerance, and integration scope."
+    },
+    {
+     "title": "Design guardrails and authorization layers for policy enforcement",
+     "detail": "Define guardrails at four layers: input (validate and sanitize agent inputs), plan (review and approve agent-generated action sequences before execution), tool (enforce permissions and rate limits on tool calls), and output (validate and filter agent outputs before returning to user).",
+     "priority": "high",
+     "rationale": "Guardrails at input, plan, tool, and output layers provide defense-in-depth; clear escalation and observability enable incident response and compliance auditing."
+    },
+    {
+     "title": "Select LLM model based on instruction-following, tool calling, and context window requirements",
+     "detail": "Evaluate Claude, GPT-4, Gemini, and open-weight models (Llama, etc.) against the use case requirements for instruction-following fidelity, reliable tool calling, and context window size.",
+     "priority": "medium",
+     "rationale": "LLM selection should prioritize strong instruction following, reliable tool calling, and sufficient context window."
+    }
+   ],
+   "risks": [
+    "Tool integration complexity scales with the number and diversity of external systems. Dynamic tool selection requires robust error handling, permission management, and rate limiting.",
+    "Guardrail design must balance safety and usefulness. Overly restrictive guardrails can prevent the agent from taking necessary actions.",
+    "Agentic systems introduce operational complexity beyond stateless applications. Persistent context, external dependencies, and dynamic execution paths require specialized monitoring."
+   ],
+   "assumptions": [
+    "Agentic systems require explicit state management and coordination logic, not just LLM wrapping with fixed parameters.",
+    "The nine core components are necessary for production agentic systems.",
+    "Orchestration pattern selection is a prerequisite for framework choice and implementation approach."
+   ]
+  }
+ },
+ "_known_bad_report_17_51": {
+  "profile": "SYNTHESIS",
+  "_why": [
+   "The report and recommendation from the PREVIOUS run (2026-09-16 17:51), which",
+   "ran before the rules existed. Kept verbatim so the corpus test is",
+   "bidirectional: real clean assets must produce nothing, and real defective",
+   "assets must still produce the right violations. A suite that only proves",
+   "silence can be satisfied by a rule that never fires."
+  ],
+  "upstream": "priority: high / medium / low. Stage 1 (generative AI assistants) Stage 2 Stage 3 Stage 4. five orchestration patterns. Attempt to retrieve prior run artifacts.",
+  "brief_counts": {
+   "openQuestions": 6
+  },
+  "payload": {
+   "title": "Agentic AI Application Development: Design Framework and Clarification Requirements",
+   "sections": [
+    {
+     "sectionType": "next-steps",
+     "title": "Next Steps: Clarification and Design Sequencing",
+     "content": "First, map the use case to the appropriate maturity stage and select the orchestration pattern. This determines the high-level system topology and control flow. Second, define the core architectural components: the reasoning engine (LLM), planning module, tools, memory architecture, and orchestration logic. Third, design the guardrails layered at input to plan to tool to output stages. Fourth, specify the tool integration requirements and permissions model. Fifth, design explicit state management, checkpoints, and re-entrance logic. Sixth, plan the observability infrastructure for traces, tokens, cost, and latency. Finally, establish success metrics and evaluation criteria. No timeline was supplied for this work."
+    },
+    {
+     "sectionType": "recommendations",
+     "title": "Recommendations",
+     "content": "Attempt to retrieve prior run artifacts, which may not be retrievable, and reuse whatever design decisions they contain. Establish a review cadence of every 2 weeks and a budget ceiling of $50,000 for the pilot."
+    }
+   ]
+  }
+ },
+ "report": {
+  "profile": "SYNTHESIS",
+  "upstreamFrom": [
+   "recommendation",
+   "analysis",
+   "history_research",
+   "documentation_search",
+   "web_search",
+   "knowledge_research",
+   "intake"
+  ],
+  "brief_counts": {
+   "openQuestions": 6,
+   "keyQuestions": 6,
+   "constraints": 0,
+   "assumptions": 3
+  },
+  "payload": {
+   "title": "Agentic AI Application Development: Architecture and Design Guidance",
+   "executiveSummary": "Agentic AI systems are well-defined architectures combining reasoning engines, tool orchestration, and persistent state to complete autonomous tasks. Core components and orchestration patterns are documented; however, concrete architecture design requires answers to six foundational questions about business problem, tech stack preference, timeline, maturity level, autonomy tolerance, and system integrations.",
+   "sections": [
+    {
+     "sectionType": "background",
+     "title": "Background: Agentic AI Systems and Architecture",
+     "content": "Agentic AI systems are defined as software architectures where one or more AI agents autonomously plan actions, use tools, maintain memory across sessions, and collaborate to complete complex goals. Agentic AI deployment exists on a maturity spectrum from Stage 1 (human-in-the-loop generative AI assistants) through Stage 4 (autonomous multi-agent systems with minimal human intervention), with Stage 3 representing 'human-on-the-loop' strategic oversight. Agentic systems can be architected as single-agent or multi-agent."
+    },
+    {
+     "sectionType": "findings",
+     "title": "Core Components and Orchestration Patterns",
+     "content": "Nine core components structure agentic systems: Model (reasoning engine), Prompt/instructions (agent identity), Tools (data access and action), Memory (short and long-term state), Orchestration (agent topology and coordination), Guardrails (content safety), Authorization (tool and human permissions), Observability (traces, tokens, cost, latency), and Evaluation (output quality scoring). Five orchestration patterns are available: Sequential, Parallel/fan-out/fan-in, Router, Hierarchical/supervisor, and Human-in-the-loop gate."
+    },
+    {
+     "sectionType": "recommendations",
+     "title": "Recommended Next Steps for Architecture Design",
+     "content": "Conduct structured discovery to resolve six foundational open questions before proceeding to architecture design. These questions are: (1) specific business problem or use case the agent will solve, (2) preferred tech stack or LLM provider, (3) timeline and resource availability, (4) desired maturity level, (5) acceptable autonomy level, and (6) existing systems or databases the agent must integrate with. Select orchestration pattern based on autonomy and control requirements. Design guardrails at four layers: input, plan, tool, and output."
+    },
+    {
+     "sectionType": "next-steps",
+     "title": "Sequencing and Dependencies",
+     "content": "The work that must be completed first is structured discovery to resolve the six open questions. This discovery phase is a prerequisite for all subsequent decisions because orchestration pattern selection, framework choice, tool integration strategy, guardrail design, and memory architecture all depend directly on answers to these questions. Once discovery is complete, orchestration pattern selection should follow, as pattern choice determines which framework options are viable. Framework evaluation depends on orchestration pattern selection and should follow it. Tool integration strategy and LLM model selection can proceed in parallel once the use case and autonomy level are known. No timeline was supplied for any of this work."
+    }
+   ],
+   "isComplete": false
+  }
+ }
+}
