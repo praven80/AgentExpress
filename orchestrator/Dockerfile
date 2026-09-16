@@ -9,8 +9,12 @@ ENV PYTHONUNBUFFERED=1 \
     AWS_DEFAULT_REGION=us-east-1
 
 COPY requirements.txt requirements.txt
+# aws-opentelemetry-distro (ADOT) auto-instruments boto3/bedrock-runtime so model
+# calls emit gen_ai spans. Its bundled LangChain instrumentation is disabled at
+# runtime via OTEL_PYTHON_DISABLED_INSTRUMENTATIONS (set by Terraform) — see the
+# note in terraform/main.tf.
 RUN pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir aws-opentelemetry-distro==0.12.2
+    && pip install --no-cache-dir aws-opentelemetry-distro==0.19.0
 
 EXPOSE 8080
 

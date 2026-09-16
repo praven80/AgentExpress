@@ -1,31 +1,34 @@
-"""Knowledge Base Research — the RAG research agent (step 2, parallel).
+"""Knowledge Base Research — RAG over your own documents (step 2, parallel).
 
-Retrieves grounding evidence from the Bedrock Knowledge Base (RAG) and produces
-a ResearchOutput with every finding classified by evidence type. Runs in
-parallel with web_research; both are reviewed together at the "research" group
-HITL gate.
+Its data source is DECLARED, not coded: workflow.json binds this agent to the
+tool named by its `tool` field (type="kb") and scopes retrieval to its `corpus`.
+The shared runner in app/common/research.py does the rest.
 
-Retrieval is scoped to this agent's corpus via KB_FILTER (the KB is one shared
-index; each document is tagged with a doc_type equal to its top-level folder).
+To point this at your own documents, replace the contents of kb_docs/ — each
+top-level folder is a corpus. No change here.
 """
-
 from app.common import research
 from app.common.base import Agent
 from app.common.context import AgentContext
 
 from .prompts import SYSTEM_PROMPT
 
-# Scopes RAG retrieval to this agent's corpus (kb_docs/reference/).
-KB_FILTER = "reference"
-
 
 class KnowledgeResearchAgent(Agent):
     system_prompt = SYSTEM_PROMPT
 
     async def run(self, ctx: AgentContext) -> str:
-        return await research.synthesize(
-            ctx, system_prompt=SYSTEM_PROMPT, use_rag=True, kb_filter=KB_FILTER,
-        )
+        # Optional, app-level Cedar check — the ONE place this sample shows the
+        # secondary policy path. It is NOT what protects the Knowledge Base: the
+        # retrieval inside synthesize() goes through the Gateway, and the attached
+        # policy engine authorizes that call server-side (app/features/policy/,
+        # terraform/policy.tf). Keep this pattern for gating an in-process action
+        # that never crosses the Gateway. Fail-open, and a no-op when policy is
+        # disabled for this agent in workflow.json.
+        if not await ctx.policy_check("retrieve_knowledge"):
+            await ctx.log("Policy denied retrieve_knowledge for this agent")
+            ctx.tool = None  # reason over upstream inputs only, with no retrieval
+        return await research.synthesize(ctx, system_prompt=SYSTEM_PROMPT)
 
 
 agent = KnowledgeResearchAgent()

@@ -1,0 +1,366 @@
+/**
+ * The ToolPlane construct, synthesized directly.
+ *
+ * `stack.test.ts` covers the whole stack against the shipped `workflow.json`, which
+ * declares no `lambda` tool — a real `lambdaArn` is account-specific and would pin
+ * the committed config to one AWS account. ToolPlane takes its `tools` as a prop,
+ * though, so it can be instantiated with any tools block. That is what this file
+ * does: it exercises the target shapes, the IAM grants and the Cedar permits for
+ * configurations the sample does not itself ship.
+ */
+
+import * as cdk from "aws-cdk-lib";
+import { Template } from "aws-cdk-lib/assertions";
+import { aws_dynamodb as dynamodb } from "aws-cdk-lib";
+import * as path from "path";
+
+import { ToolPlane, ToolSpec } from "../lib/tool-plane";
+
+const ORCH_ROOT = path.join(__dirname, "..", "..");
+const ACCOUNT = "123456789012";
+
+function plane(tools: Record<string, ToolSpec>, toolApiKeys: Record<string, string> = {}) {
+  const app = new cdk.App();
+  const stack = new cdk.Stack(app, "T", { env: { account: ACCOUNT, region: "us-east-1" } });
+  new ToolPlane(stack, "ToolPlane", {
+    agentName: "test_orch",
+    tools,
+    toolApiKeys,
+    gatewayDiscoveryUrl:
+      "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_abc/.well-known/openid-configuration",
+    gatewayClientId: "client-abc",
+    gatewayAudience: "gateway/invoke",
+    isCognito: true,
+    isAuth0: false,
+    policyEnabled: true,
+    policyMode: "ENFORCE",
+    orchRoot: ORCH_ROOT,
+  });
+  return Template.fromStack(stack);
+}
+
+const QUERY_CLAIMS = {
+  name: "query_claims",
+  description: "Answer a question about claims using the warehouse.",
+  properties: {
+    question: { type: "string", required: true, description: "The question to answer." },
+    limit: { type: "integer", required: false, description: "Max rows to consider." },
+  },
+};
+
+const LAMBDA_TOOL: ToolSpec = {
+  type: "lambda",
+  description: "Read-only questions answered from the claims warehouse.",
+  lambdaArn: `arn:aws:lambda:us-east-1:${ACCOUNT}:function:query-claims`,
+  arg: "question",
+  toolSchema: [QUERY_CLAIMS],
+};
+
+/** A statement's Resource, always as a list (CFN collapses a single element). */
+function asList(v: any): any[] {
+  return Array.isArray(v) ? v : [v];
+}
+
+/** All statements from every inline policy in the template, flattened. */
+function statements(t: Template): any[] {
+  return Object.values<any>(t.findResources("AWS::IAM::Policy")).flatMap(
+    (p) => p.Properties.PolicyDocument.Statement
+  );
+}
+
+function lambdaTarget(t: Template): any {
+  const target = Object.values<any>(
+    t.findResources("AWS::BedrockAgentCore::GatewayTarget")
+  ).find((r) => r.Properties.TargetConfiguration?.Mcp?.Lambda);
+  expect(target).toBeDefined();
+  return target.Properties.TargetConfiguration.Mcp.Lambda;
+}
+
+describe("type=lambda target", () => {
+  const template = plane({ claims: LAMBDA_TOOL });
+
+  it("registers the function by the ARN from config", () => {
+    expect(lambdaTarget(template).LambdaArn).toBe(LAMBDA_TOOL.lambdaArn);
+  });
+
+  it("publishes the declared tool with its description", () => {
+    const payload = lambdaTarget(template).ToolSchema.InlinePayload;
+    expect(payload).toHaveLength(1);
+    expect(payload[0].Name).toBe("query_claims");
+    expect(payload[0].Description).toBe(QUERY_CLAIMS.description);
+  });
+
+  it("turns per-property `required` into JSON Schema's object-level list", () => {
+    // The config (and the Terraform provider's flattened `property` block) put
+    // `required` on each property; JSON Schema puts it on the object as a list of
+    // names. Both paths therefore accept the same JSON.
+    //
+    // The nested keys render PascalCase (Type/Description/Required) because CDK maps
+    // the L1 property tree that way. That is the same shape the KB target has
+    // produced all along, which is deployed and working — so it is the known-good
+    // form rather than an assumption.
+    const schema = lambdaTarget(template).ToolSchema.InlinePayload[0].InputSchema;
+    expect(schema.Type).toBe("object");
+    expect(Object.keys(schema.Properties).sort()).toEqual(["limit", "question"]);
+    expect(schema.Properties.question).toEqual({
+      Type: "string",
+      Description: "The question to answer.",
+    });
+    expect(schema.Required).toEqual(["question"]);
+  });
+
+  it("produces the same target shape as the KB Lambda target", () => {
+    // The KB target is the one Lambda target that has been deployed and exercised
+    // end to end. Matching its shape is the strongest available evidence that a
+    // customer's own function will register and invoke correctly.
+    const lt = lambdaTarget(template);
+    expect(Object.keys(lt).sort()).toEqual(["LambdaArn", "ToolSchema"]);
+    expect(Object.keys(lt.ToolSchema)).toEqual(["InlinePayload"]);
+    expect(Object.keys(lt.ToolSchema.InlinePayload[0]).sort()).toEqual([
+      "Description",
+      "InputSchema",
+      "Name",
+    ]);
+  });
+
+  it("lets the Gateway invoke the function with its own role", () => {
+    // No secret is involved: the credential provider is GATEWAY_IAM_ROLE.
+    const target = Object.values<any>(
+      template.findResources("AWS::BedrockAgentCore::GatewayTarget")
+    ).find((r) => r.Properties.TargetConfiguration?.Mcp?.Lambda);
+    expect(target.Properties.CredentialProviderConfigurations).toEqual([
+      { CredentialProviderType: "GATEWAY_IAM_ROLE" },
+    ]);
+  });
+
+  it("grants lambda:InvokeFunction on exactly that function", () => {
+    const invoke = statements(template).find((s) => s.Sid === "InvokeToolLambdas");
+    expect(invoke).toBeDefined();
+    expect(asList(invoke.Action)).toEqual(["lambda:InvokeFunction"]);
+    expect(asList(invoke.Resource)).toEqual([LAMBDA_TOOL.lambdaArn]);
+  });
+
+  it("adds the function's resource policy statement for a same-account function", () => {
+    template.hasResourceProperties("AWS::Lambda::Permission", {
+      FunctionName: LAMBDA_TOOL.lambdaArn,
+      Action: "lambda:InvokeFunction",
+      Principal: "bedrock-agentcore.amazonaws.com",
+      SourceAccount: ACCOUNT,
+    });
+  });
+
+  it("emits a Cedar permit naming the declared tool", () => {
+    const statement = Object.values<any>(
+      template.findResources("AWS::BedrockAgentCore::Policy")
+    )[0].Properties.Definition.Cedar.Statement;
+    const text = (statement["Fn::Join"][1] as any[])
+      .map((p) => (typeof p === "string" ? p : ""))
+      .join("");
+    // No `policy.tool`, so the whole target is permitted as an action group — right
+    // for a function that may publish several tools.
+    expect(text).toContain('action in AgentCore::Action::"claims"');
+  });
+
+  it("can be narrowed to one tool with an argument restriction", () => {
+    const t = plane({
+      claims: {
+        ...LAMBDA_TOOL,
+        policy: { tool: "query_claims", restrictTo: { region: ["emea", "apac"] } },
+      },
+    });
+    const statement = Object.values<any>(t.findResources("AWS::BedrockAgentCore::Policy"))[0]
+      .Properties.Definition.Cedar.Statement;
+    const text = (statement["Fn::Join"][1] as any[])
+      .map((p) => (typeof p === "string" ? p : ""))
+      .join("");
+    expect(text).toContain('action == AgentCore::Action::"claims___query_claims"');
+    expect(text).toContain('["emea","apac"].contains(context.input.region)');
+  });
+});
+
+describe("the built-in demo function (source: tool_lambda)", () => {
+  // This is what makes `type: "lambda"` demonstrable out of the box: the framework
+  // deploys one function so the tool type has a live agent, without asking anyone to
+  // stand up a database first. A customer's own function goes in via `lambdaArn` and
+  // none of this applies to it.
+  const BUILTIN: ToolSpec = {
+    type: "lambda",
+    source: "tool_lambda",
+    call: "prior_runs",
+    arg: "topic",
+    toolSchema: [
+      { name: "prior_runs", properties: { topic: { type: "string", required: true } } },
+    ],
+  };
+
+  function withTables() {
+    const app = new cdk.App();
+    const stack = new cdk.Stack(app, "T", { env: { account: ACCOUNT, region: "us-east-1" } });
+    const status = new dynamodb.Table(stack, "Status", {
+      partitionKey: { name: "session_id", type: dynamodb.AttributeType.STRING },
+    });
+    const telemetry = new dynamodb.Table(stack, "Telemetry", {
+      partitionKey: { name: "session_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
+    });
+    new ToolPlane(stack, "ToolPlane", {
+      agentName: "test_orch",
+      tools: { runs: BUILTIN },
+      toolApiKeys: {},
+      gatewayDiscoveryUrl: "https://example.test/.well-known/openid-configuration",
+      gatewayClientId: "client-abc",
+      gatewayAudience: "gateway/invoke",
+      isCognito: true,
+      isAuth0: false,
+      policyEnabled: false,
+      policyMode: "ENFORCE",
+      orchRoot: ORCH_ROOT,
+      statusTable: status,
+      telemetryTable: telemetry,
+    });
+    return Template.fromStack(stack);
+  }
+
+  const template = withTables();
+
+  it("deploys the function from orchestrator/tool_lambda/", () => {
+    // Name prefixed with ToolLambda- so a scoped deploy policy can express it
+    // without granting lambda:* on every function in the account.
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      FunctionName: "ToolLambda-test_orch-runs",
+      Handler: "handler.lambda_handler",
+      Runtime: "python3.12",
+    });
+  });
+
+  it("wires the run-data table names into its environment", () => {
+    const fn = Object.values<any>(template.findResources("AWS::Lambda::Function")).find(
+      (f) => f.Properties.FunctionName === "ToolLambda-test_orch-runs"
+    );
+    const vars = fn.Properties.Environment.Variables;
+    expect(Object.keys(vars).sort()).toEqual(["STATUS_TABLE", "TELEMETRY_TABLE"]);
+  });
+
+  it("gives it READ-ONLY access to those tables and nothing else", () => {
+    // It reports on run history; it has no reason to write anything. A demo function
+    // with write access to the framework's own state would be a poor example to ship.
+    const actions = statements(template)
+      .flatMap((s) => asList(s.Action))
+      .filter((a: string) => String(a).startsWith("dynamodb:"));
+    expect(actions.length).toBeGreaterThan(0);
+    // The exact read verbs are CDK's `grantReadData` set and may change between
+    // versions; what must hold is that NOTHING here can mutate the table.
+    for (const a of actions) {
+      expect(a).not.toMatch(/Put|Update|Delete|Write|Create|Restore|Tag/i);
+    }
+    expect(actions).toContain("dynamodb:Query");
+    expect(actions).toContain("dynamodb:Scan");
+    // And no wildcard smuggling a write in.
+    expect(actions).not.toContain("dynamodb:*");
+  });
+
+  it("registers the target against the function it just deployed", () => {
+    // Not a literal ARN from config — a Fn::GetAtt on the function in this stack,
+    // which is what keeps the committed workflow.json account-neutral.
+    const arn = lambdaTarget(template).LambdaArn;
+    expect(arn["Fn::GetAtt"][0]).toMatch(/ToolLambdaruns/);
+    expect(arn["Fn::GetAtt"][1]).toBe("Arn");
+  });
+
+  it("grants the Gateway invoke on it and adds the resource policy", () => {
+    const invoke = statements(template).find((s) => s.Sid === "InvokeToolLambdas");
+    expect(invoke).toBeDefined();
+    template.hasResourceProperties("AWS::Lambda::Permission", {
+      Principal: "bedrock-agentcore.amazonaws.com",
+      SourceAccount: ACCOUNT,
+    });
+  });
+
+  it("fails loudly when the run-data tables were not passed in", () => {
+    // Better than deploying a function whose environment is missing the table it
+    // reads, which would only fail on the first real invocation.
+    expect(() => plane({ runs: BUILTIN })).toThrow(/needs this deployment's run-data tables/);
+  });
+});
+
+describe("a cross-account lambda tool", () => {
+  const CROSS = "arn:aws:lambda:us-east-1:999999999999:function:shared-tool";
+  const template = plane({ shared: { ...LAMBDA_TOOL, lambdaArn: CROSS } });
+
+  it("is still granted on the Gateway role", () => {
+    const invoke = statements(template).find((s) => s.Sid === "InvokeToolLambdas");
+    expect(asList(invoke.Resource)).toEqual([CROSS]);
+  });
+
+  it("gets NO resource-policy statement, because we cannot edit another account's", () => {
+    // Emitting one would fail the deploy. The owning account adds it instead — which
+    // is documented rather than silently required.
+    const perms = Object.values<any>(template.findResources("AWS::Lambda::Permission")).map(
+      (p) => p.Properties.FunctionName
+    );
+    expect(perms).not.toContain(CROSS);
+  });
+});
+
+describe("several lambda tools", () => {
+  const A = `arn:aws:lambda:us-east-1:${ACCOUNT}:function:tool-a`;
+  const B = `arn:aws:lambda:us-east-1:${ACCOUNT}:function:tool-b`;
+  const template = plane({
+    b: { ...LAMBDA_TOOL, lambdaArn: B },
+    a: { ...LAMBDA_TOOL, lambdaArn: A },
+  });
+
+  it("collects every function into ONE sorted IAM statement", () => {
+    // One statement rather than one policy per tool, so the inline policy stays well
+    // inside its size limit as the tool count grows. Sorted so the template is
+    // stable and a no-op redeploy shows no diff.
+    const invoke = statements(template).find((s) => s.Sid === "InvokeToolLambdas");
+    expect(asList(invoke.Resource)).toEqual([A, B]);
+  });
+
+  it("creates a target and a permission for each", () => {
+    template.resourceCountIs("AWS::BedrockAgentCore::GatewayTarget", 2);
+    template.resourceCountIs("AWS::Lambda::Permission", 2);
+  });
+});
+
+describe("one function publishing several tools", () => {
+  const template = plane({
+    warehouse: {
+      ...LAMBDA_TOOL,
+      call: "query_claims",
+      toolSchema: [
+        QUERY_CLAIMS,
+        {
+          name: "list_tables",
+          properties: { schema: { type: "string", required: true } },
+        },
+      ],
+    },
+  });
+
+  it("publishes both, so the handler can dispatch on the tool name", () => {
+    const payload = lambdaTarget(template).ToolSchema.InlinePayload;
+    expect(payload.map((p: any) => p.Name)).toEqual(["query_claims", "list_tables"]);
+  });
+
+  it("falls back to the tool name as its description", () => {
+    const payload = lambdaTarget(template).ToolSchema.InlinePayload;
+    expect(payload[1].Description).toBe("list_tables");
+  });
+
+  it("still grants only one function", () => {
+    const invoke = statements(template).find((s) => s.Sid === "InvokeToolLambdas");
+    expect(asList(invoke.Resource)).toEqual([LAMBDA_TOOL.lambdaArn]);
+  });
+});
+
+describe("no lambda tools declared", () => {
+  it("grants nothing and creates no permission", () => {
+    // The grant is conditional, so a deployment with no lambda tool carries no
+    // lambda:InvokeFunction for one.
+    const template = plane({ docs: { type: "mcp", endpoint: "https://x.test/mcp" } });
+    expect(statements(template).find((s) => s.Sid === "InvokeToolLambdas")).toBeUndefined();
+    template.resourceCountIs("AWS::Lambda::Permission", 0);
+  });
+});

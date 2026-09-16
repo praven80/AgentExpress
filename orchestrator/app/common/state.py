@@ -13,6 +13,7 @@ def merge_dict(a: dict, b: dict) -> dict:
 
 class State(TypedDict, total=False):
     topic: str                               # the user's request; consumed by the intake agent
+    subject_id: str                          # optional grouping key; scopes long-term memory (insights/{agentId}-{subject})
     user: str                                # authenticated user (Cognito email/sub); for cost attribution
     status: Annotated[dict, merge_dict]      # agent_id -> status
     outputs: Annotated[dict, merge_dict]     # agent_id -> output text

@@ -46,7 +46,13 @@ class Base(BaseModel):
 
 
 class AssetType(str, Enum):
-    """The canonical asset types, one per pipeline stage."""
+    """The asset types THIS sample's five contracts use.
+
+    Canonical constants, not an exhaustive list: `AssetEnvelope.asset_type` is a
+    plain `str`, so a customer can define a contract with an asset type of their
+    own without adding a member here. The built-in contracts each pin their own
+    value with `Literal[AssetType.X]`, which keeps them strict.
+    """
 
     REQUEST_BRIEF = "request-brief"
     RESEARCH_FINDING = "research-finding"
@@ -79,7 +85,16 @@ ArtifactType = Literal[
 
 ArtifactRole = Literal["final", "supporting-artifact"]
 
-SourceType = Literal[
+# Deliberately `str`, not a closed Literal — for the same reason as
+# `AssetEnvelope.asset_type` and `report.SectionType`. As a Literal this listed
+# THIS sample's asset types, and anything outside the list was silently coerced to
+# "other": a customer whose provenance is a "claim-file" or a "policy-doc" lost
+# that word from every citation, and the only way to keep it was to edit this
+# shared file. The values below are the sample's own vocabulary, kept as a named
+# tuple so the built-in agents and the UI's chips agree on spelling.
+SourceType = str
+
+SOURCE_TYPES: tuple[str, ...] = (
     # external inputs / grounding
     "knowledge-base",
     "mcp-tool",
@@ -93,7 +108,7 @@ SourceType = Literal[
     "calculation",
     "assumption",
     "other",
-]
+)
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +139,12 @@ class Source(Base):
     source_name: str = Field(alias="sourceName")
     source_asset_id: str | None = Field(default=None, alias="sourceAssetId")
     artifact_id: str | None = Field(default=None, alias="artifactId")
+    # The citation link, when the evidence came with one (web results always do).
+    # Kept structured rather than buried in prose because AgentCore Web Search's
+    # acceptable-use terms require the returned citations and links to be retained
+    # and DISPLAYED wherever the result is surfaced to an end user — the UI renders
+    # this as an anchor.
+    url: str | None = None
     description: str | None = None
 
     @model_validator(mode="after")
@@ -145,7 +166,11 @@ class AssetEnvelope(Base):
     """Fields common to every asset."""
 
     asset_id: str = Field(alias="assetId")
-    asset_type: AssetType = Field(alias="assetType")
+    # Deliberately `str`, not the AssetType enum: a customer's own contract can
+    # declare its own asset type (e.g. Literal["claim-decision"]) without editing
+    # this shared file. The five built-in contracts still pin themselves to an
+    # AssetType member, so nothing here gets looser in practice.
+    asset_type: str = Field(alias="assetType")
     version: int = Field(ge=1)
     status: AssetStatus
     created_at: datetime = Field(alias="createdAt")

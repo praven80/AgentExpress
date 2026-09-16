@@ -1,7 +1,7 @@
 """Report — assembles the final sectioned report (terminal step).
 
 The terminal step (no HITL gate after it). It maps the approved upstream assets
-into the standard report sections in canonical SECTION_ORDER, each pinned to the
+into the sections named in prompts.SECTIONS, each pinned to the
 upstream assetIds it draws on, and marks the report complete when every expected
 section is present. The whole report is one versioned Report asset.
 """
@@ -12,25 +12,35 @@ import json
 
 from app.common import synthesis
 from app.common.base import Agent
+from app.common.config import upstream_of
 from app.common.context import AgentContext
-from app.common.contracts import SECTION_ORDER, Report, ReportSection
+from app.common.contracts import Report, ReportSection
 
-from .prompts import SCHEMA, SYSTEM_PROMPT
+from .prompts import SCHEMA, SECTIONS, SYSTEM_PROMPT
 
-UPSTREAM = ["recommendation", "analysis", "intake"]
+# Derived from the workflow.json topology (see app/common/config.upstream_of).
+UPSTREAM = upstream_of("report")
 
-_SECTION_TYPES = set(SECTION_ORDER)
-_ORDER = {t: i for i, t in enumerate(SECTION_ORDER)}
+# Presentation order, from this agent's own SECTIONS (prompts.py) — the report's
+# vocabulary is this agent's business, not the shared contract's. Anything else
+# sorts after them (see _sections) rather than being discarded.
+_ORDER = {t: i for i, t in enumerate(SECTIONS)}
 
 
 def _sections(payload: dict) -> list[ReportSection]:
+    """Coerce the model's `sections` into ordered ReportSections.
+
+    A section type outside SECTIONS is KEPT (sorted after the expected ones)
+    rather than dropped — silently discarding a section the model produced loses
+    real content, and a customer's report may legitimately have its own sections.
+    """
     out: list[ReportSection] = []
     seen: set[str] = set()
     for s in payload.get("sections", []) or []:
         if not isinstance(s, dict):
             continue
         st = str(s.get("sectionType", "")).strip().lower()
-        if st not in _SECTION_TYPES or st in seen:
+        if not st or st in seen:
             continue
         seen.add(st)
         out.append(ReportSection(
@@ -49,11 +59,11 @@ class ReportAgent(Agent):
 
     async def run(self, ctx: AgentContext) -> str:
         payload, meta = await synthesis.synthesize(
-            ctx, upstream_ids=UPSTREAM, system_prompt=SYSTEM_PROMPT, schema=SCHEMA, max_tokens=8000
+            ctx, upstream_ids=UPSTREAM, system_prompt=SYSTEM_PROMPT, schema=SCHEMA
         )
         sections = _sections(payload)
         present = {s.section_type for s in sections}
-        is_complete = bool(sections) and all(t in present for t in SECTION_ORDER)
+        is_complete = bool(sections) and all(t in present for t in SECTIONS)
 
         asset = Report(
             **synthesis.envelope(ctx, meta, "report"),

@@ -6,7 +6,6 @@ and the tool name in `context.client_context.custom['bedrockAgentCoreToolName']`
 (format: "<target>___<tool>"). We return a JSON object the agent can use.
 """
 
-import json
 import os
 
 import boto3

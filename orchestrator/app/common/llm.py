@@ -1,11 +1,19 @@
-"""LLM helper. Calls Claude on Amazon Bedrock when credentials are available,
-falling back to a simulated response so the workflow always runs locally.
+"""LLM helper. Calls Claude on Amazon Bedrock.
+
+A failed model call RAISES ModelUnavailable — it is never substituted with
+placeholder text. See app/common/errors.py for why: fabricated output is
+indistinguishable from real evidence once it reaches the report.
 
 The model, temperature, and max_tokens are per-call, so each agent can use a
 different model (configured in workflow.json).
+
+`name` names the model call. An agent may issue several distinct prompts; the
+name is carried onto the telemetry row and the captured prompt so observability
+and AgentCore Evaluations can scope to ONE prompt at a time.
 """
 
 from app.common.config import MODEL_ID, REGION
+from app.common.errors import ModelUnavailable
 
 
 def _text_of(content) -> str:
@@ -34,6 +42,14 @@ async def run_llm(name: str, system: str, user: str,
                   model: str | None = None, temperature: float = 0,
                   max_tokens: int = 300) -> str:
     model = model or MODEL_ID
+    # Capture this call's prompt (system + the real source inputs) so the agent's
+    # AGENT span carries it as gen_ai.task.input for AgentCore Evaluations, and so
+    # per-prompt evaluation can find it. No-op outside an agent run.
+    try:
+        from app.features.observability import otel as _otel
+        _otel.capture_prompt(name, system, user)
+    except Exception:  # noqa: BLE001
+        pass
     try:
         from langchain_aws import ChatBedrockConverse
 
@@ -43,23 +59,54 @@ async def run_llm(name: str, system: str, user: str,
         _start = _t.perf_counter()
         msg = await llm.ainvoke([("system", system), ("human", user)])
         _latency_ms = int((_t.perf_counter() - _start) * 1000)
-        _meter_llm(model, msg, system, _latency_ms, mode="bedrock")
-        return _text_of(msg.content)
-    except Exception as e:  # noqa: BLE001 - demo fallback
-        _meter_llm(model, None, system, 0, mode="simulated")
-        return f"[simulated {name} via {model}] ({type(e).__name__}) {system.split('.')[0]}. Input: {user[:80]}"
+        out_text = _text_of(msg.content)
+        _meter_llm(model, msg, system, user, out_text, _latency_ms, mode="bedrock",
+                   temperature=temperature, max_tokens=max_tokens, name=name)
+        try:
+            from app.features.observability import otel as _otel
+            _otel.capture_output(out_text)  # pair this call's response with its prompt
+        except Exception:  # noqa: BLE001
+            pass
+        return out_text
+    except Exception as e:  # noqa: BLE001 - record the failure, then fail the run
+        _meter_llm(model, None, system, user, "", 0, mode="error",
+                   temperature=temperature, max_tokens=max_tokens, name=name)
+        raise ModelUnavailable(
+            f"Bedrock model call '{name}' failed on {model}: {type(e).__name__}: {e}. "
+            f"Check that the region has model access enabled for this model id and that "
+            f"the runtime's credentials permit bedrock:InvokeModel."
+        ) from e
 
 
-def _meter_llm(model, msg, system, latency_ms, mode) -> None:
-    """Best-effort observability hook (isolated in app/observability)."""
+def _finish_reason_of(msg) -> str:
+    """Best-effort stop reason from a ChatBedrockConverse response."""
+    if msg is None:
+        return ""
+    meta = getattr(msg, "response_metadata", None) or {}
+    return str(meta.get("stopReason") or meta.get("finish_reason") or "")
+
+
+def _meter_llm(model, msg, system, user, output_text, latency_ms, mode,
+               temperature: float = 0.0, max_tokens: int = 0, name: str = "") -> None:
+    """Best-effort observability hook (isolated in app/features/observability)."""
     try:
         usage = getattr(msg, "usage_metadata", None) or {} if msg is not None else {}
-        from app.observability import meter
+        input_tokens = int(usage.get("input_tokens", 0) or 0)
+        output_tokens = int(usage.get("output_tokens", 0) or 0)
+        # Stamp real token usage onto the OTEL agent span (ADOT's auto "chat"
+        # span reports 0 for Converse as of 0.19.0). Accumulates across the
+        # agent's calls; surfaces as gen_ai.usage.* in GenAI Observability.
+        from app.features.observability import otel
+        otel.add_tokens(input_tokens, output_tokens)
+        from app.features.observability import meter
         meter.record_llm(
             model=model,
-            input_tokens=int(usage.get("input_tokens", 0) or 0),
-            output_tokens=int(usage.get("output_tokens", 0) or 0),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
             system_text=system, latency_ms=latency_ms, mode=mode,
+            user_input=user, output_text=output_text,
+            temperature=temperature, max_tokens=max_tokens,
+            finish_reason=_finish_reason_of(msg), prompt=name,
         )
     except Exception:  # noqa: BLE001 - metering must never break a call
         pass

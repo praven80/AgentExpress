@@ -4,8 +4,60 @@
     {
       "Sid": "Identity",
       "Effect": "Allow",
-      "Action": ["sts:GetCallerIdentity"],
+      "Action": [
+        "sts:GetCallerIdentity"
+      ],
       "Resource": "*"
+    },
+    {
+      "Sid": "CognitoManageUserPool",
+      "Effect": "Allow",
+      "Action": [
+        "cognito-idp:CreateUserPool",
+        "cognito-idp:DeleteUserPool",
+        "cognito-idp:DescribeUserPool",
+        "cognito-idp:UpdateUserPool",
+        "cognito-idp:GetUserPoolMfaConfig",
+        "cognito-idp:SetUserPoolMfaConfig",
+        "cognito-idp:CreateUserPoolDomain",
+        "cognito-idp:DeleteUserPoolDomain",
+        "cognito-idp:DescribeUserPoolDomain",
+        "cognito-idp:UpdateUserPoolDomain",
+        "cognito-idp:CreateUserPoolClient",
+        "cognito-idp:DeleteUserPoolClient",
+        "cognito-idp:DescribeUserPoolClient",
+        "cognito-idp:UpdateUserPoolClient",
+        "cognito-idp:CreateResourceServer",
+        "cognito-idp:DeleteResourceServer",
+        "cognito-idp:DescribeResourceServer",
+        "cognito-idp:UpdateResourceServer",
+        "cognito-idp:CreateGroup",
+        "cognito-idp:DeleteGroup",
+        "cognito-idp:GetGroup",
+        "cognito-idp:UpdateGroup",
+        "cognito-idp:TagResource",
+        "cognito-idp:UntagResource",
+        "cognito-idp:ListTagsForResource"
+      ],
+      "Resource": [
+        "arn:aws:cognito-idp:*:*:userpool/*"
+      ]
+    },
+    {
+      "Sid": "CognitoManageUsers",
+      "Effect": "Allow",
+      "Action": [
+        "cognito-idp:AdminCreateUser",
+        "cognito-idp:AdminDeleteUser",
+        "cognito-idp:AdminGetUser",
+        "cognito-idp:AdminSetUserPassword",
+        "cognito-idp:AdminAddUserToGroup",
+        "cognito-idp:AdminRemoveUserFromGroup",
+        "cognito-idp:AdminListGroupsForUser"
+      ],
+      "Resource": [
+        "arn:aws:cognito-idp:*:*:userpool/*"
+      ]
     },
     {
       "Sid": "EcrManageAndPush",
@@ -55,19 +107,25 @@
         "arn:aws:iam::*:role/AgentCoreBFF-*",
         "arn:aws:iam::*:role/AgentCoreGateway-*",
         "arn:aws:iam::*:role/AgentCoreKB-*",
-        "arn:aws:iam::*:role/AgentCoreKBLambda-*"
+        "arn:aws:iam::*:role/AgentCoreKBLambda-*",
+        "arn:aws:iam::*:role/AgentCoreSubagent-*",
+        "arn:aws:iam::*:role/ToolLambda-*"
       ]
     },
     {
       "Sid": "IamPassRoleToServices",
       "Effect": "Allow",
-      "Action": ["iam:PassRole"],
+      "Action": [
+        "iam:PassRole"
+      ],
       "Resource": [
         "arn:aws:iam::*:role/AgentCoreRuntime-*",
         "arn:aws:iam::*:role/AgentCoreBFF-*",
         "arn:aws:iam::*:role/AgentCoreGateway-*",
         "arn:aws:iam::*:role/AgentCoreKB-*",
-        "arn:aws:iam::*:role/AgentCoreKBLambda-*"
+        "arn:aws:iam::*:role/AgentCoreKBLambda-*",
+        "arn:aws:iam::*:role/AgentCoreSubagent-*",
+        "arn:aws:iam::*:role/ToolLambda-*"
       ],
       "Condition": {
         "StringEquals": {
@@ -82,7 +140,9 @@
     {
       "Sid": "IamServiceLinkedRoles",
       "Effect": "Allow",
-      "Action": ["iam:CreateServiceLinkedRole"],
+      "Action": [
+        "iam:CreateServiceLinkedRole"
+      ],
       "Resource": "*"
     },
     {
@@ -131,9 +191,31 @@
         "bedrock-agentcore:GetGatewayTarget",
         "bedrock-agentcore:ListGatewayTargets",
         "bedrock-agentcore:SynchronizeGatewayTargets",
+        "bedrock-agentcore:CreatePolicyEngine",
+        "bedrock-agentcore:UpdatePolicyEngine",
+        "bedrock-agentcore:DeletePolicyEngine",
+        "bedrock-agentcore:GetPolicyEngine",
+        "bedrock-agentcore:ListPolicyEngines",
+        "bedrock-agentcore:CreatePolicy",
+        "bedrock-agentcore:UpdatePolicy",
+        "bedrock-agentcore:DeletePolicy",
+        "bedrock-agentcore:GetPolicy",
+        "bedrock-agentcore:ListPolicies",
         "bedrock-agentcore:TagResource",
         "bedrock-agentcore:UntagResource",
         "bedrock-agentcore:ListTagsForResource"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "BedrockGuardrailManage",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:CreateGuardrail",
+        "bedrock:UpdateGuardrail",
+        "bedrock:DeleteGuardrail",
+        "bedrock:GetGuardrail",
+        "bedrock:ListGuardrails"
       ],
       "Resource": "*"
     },
@@ -185,7 +267,7 @@
       "Resource": "arn:aws:dynamodb:*:*:table/*_status*"
     },
     {
-      "Sid": "DynamoDbManageEventsDocumentsTelemetryTables",
+      "Sid": "DynamoDbManageEventsTelemetryInsightsTables",
       "Effect": "Allow",
       "Action": [
         "dynamodb:CreateTable",
@@ -201,8 +283,8 @@
       ],
       "Resource": [
         "arn:aws:dynamodb:*:*:table/*_events*",
-        "arn:aws:dynamodb:*:*:table/*_documents*",
-        "arn:aws:dynamodb:*:*:table/*_telemetry*"
+        "arn:aws:dynamodb:*:*:table/*_telemetry*",
+        "arn:aws:dynamodb:*:*:table/*_insights*"
       ]
     },
     {
@@ -224,14 +306,24 @@
       ],
       "Resource": [
         "arn:aws:lambda:*:*:function:AgentCoreBFF-*",
-        "arn:aws:lambda:*:*:function:AgentCoreKBRetrieve-*"
+        "arn:aws:lambda:*:*:function:AgentCoreKBRetrieve-*",
+        "arn:aws:lambda:*:*:function:ToolLambda-*"
       ]
     },
     {
       "Sid": "ApiGatewayV2Manage",
       "Effect": "Allow",
-      "Action": ["apigateway:GET", "apigateway:POST", "apigateway:PUT", "apigateway:PATCH", "apigateway:DELETE"],
-      "Resource": ["arn:aws:apigateway:*::/apis", "arn:aws:apigateway:*::/apis/*"]
+      "Action": [
+        "apigateway:GET",
+        "apigateway:POST",
+        "apigateway:PUT",
+        "apigateway:PATCH",
+        "apigateway:DELETE"
+      ],
+      "Resource": [
+        "arn:aws:apigateway:*::/apis",
+        "arn:aws:apigateway:*::/apis/*"
+      ]
     },
     {
       "Sid": "S3ManageUiBucket",
@@ -289,9 +381,21 @@
         "logs:DescribeLogGroups",
         "logs:PutRetentionPolicy",
         "logs:PutResourcePolicy",
+        "logs:DeleteResourcePolicy",
         "logs:DescribeResourcePolicies",
         "xray:PutTraceSegments",
         "xray:GetSamplingRules"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "TransactionSearchEnable",
+      "Effect": "Allow",
+      "Action": [
+        "xray:GetTraceSegmentDestination",
+        "xray:UpdateTraceSegmentDestination",
+        "xray:GetIndexingRules",
+        "xray:UpdateIndexingRule"
       ],
       "Resource": "*"
     }

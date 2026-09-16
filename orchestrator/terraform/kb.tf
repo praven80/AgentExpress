@@ -1,5 +1,10 @@
 # --- Bedrock Knowledge Base (S3 Vectors) fronted by the Gateway -----------
 #
+# Created only when app/workflow.json declares a tool with type="kb"; the tool's
+# KEY becomes the Gateway target name. Replace the contents of kb_docs/ with your
+# own documents — each TOP-LEVEL FOLDER becomes a corpus (a filterable doc_type),
+# and an agent is scoped to one via its `corpus` field. No code or IaC change.
+#
 # The RAG research agent (knowledge_research) retrieves from a Bedrock Knowledge
 # Base backed by S3 Vectors (serverless, no OCU floor). Retrieval is exposed as a
 # tool through the
@@ -7,8 +12,21 @@
 # vector index bootstrap script required (S3 Vectors index is a native resource).
 
 locals {
-  kb_enabled  = var.enable_gateway
-  kb_dims     = 1024 # Titan Text Embeddings v2 default
+  # Provisioned only when workflow.json declares a tool with type="kb".
+  kb_enabled = local.kb_tool_name != ""
+  kb_dims    = 1024 # Titan Text Embeddings v2 default
+  # S3 Vectors caps FILTERABLE metadata at 2048 bytes per vector, and both of these
+  # grow with the document, so both must be excluded. Mirrors KB_NON_FILTERABLE in
+  # cdk/lib/tool-plane.ts.
+  kb_non_filterable = ["AMAZON_BEDROCK_TEXT", "AMAZON_BEDROCK_METADATA"]
+  # Digest of the vector store's IMMUTABLE properties, so changing one yields NEW
+  # names and the replacement succeeds instead of erroring out. Must match
+  # kbStorageDigest() in cdk/lib/tool-plane.ts.
+  kb_storage_digest = substr(sha256("${local.kb_dims}|${join(",", sort(local.kb_non_filterable))}"), 0, 8)
+  kb_index_name     = "kb-index-${local.kb_storage_digest}"
+  # The KB carries the SAME digest: its storage_configuration points at the index ARN
+  # and is immutable, so replacing the index replaces the KB too. Matches kbName().
+  kb_name     = "${replace(var.agent_name, "_", "-")}-kb-${local.kb_storage_digest}"
   embed_model = "arn:aws:bedrock:${var.region}::foundation-model/amazon.titan-embed-text-v2:0"
 
   # Corpus files, recursive (subfolders included), excluding macOS noise that
@@ -30,15 +48,32 @@ resource "aws_s3vectors_vector_bucket" "kb" {
 resource "aws_s3vectors_index" "kb" {
   count              = local.kb_enabled ? 1 : 0
   vector_bucket_name = aws_s3vectors_vector_bucket.kb[0].vector_bucket_name
-  index_name         = "kb-index"
-  data_type          = "float32"
-  dimension          = local.kb_dims
-  distance_metric    = "cosine"
+  # The name carries a digest of this index's IMMUTABLE properties (dimension +
+  # the non-filterable key list), matching kbIndexName() in cdk/lib/tool-plane.ts.
+  # Neither can be changed in place, so a change to either must REPLACE the index,
+  # and CloudFormation refuses to replace a resource with a fixed custom name
+  # ("cannot update a stack when a custom-named resource requires replacing").
+  # Deriving the name means the replacement just works on both paths.
+  index_name      = local.kb_index_name
+  data_type       = "float32"
+  dimension       = local.kb_dims
+  distance_metric = "cosine"
 
-  # Bedrock stores the chunk text in this metadata key; it must be non-filterable
-  # because chunk text exceeds the filterable-metadata size limit.
+  # S3 Vectors caps FILTERABLE metadata at 2048 bytes per vector, and both of these
+  # grow with the document, so both must be excluded:
+  #   AMAZON_BEDROCK_TEXT     - the chunk's own text.
+  #   AMAZON_BEDROCK_METADATA - a JSON blob carrying `text`, `parentText`, the
+  #                             source location and a document id.
+  #
+  # Only TEXT was listed here, which is why ingestion silently accepted the two
+  # small sample documents and then FAILED on a larger one with
+  #   "Invalid record ...: Filterable metadata must have at most 2048 bytes
+  #    (Service: S3Vectors, Status Code: 400)"
+  # - one document failed, the job went to FAILED, and the KB simply never returned
+  # that content. Nothing filters on either key (the only filter this framework
+  # uses is `doc_type`), so excluding both costs nothing.
   metadata_configuration {
-    non_filterable_metadata_keys = ["AMAZON_BEDROCK_TEXT"]
+    non_filterable_metadata_keys = local.kb_non_filterable
   }
 }
 
@@ -130,7 +165,7 @@ resource "aws_iam_role_policy" "kb" {
 
 resource "aws_bedrockagent_knowledge_base" "kb" {
   count    = local.kb_enabled ? 1 : 0
-  name     = "${replace(var.agent_name, "_", "-")}-kb"
+  name     = local.kb_name
   role_arn = aws_iam_role.kb[0].arn
 
   knowledge_base_configuration {
@@ -279,7 +314,7 @@ resource "aws_lambda_permission" "gateway_invoke_kb" {
 resource "aws_bedrockagentcore_gateway_target" "kb" {
   count              = local.kb_enabled ? 1 : 0
   gateway_identifier = aws_bedrockagentcore_gateway.mcp[0].gateway_id
-  name               = "kb"
+  name               = local.kb_tool_name
   description        = "Bedrock Knowledge Base retrieval tool"
 
   target_configuration {

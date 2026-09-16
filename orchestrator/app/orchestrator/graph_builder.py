@@ -2,7 +2,7 @@
 
 Each item in "steps" is one of:
   * a single agent            {"agent": "intake"}
-  * a "parallel" group        {"parallel": ["knowledge_research", "web_research"]}
+  * a "parallel" group        {"parallel": ["knowledge_research", "web_search"]}
   * a "sequence" group        {"sequence": ["analysis", "recommendation"]}
 Steps run in order. A parallel group runs its agents concurrently and joins; a
 sequence group runs its agents one after another. Any step may carry "hitl": true
@@ -11,7 +11,7 @@ approve -> continue, deny -> END, revise -> loop back and re-run with feedback
 (a single agent / the whole sequence, or the flagged subset of a parallel group).
 
     step: {"agent": "intake", "hitl": true}                       -> agent, then a human gate
-    step: {"parallel": ["knowledge_research", "web_research"]}     -> both concurrently, join after
+    step: {"parallel": ["knowledge_research", "web_search"]}     -> both concurrently, join after
     step: {"sequence": ["analysis", "recommendation"]}            -> one after another, one gate after both
 """
 
@@ -172,3 +172,154 @@ def build_graph(checkpointer=None):
                     g.add_edge(a, ne)
 
     return g.compile(checkpointer=checkpointer)
+
+
+# --- Rewind / "rerun from an agent" planning -------------------------------
+#
+# Given a target agent, compute how to rewind the graph so that agent (and
+# everything downstream) re-runs, WITHOUT restarting the whole workflow.
+#
+# The mechanism (see runtime._rewind / server._rewind):
+#   1. graph.aupdate_state(cfg, values, as_node=<predecessor>) — attributes a
+#      state write to the node that routes INTO the target, which makes the
+#      graph's pending tasks become the target entry node(s).
+#   2. graph.ainvoke(None, cfg) — runs those pending tasks and then cascades
+#      forward through every downstream agent and gate. Gate nodes always call
+#      interrupt(), so each downstream gate naturally RE-PAUSES for human review.
+#
+# `values` seeds the predecessor gate's routing decision as "approve" (so the
+# router forwards to the target rather than looping/halting) and injects the
+# reviewer's feedback into the target agent.
+
+
+def _step_index_of(agent_id: str) -> int:
+    for i, step in enumerate(STEPS):
+        if agent_id in _agents_in(step):
+            return i
+    return -1
+
+
+def _predecessor_of_step(si: int) -> tuple[str, str | None]:
+    """(as_node, decision_key) for the node that routes INTO step `si`.
+
+    A gated step is entered from its gate (whose router must be told "approve");
+    an ungated one is entered straight from the single node before it.
+    """
+    if si == 0:
+        return START, None
+    prev, pi = STEPS[si - 1], si - 1
+    if prev.get("hitl"):
+        if "agent" in prev:
+            return f"{prev['agent']}_gate", prev["agent"]
+        gid = _gate_id(prev, pi)
+        return f"{gid}_gate", gid
+    # Ungated predecessor: a sequence ends at its last agent; a single agent is
+    # itself. A non-gated parallel group has no single predecessor node, so a
+    # rewind across it would be ambiguous — reject it rather than guess.
+    if "sequence" in prev:
+        return prev["sequence"][-1], None
+    prev_agents = _agents_in(prev)
+    if len(prev_agents) != 1:
+        raise ValueError(
+            "cannot rewind across the previous step: it is a non-gated parallel "
+            "group with no single predecessor node")
+    return prev_agents[0], None
+
+
+def rerun_plan(agent_id: str) -> dict:
+    """Plan a rewind so `agent_id` re-runs and cascades downstream.
+
+    Returns:
+      as_node          - node to attribute the state write to (its successors
+                         become the next tasks): START for the first step, the
+                         previous step's gate, the node before it in a sequence,
+                         or the single ungated predecessor.
+      decision_key     - decision to force to "approve" so the predecessor gate's
+                         router forwards here (None when there is no gate).
+      step_agents      - the agents that will re-run in the target step. A
+                         parallel group re-runs as a unit; a sequence re-runs from
+                         the target agent onward.
+      downstream_agents- step_agents + all agents after the target step (for UI reset).
+      step_index       - index of the target step.
+
+    Raises ValueError for an unknown agent, or a rewind that would cross a
+    non-gated parallel step (ambiguous single predecessor).
+    """
+    si = _step_index_of(agent_id)
+    if si < 0:
+        raise ValueError(f"unknown agent '{agent_id}'")
+
+    step = STEPS[si]
+    later_agents: list[str] = []
+    for s in STEPS[si + 1:]:
+        later_agents += _agents_in(s)
+
+    seq = step.get("sequence")
+    if seq and agent_id != seq[0]:
+        # Mid-sequence target: enter from the agent immediately before it, and
+        # re-run the tail of the chain from there.
+        k = seq.index(agent_id)
+        step_agents = seq[k:]
+        return {"as_node": seq[k - 1], "decision_key": None,
+                "step_agents": step_agents,
+                "downstream_agents": step_agents + later_agents,
+                "step_index": si}
+
+    # The target is the step's entry: a single agent, any member of a parallel
+    # group (the stage re-runs as a unit), or the first agent of a sequence.
+    step_agents = _agents_in(step)
+    as_node, decision_key = _predecessor_of_step(si)
+    return {"as_node": as_node, "decision_key": decision_key,
+            "step_agents": step_agents,
+            "downstream_agents": step_agents + later_agents,
+            "step_index": si}
+
+
+def group_rerun_plan(agent_ids: list[str]) -> dict:
+    """Plan a rewind that re-runs a SUBSET of a gated parallel stage.
+
+    Used for the post-completion "re-run these agents" flow: the user picks 2+
+    agents from one parallel stage, only those re-run in parallel, then the
+    stage's review gate re-pauses so the refreshed outputs can be reviewed before
+    the workflow cascades downstream.
+
+    Mechanism: this reuses the group gate's existing subset routing. We seed the
+    gate's decision to "revise" with group_rerun=<subset>, so the group router
+    (_make_group_router above) loops back to exactly that subset. The rewind
+    therefore attributes its state write to the group's OWN gate node.
+
+    Returns:
+      as_node          - the group gate node (its router forwards to the subset).
+      group_id         - the synthetic gate/group id (e.g. "research").
+      subset           - the selected agents to re-run (validated as a subset).
+      downstream_agents- subset + every agent in later steps (for UI reset). The
+                         non-selected siblings in the SAME stage keep their output.
+      step_index       - index of the target parallel stage.
+
+    Raises ValueError if the agents are empty, span more than one step, or the
+    target step is not a gated parallel group.
+    """
+    ids = [a for a in dict.fromkeys(agent_ids or []) if a]  # de-dup, keep order
+    if not ids:
+        raise ValueError("no agents selected to re-run")
+
+    indices = {_step_index_of(a) for a in ids}
+    if -1 in indices:
+        bad = [a for a in ids if _step_index_of(a) < 0]
+        raise ValueError(f"unknown agent(s): {', '.join(bad)}")
+    if len(indices) != 1:
+        raise ValueError("selected agents must all belong to the same stage")
+
+    si = indices.pop()
+    step = STEPS[si]
+    if "parallel" not in step or not step.get("hitl"):
+        raise ValueError("multi-agent re-run requires a gated parallel stage")
+
+    group_id = _gate_id(step, si)
+    downstream_agents: list[str] = list(ids)
+    for s in STEPS[si + 1:]:
+        downstream_agents += _agents_in(s)
+
+    return {"as_node": f"{group_id}_gate", "group_id": group_id,
+            "subset": ids, "downstream_agents": downstream_agents,
+            "step_index": si}

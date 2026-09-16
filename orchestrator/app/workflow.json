@@ -1,76 +1,279 @@
 {
+  "$comment": "THIS FILE IS THE WORKFLOW — edit it (plus terraform.tfvars) and you have your own multi-agent system. Blocks: orchestrator (engine settings), ui (branding), guardrail (content safety), authorization (who may approve/re-run/cancel/evaluate/delete), tools (your data sources), agents (one per folder under app/subagents/<id>/), steps (topology + review gates). Both Terraform and CDK read this file, so declaring a tool or agent here provisions its infrastructure — no IaC edits. Every key is documented in orchestrator/docs/WORKFLOW_REFERENCE.md. Reformat after editing: python3 format_workflow.py",
   "orchestrator": {
-    "name": "multiagent_orchestrator",
-    "description": "The LangGraph engine that runs this workflow on Amazon Bedrock AgentCore Runtime. It reads this file, routes shared state between the agents, and runs the human-approval (HITL) gates. It is NOT itself an agent \u2014 it has no model or prompt; it only orchestrates. The per-agent models are defined in each entry under 'agents'. Infra-level values (the real runtime name, Memory id, DynamoDB tables, Gateway) are provisioned in Terraform; the fields here that the app actually consumes are 'defaultModel' and 'longStepSeconds' (both overridable by environment variables at deploy time). Each agent entry additionally documents its data 'sources' (where it gets its evidence), its 'access' mechanism (how it reaches that data \u2014 an MCP tool via the Gateway, RAG over the Bedrock Knowledge Base, or upstream graph-state assets), and, where it emits a contract asset, what it 'produces'; these are declarative documentation for lineage clarity, not consumed by the engine (the engine consumes 'mcp' for tool routing). A RAG agent also carries a 'rag' field naming the Knowledge Base corpus (doc_type) it is scoped to; like 'sources'/'access' this is declarative (the functional scope is the agent's own KB_FILTER) and is surfaced as a chip in the UI alongside the 'mcp' chip.",
-    "engine": "langgraph",
-    "runtime": "bedrock-agentcore",
-    "checkpointer": "agentcore-memory",
-    "progressStore": "dynamodb",
     "defaultModel": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-    "longStepSeconds": 1.2
+    "policy": { "enabled": true, "mode": "ENFORCE" },
+    "chatbot": {
+      "enabled": true,
+      "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+      "greeting": "Hi! I can answer questions about your workflow runs — status, cost, latency, outputs, guardrails, evaluations — and take actions like approving a review gate, re-running an agent, or running an evaluation. What would you like to know?",
+      "placeholder": "Ask about a run, or tell me to do something…",
+      "tools": {
+        "status": true,
+        "sessions": true,
+        "outputs": true,
+        "costs": true,
+        "latency": true,
+        "guardrails": true,
+        "evals": true,
+        "runEval": true,
+        "rerun": true,
+        "review": true
+      }
+    }
+  },
+  "ui": {
+    "title": "Multi-Agent Orchestrator",
+    "heading": "🧭 Multi-Agent Orchestrator",
+    "defaultTopic": "Design a serverless data pipeline on AWS",
+    "topicPlaceholder": "What should the workflow work on?",
+    "assistantTitle": "Run Assistant"
+  },
+  "guardrail": {
+    "blockedInputMessage": "This request was blocked by the content guardrail.",
+    "blockedOutputMessage": "The generated content was blocked by the content guardrail.",
+    "contentFilters": {
+      "HATE": "MEDIUM",
+      "VIOLENCE": "MEDIUM",
+      "SEXUAL": "HIGH",
+      "INSULTS": "MEDIUM",
+      "MISCONDUCT": "MEDIUM",
+      "PROMPT_ATTACK": "HIGH"
+    },
+    "deniedWords": ["BLOCKED_DEMO_TERM"],
+    "managedWordLists": ["PROFANITY"],
+    "deniedTopics": [
+      {
+        "name": "LegalAdvice",
+        "definition": "Statements that give specific legal advice, or assert what a reader is legally obliged or entitled to do.",
+        "examples": [
+          "You are legally required to sign this contract.",
+          "You can ignore that clause — it isn't enforceable."
+        ]
+      }
+    ],
+    "piiEntities": { "US_SOCIAL_SECURITY_NUMBER": "BLOCK", "EMAIL": "ANONYMIZE" }
+  },
+  "authorization": {
+    "groupsClaim": "cognito:groups",
+    "actions": {
+      "decision": ["approvers"],
+      "rerun": ["approvers"],
+      "cancel": ["approvers", "operators"],
+      "evaluate": ["operators"],
+      "insights": ["operators"],
+      "delete": ["operators"]
+    }
+  },
+  "tools": {
+    "kb": {
+      "type": "kb",
+      "description": "Bedrock Knowledge Base over kb_docs/, on S3 Vectors, via a Gateway Lambda target. Each top-level folder under kb_docs/ is a corpus (doc_type) an agent can be scoped to.",
+      "corpora": ["reference"],
+      "policy": {
+        "tool": "retrieve",
+        "restrictTo": {
+          "filter": ["reference"]
+        }
+      }
+    },
+    "websearch": {
+      "type": "websearch",
+      "description": "AgentCore Web Search - a managed built-in Gateway connector. No API keys, no infrastructure, queries never leave AWS. us-east-1, eu-west-1, ap-northeast-1 only.",
+      "maxResults": 10,
+      "excludeDomains": [],
+      "includeDomains": [],
+      "targetIncludeDomains": [],
+      "targetExcludeDomains": []
+    },
+    "docs": {
+      "type": "mcp",
+      "endpoint": "https://knowledge-mcp.global.api.aws",
+      "call": "aws___search_documentation",
+      "arg": "search_phrase",
+      "args": { "limit": 5 },
+      "listingMode": "DYNAMIC",
+      "description": "AWS Knowledge MCP Server - managed by AWS, fronted by the Gateway over Streamable HTTP. Nothing to deploy, no credentials. Publishes five tools over live AWS content."
+    },
+    "runs": {
+      "type": "lambda",
+      "source": "tool_lambda",
+      "call": "prior_runs",
+      "arg": "topic",
+      "args": { "limit": 8 },
+      "description": "This deployment's own run history, via an AWS Lambda target. The type=\"lambda\" demonstration: a Lambda reaches what the Gateway cannot - a warehouse, an RDBMS, a VPC.",
+      "toolSchema": [
+        {
+          "name": "prior_runs",
+          "description": "Past workflow runs whose topic matches a phrase, newest first, with the outcome of each.",
+          "properties": {
+            "topic": {
+              "type": "string",
+              "required": true,
+              "description": "Phrase to match against past run topics."
+            },
+            "limit": {
+              "type": "integer",
+              "required": false,
+              "description": "Maximum runs to return (1-25, default 5)."
+            }
+          }
+        },
+        {
+          "name": "run_costs",
+          "description": "Per-agent cost, latency and token totals for one run, from the telemetry table.",
+          "properties": {
+            "session_id": { "type": "string", "required": true, "description": "The run's session id." }
+          }
+        }
+      ]
+    }
   },
   "agents": {
     "intake": {
       "name": "Request Intake",
-      "kind": "sync",
       "runtime": "main",
-      "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-      "sources": ["The user's request/topic"],
+      "maxTokens": 3000,
       "access": ["Session input (topic)"],
-      "produces": "request-brief"
+      "produces": "request-brief",
+      "agentcore": {
+        "guardrails": { "input": true },
+        "evaluations": {
+          "enabled": true,
+          "auto": true,
+          "evaluators": ["Builtin.Faithfulness", "Builtin.Correctness", "Builtin.InstructionFollowing"]
+        }
+      }
     },
     "knowledge_research": {
       "name": "Knowledge Base Research",
-      "kind": "sync",
       "runtime": "dedicated",
-      "rag": "reference",
-      "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-      "sources": ["Reference documents (Bedrock Knowledge Base)"],
-      "access": ["RAG: Bedrock Knowledge Base (scoped to doc_type=reference)"],
-      "produces": "research-finding"
+      "tool": "kb",
+      "corpus": "reference",
+      "maxTokens": 4000,
+      "produces": "research-finding",
+      "agentcore": {
+        "evaluations": {
+          "enabled": true,
+          "auto": false,
+          "evaluators": ["Builtin.Faithfulness", "Builtin.ResponseRelevance"]
+        },
+        "policy": { "enabled": true }
+      }
     },
-    "web_research": {
-      "name": "External Research",
-      "kind": "sync",
+    "web_search": {
+      "name": "Web Search Research",
       "runtime": "dedicated",
-      "mcp": "knowledge",
-      "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-      "sources": ["Public documentation via an MCP server (AWS Knowledge MCP by default)"],
-      "access": ["MCP: remote MCP server (via AgentCore Gateway)"],
-      "produces": "research-finding"
+      "tool": "websearch",
+      "maxTokens": 4000,
+      "produces": "research-finding",
+      "agentcore": {
+        "guardrails": { "output": true },
+        "evaluations": {
+          "enabled": true,
+          "auto": false,
+          "evaluators": ["Builtin.Faithfulness", "Builtin.ResponseRelevance"]
+        },
+        "policy": { "enabled": true }
+      }
+    },
+    "documentation_search": {
+      "name": "MCP Documentation Research",
+      "runtime": "dedicated",
+      "tool": "docs",
+      "maxTokens": 4000,
+      "produces": "research-finding",
+      "agentcore": {
+        "guardrails": { "output": true },
+        "evaluations": {
+          "enabled": true,
+          "auto": false,
+          "evaluators": ["Builtin.Faithfulness", "Builtin.ResponseRelevance"]
+        },
+        "policy": { "enabled": true }
+      }
+    },
+    "history_research": {
+      "name": "Prior Run Research",
+      "runtime": "main",
+      "tool": "runs",
+      "maxTokens": 4000,
+      "produces": "research-finding",
+      "agentcore": {
+        "evaluations": {
+          "enabled": true,
+          "auto": false,
+          "evaluators": ["Builtin.Faithfulness", "Builtin.ResponseRelevance"]
+        },
+        "policy": { "enabled": true }
+      }
     },
     "analysis": {
       "name": "Analysis",
-      "kind": "sync",
       "runtime": "main",
-      "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-      "sources": ["request-brief (intake)", "both research findings (knowledge_research, web_research)"],
+      "maxTokens": 6000,
       "access": ["Upstream assets (orchestrator graph state)"],
-      "produces": "analysis"
+      "produces": "analysis",
+      "agentcore": {
+        "memory": {
+          "longTerm": ["semantic"]
+        },
+        "guardrails": { "output": true },
+        "evaluations": {
+          "enabled": true,
+          "auto": true,
+          "evaluators": ["Builtin.Faithfulness", "Builtin.Correctness", "Builtin.Coherence"]
+        }
+      }
     },
     "recommendation": {
       "name": "Recommendation",
-      "kind": "sync",
       "runtime": "main",
-      "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-      "sources": ["analysis output", "request-brief"],
+      "maxTokens": 6000,
       "access": ["Upstream assets (orchestrator graph state)"],
-      "produces": "recommendation"
+      "produces": "recommendation",
+      "agentcore": {
+        "memory": {
+          "longTerm": ["semantic", "summary"]
+        },
+        "guardrails": { "output": true },
+        "evaluations": {
+          "enabled": true,
+          "auto": true,
+          "evaluators": ["Builtin.Helpfulness", "Builtin.InstructionFollowing"]
+        }
+      }
     },
     "report": {
       "name": "Report",
-      "kind": "sync",
       "runtime": "main",
-      "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-      "sources": ["recommendation output", "analysis output", "request-brief"],
+      "maxTokens": 8000,
       "access": ["Upstream assets (orchestrator graph state)"],
-      "produces": "report"
+      "produces": "report",
+      "agentcore": {
+        "guardrails": { "input": true, "output": true },
+        "evaluations": {
+          "enabled": true,
+          "auto": true,
+          "evaluators": ["Builtin.Faithfulness", "Builtin.Coherence", "Builtin.Conciseness"]
+        }
+      }
     }
   },
   "steps": [
     { "agent": "intake", "hitl": true },
-    { "parallel": ["knowledge_research", "web_research"], "hitl": true, "gateId": "research", "gateName": "Research" },
-    { "sequence": ["analysis", "recommendation"], "hitl": true, "gateId": "analysis_reco", "gateName": "Analysis & Recommendation" },
+    {
+      "parallel": ["knowledge_research", "web_search", "documentation_search", "history_research"],
+      "hitl": true,
+      "gateId": "research",
+      "gateName": "Research"
+    },
+    {
+      "sequence": ["analysis", "recommendation"],
+      "hitl": true,
+      "gateId": "analysis_reco",
+      "gateName": "Analysis & Recommendation"
+    },
     { "agent": "report" }
   ]
 }

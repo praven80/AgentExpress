@@ -25,7 +25,6 @@ from .prompts import SCHEMA, SYSTEM_PROMPT
 
 class IntakeAgent(Agent):
     system_prompt = SYSTEM_PROMPT
-    max_tokens = 3000
 
     async def run(self, ctx: AgentContext) -> str:
         user = f"=== USER REQUEST ===\n{ctx.topic}\n"
@@ -33,7 +32,7 @@ class IntakeAgent(Agent):
             user += f"\n=== REVIEWER GUIDANCE ===\n{ctx.feedback}\n"
         user += f"\nReturn ONLY JSON matching this schema:\n{SCHEMA}"
 
-        text = await ctx.llm(SYSTEM_PROMPT, user, max_tokens=self.max_tokens)
+        text = await ctx.llm(SYSTEM_PROMPT, user)
         payload = synthesis.extract_json(text) or {}
         version = synthesis.prior_version(ctx)
 
@@ -51,7 +50,10 @@ class IntakeAgent(Agent):
             executiveSummary=str(payload.get("executiveSummary") or objective).strip() or None,
             title=title,
             objective=objective,
-            scope=str(payload.get("scope") or "").strip(),
+            # Passed through, not str()-ed: the contract's Scope model accepts
+            # either the {inScope, outOfScope} object the model returns or a
+            # plain string. str() on a dict produced a Python repr.
+            scope=payload.get("scope") or {},
             keyQuestions=synthesis.str_list(payload, "keyQuestions"),
             constraints=synthesis.str_list(payload, "constraints"),
             assumptions=synthesis.str_list(payload, "assumptions"),

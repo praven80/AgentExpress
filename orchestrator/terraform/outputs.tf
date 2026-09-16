@@ -40,3 +40,14 @@ output "gateway_url" {
 output "gateway_id" {
   value = var.enable_gateway ? aws_bedrockagentcore_gateway.mcp[0].gateway_id : ""
 }
+output "knowledge_base_id" {
+  description = <<-EOT
+    Bedrock Knowledge Base id (empty when no tool declares type="kb").
+
+    Worth watching after a corpus change: the id CHANGES whenever an immutable
+    property of the vector store changes, because the KB and its index are named
+    from a digest of those properties (see kb.tf). A new id means a new, empty KB
+    and a fresh ingest, so re-check the ingestion job.
+  EOT
+  value       = local.kb_enabled ? aws_bedrockagent_knowledge_base.kb[0].id : ""
+}

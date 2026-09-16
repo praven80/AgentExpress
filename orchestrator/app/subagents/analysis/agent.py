@@ -13,13 +13,17 @@ import json
 
 from app.common import synthesis
 from app.common.base import Agent
+from app.common.config import upstream_of
 from app.common.context import AgentContext
 from app.common.contracts import Analysis, TracedClaim
 
 from .prompts import SCHEMA, SYSTEM_PROMPT
 
 # The approved upstream assets this agent reads (the brief + both research outputs).
-UPSTREAM = ["intake", "knowledge_research", "web_research"]
+# Derived from the workflow.json topology: every agent in an EARLIER step.
+# Add a research agent to the parallel group and this agent reads it too, with
+# no change here.
+UPSTREAM = upstream_of("analysis")
 
 _CONFIDENCE = {"high", "medium", "low"}
 
@@ -43,7 +47,7 @@ class AnalysisAgent(Agent):
 
     async def run(self, ctx: AgentContext) -> str:
         payload, meta = await synthesis.synthesize(
-            ctx, upstream_ids=UPSTREAM, system_prompt=SYSTEM_PROMPT, schema=SCHEMA, max_tokens=6000
+            ctx, upstream_ids=UPSTREAM, system_prompt=SYSTEM_PROMPT, schema=SCHEMA
         )
         summary = str(payload.get("summary") or "").strip()
         limitations = synthesis.str_list(payload, "limitations")

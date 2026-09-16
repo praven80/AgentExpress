@@ -1,10 +1,32 @@
 terraform {
-  required_version = ">= 1.5.0"
+  # 1.10+ for S3-native state locking (use_lockfile), which removes the need for
+  # a separate DynamoDB lock table.
+  required_version = ">= 1.10.0"
+
+  # Central remote state, so anyone with deploy credentials can plan/apply the
+  # SAME stack. S3 stores the state (versioned + encrypted); `use_lockfile` uses
+  # S3-native locking so concurrent applies can't clobber each other.
+  #
+  # The bucket + region are NOT hardcoded here — they are per-account. Run
+  # ./bootstrap-state.sh once: it derives the account id from your AWS
+  # credentials, creates the bucket, writes backend.hcl (git-ignored), and wires
+  # this working directory to it.
+  #
+  # Prefer local state instead (a solo trial)? Comment this block out and run
+  # `terraform init -migrate-state`.
+  backend "s3" {
+    key          = "orchestrator/terraform.tfstate"
+    encrypt      = true
+    use_lockfile = true
+  }
 
   required_providers {
     aws = {
+      # >= 6.64 is required: that release added the `connector` block on
+      # aws_bedrockagentcore_gateway_target, which the managed AgentCore Web
+      # Search tool needs (terraform/tools.tf).
       source  = "hashicorp/aws"
-      version = ">= 5.60"
+      version = ">= 6.64"
     }
     awscc = {
       source  = "hashicorp/awscc"

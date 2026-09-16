@@ -34,10 +34,26 @@ _LAST_STEP = STEPS[-1]
 LAST_AGENT_ID = _LAST_STEP.get("agent") or (
     _LAST_STEP.get("parallel") or _LAST_STEP.get("sequence"))[-1]
 
+# The FIRST agent in the pipeline. Its output is the run's authoritative brief:
+# every downstream agent reads it for the objective/title that frames the work
+# (see app/common/research.py and app/common/synthesis.py).
+#
+# Derived from the topology rather than hardcoded, so the first agent can be
+# called anything. It used to be the literal "intake", which meant renaming that
+# agent silently dropped the brief everywhere instead of failing.
+_FIRST_STEP = STEPS[0]
+FIRST_AGENT_ID = _FIRST_STEP.get("agent") or (
+    _FIRST_STEP.get("parallel") or _FIRST_STEP.get("sequence"))[0]
+
 # Engine-level settings that describe the orchestrator itself (not an agent).
-# The app consumes 'defaultModel' and 'longStepSeconds'; the rest is
-# documentation. Environment variables still take precedence at deploy time.
+# The app reads 'defaultModel' and 'ui'; the IaC reads the rest (policy, chatbot,
+# guardrail). Environment variables still take precedence at deploy time.
 ORCHESTRATOR: dict = WORKFLOW.get("orchestrator", {})
+
+# Presentation strings (title, the default topic, placeholders). Config rather
+# than literals so re-branding for a different use case is a workflow.json edit.
+UI: dict = WORKFLOW.get("ui", {})
+DEFAULT_TOPIC: str = str(UI.get("defaultTopic") or "")
 
 # --- runtime / infra settings (env-driven, then orchestrator block) -------
 
@@ -51,19 +67,93 @@ EVENTS_TABLE = os.getenv("EVENTS_TABLE")
 
 MCP_TIMEOUT = float(os.getenv("MCP_TIMEOUT", "25"))
 
-# AgentCore Gateway (MCP tool plane). Agents reach all MCP tools through one
-# Cognito-authed Gateway endpoint; the runtime fetches a client-credentials token.
-# Agents reference a Gateway-backed tool by a label in workflow.json ("mcp" key,
-# e.g. "knowledge" or "kb"); the Gateway routes to the matching target. Swapping
-# a target (e.g. to a different MCP server or REST API) is a Terraform change —
-# no app change needed.
+# AgentCore Gateway (the tool plane). Agents reach every tool through one
+# JWT-authed Gateway endpoint; the runtime fetches a client-credentials token.
+# An agent names a tool with its `tool` field in workflow.json, matching a KEY in
+# the `tools` block, and the Gateway routes to that target. Swapping a target
+# (a different MCP server, a REST API, your own Lambda) is a workflow.json edit.
 GATEWAY_URL = os.getenv("GATEWAY_URL", "")
 GATEWAY_TOKEN_URL = os.getenv("GATEWAY_TOKEN_URL", "")
 GATEWAY_CLIENT_ID = os.getenv("GATEWAY_CLIENT_ID", "")
 GATEWAY_CLIENT_SECRET = os.getenv("GATEWAY_CLIENT_SECRET", "")
+# The OAuth2 `scope` (Cognito) or `audience` (Auth0) requested for the token.
 GATEWAY_AUDIENCE = os.getenv("GATEWAY_AUDIENCE", "")
+# Which client-credentials request shape to build: "cognito" | "auth0".
+# Set by Terraform from the `idp` variable (see terraform/identity.tf). Defaults
+# to cognito so an older deployment keeps working.
+GATEWAY_AUTH_FLOW = os.getenv("GATEWAY_AUTH_FLOW", "cognito").lower()
 
-# Per-step delay for long-running agents. Small by default for demos; raise to
-# simulate genuinely long jobs (the async runtime keeps the session alive).
-LONG_STEP_SECONDS = float(os.getenv("LONG_STEP_SECONDS")
-                          or ORCHESTRATOR.get("longStepSeconds", 1.2))
+def step_agents(step: dict) -> list[str]:
+    """The agent ids in one `steps` entry, whatever its shape."""
+    if "agent" in step:
+        return [step["agent"]]
+    return list(step.get("parallel") or step.get("sequence") or [])
+
+
+def upstream_of(agent_id: str) -> list[str]:
+    """Agent ids that run BEFORE `agent_id`, in reverse topology order.
+
+    Derived from the `steps` topology so a downstream agent automatically reads
+    every new upstream agent: add a research agent to the parallel group and the
+    analysis agent picks it up with no code change. Reverse order puts the most
+    recent (most specific) assets first, which is how the synthesis agents want
+    their context.
+
+    Within the agent's OWN step, membership depends on the step kind:
+      * "parallel" — the others are peers running concurrently, so they are NOT
+        upstream (a group's members must not depend on each other).
+      * "sequence" — members listed BEFORE this agent already ran, so they are.
+
+    Raises ValueError if `agent_id` is in no step. That case is a mismatch between
+    an agent module's own id and the workflow — the synthesis agents call this at
+    import with their id (`upstream_of("report")`), so renaming the agent in
+    workflow.json without renaming it in the module lands here. Falling off the end
+    of the loop would return EVERY agent, including this one, and the agent would
+    quietly synthesize from its own previous output. Failing at container start with
+    the reason is the better trade.
+    """
+    seen: list[str] = []
+    for step in STEPS:
+        ids = step_agents(step)
+        if agent_id in ids:
+            if "sequence" in step:
+                seen.extend(ids[: ids.index(agent_id)])
+            return list(reversed(seen))
+        seen.extend(ids)
+    raise ValueError(
+        f"upstream_of({agent_id!r}): no `steps` entry runs that agent. Agents in the "
+        f"topology: {', '.join(NODE_IDS) or '(none)'}. If you renamed this agent in "
+        f"workflow.json, rename its folder under app/subagents/ and the id it passes "
+        f"to upstream_of() to match.")
+
+
+def _load_tools() -> dict:
+    """The `tools` block from app/workflow.json, injected by the IaC as TOOLS_JSON:
+
+        {"kb":        {"type": "kb", "corpora": [...]},
+         "websearch": {"type": "websearch", "maxResults": 10},
+         "docs":      {"type": "mcp", "call": "...", "arg": "..."}}
+
+    The app reads this to know HOW to call each tool (its argument shape), so
+    adding a data source stays a config change. Only the call-shape fields are
+    kept — the rest of a tool entry is deploy-time detail (endpoint, policy,
+    schema) that the IaC consumes and the app must never send in a request.
+    Falls back to the file when the env var is absent (local dev), then to {}.
+    """
+    raw = os.getenv("TOOLS_JSON", "").strip()
+    if raw:
+        try:
+            return json.loads(raw)
+        except ValueError:
+            pass
+    # Local dev / BFF: fall back to the `tools` block of the workflow already
+    # loaded above, keeping only the call-shape fields the app needs.
+    keep = ("type", "corpora", "maxResults", "includeDomains", "excludeDomains",
+            "call", "arg", "args")
+    return {
+        name: {k: v for k, v in (spec or {}).items() if k in keep}
+        for name, spec in (WORKFLOW.get("tools") or {}).items()
+    }
+
+
+TOOLS: dict = _load_tools()

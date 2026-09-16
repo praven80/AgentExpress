@@ -141,3 +141,21 @@ def _write_ddb(sid: str, ev: dict) -> None:
         _table(EVENTS_TABLE).put_item(Item={
             "session_id": sid, "ts": f"{now}#{uuid.uuid4().hex[:6]}",
             "node": n or "-", "msg": ev["log"]})
+
+
+def incomplete_nodes(sid: str) -> list[str]:
+    """Node ids still 'running' in the live status doc — i.e. in-flight when the
+    run ended. Used to reconcile a failed/cancelled run so the UI never shows an
+    agent spinning under a settled run. Best-effort: returns [] with no table or
+    on any read error (reconciliation must never break the failure path)."""
+    if not STATUS_TABLE:
+        # Local dev mirror: fall back to the in-process snapshot.
+        snap = bus.snapshot(sid) or {}
+        nodes = snap.get("nodes") or {}
+        return [nid for nid, v in nodes.items() if (v or {}).get("status") == "running"]
+    try:
+        item = _table(STATUS_TABLE).get_item(Key=_key(sid)).get("Item") or {}
+    except Exception:  # noqa: BLE001
+        return []
+    nodes = item.get("nodes") or {}
+    return [nid for nid, v in nodes.items() if (v or {}).get("status") == "running"]

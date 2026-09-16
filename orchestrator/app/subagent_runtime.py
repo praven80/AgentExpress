@@ -7,8 +7,12 @@ in-process implementation (build_agent_module) — the "dedicated" placement onl
 moves where the code executes, not what it does.
 
 Invoke contract (called by the orchestrator's AgentCoreRuntimeAgent):
-  {"agent_id","topic","outputs":{id:text,...},"feedback","session_id"}
+  {"agent_id","topic","subject_id","outputs":{id:text,...},"feedback",
+   "session_id","otel_context"}
 Returns: {"agent_id","output"} (or {"error"} on failure).
+
+The propagated `otel_context` makes this runtime's spans join the SAME CloudWatch
+trace as the orchestrator, so a run reads as one distributed trace.
 """
 
 import os
@@ -16,6 +20,7 @@ import os
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
 from app.common.context import AgentContext
+from app.features.observability import otel
 from app.orchestrator.registry import build_agent_module
 
 AGENT_ID = os.environ["AGENT_ID"]
@@ -26,19 +31,42 @@ app = BedrockAgentCoreApp()
 
 @app.entrypoint
 async def invoke(payload, context=None):
+    session_id = payload.get("session_id", "")
+    # Re-attach the orchestrator's trace context (so this runtime's spans join
+    # the same trace) and group them under the same session id.
+    _ctx_token = otel.attach_carrier(payload.get("otel_context") or {})
+    _sess_token = otel.set_session(session_id)
     try:
         state = {
             "topic": payload.get("topic", ""),
+            "subject_id": payload.get("subject_id", ""),
             "outputs": payload.get("outputs", {}) or {},
             # AgentContext reads feedback[self.id]; scope it to this agent.
             "feedback": {AGENT_ID: payload.get("feedback", "") or ""},
         }
-        config = {"configurable": {"thread_id": payload.get("session_id", "subagent")}}
+        config = {"configurable": {"thread_id": session_id or "subagent"}}
         ctx = AgentContext(_agent, state, config)
-        out = await _agent.run(ctx)
+        with otel.span(f"agent.{AGENT_ID}",
+                       scope="amazon.opentelemetry.distro.instrumentation.langchain",
+                       **{"gen_ai.agent.id": AGENT_ID,
+                          "gen_ai.operation.name": "invoke_agent",
+                          "aws.genai.span_kind": "AGENT",
+                          "session.id": otel.normalize_session_id(session_id)}) as sp:
+            with otel.accumulate_tokens_on(sp):
+                # Long-term memory works here exactly as in-process (same
+                # config-driven no-ops when disabled for this agent).
+                ctx.recalled_memory = await ctx.memory_recall(ctx.topic or AGENT_ID)
+                out = await _agent.run(ctx)
+                await ctx.memory_store(out)
         return {"agent_id": AGENT_ID, "output": out}
     except Exception as e:  # noqa: BLE001
         return {"agent_id": AGENT_ID, "error": f"{type(e).__name__}: {e}"}
+    finally:
+        # Flush spans before returning — the dedicated runtime's container may be
+        # frozen/reclaimed right after the response, stranding buffered spans.
+        otel.force_flush()
+        otel.detach(_sess_token)
+        otel.detach(_ctx_token)
 
 
 if __name__ == "__main__":

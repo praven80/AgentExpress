@@ -24,10 +24,25 @@ def _configure(agent: Agent, agent_id: str, spec: dict) -> Agent:
     agent.name = spec.get("name", agent_id)
     agent.kind = spec.get("kind", "sync")
     agent.runtime = spec.get("runtime", "main")
-    agent.mcp = spec.get("mcp")
+    # The tool this agent is bound to (a key in the workflow.json `tools`
+    # block), and for a Knowledge Base tool the corpus it is scoped to.
+    agent.tool = spec.get("tool")
+    agent.corpus = spec.get("corpus")
     agent.model = spec.get("model")  # None -> config.MODEL_ID default
     agent.temperature = spec.get("temperature", 0)
-    agent.max_tokens = spec.get("max_tokens", 300)
+    # Output budget for this agent's model calls, in tokens. camelCase to match the
+    # rest of workflow.json (the old snake_case `max_tokens` key was never set by
+    # any config, so every agent silently used the 300 default and then overrode it
+    # with a literal at the call site — which put the budget in code, not config).
+    #
+    # It matters per agent: a research agent emits a full structured JSON payload
+    # with several classified findings, and a budget that is too small truncates it
+    # MID-JSON, which surfaces as "the model returned no parseable research JSON"
+    # rather than as an obvious limit problem.
+    agent.max_tokens = int(spec.get("maxTokens") or 4000)
+    # AgentCore feature flags (memory, guardrails, evaluations, policy, …).
+    # AgentContext reads these to decide which features apply to this agent.
+    agent.agentcore = dict(spec.get("agentcore") or {})
     return agent
 
 
@@ -36,10 +51,11 @@ def build_agent_module(agent_id: str) -> Agent:
     its runtime placement. Used by the per-agent runtime (subagent_runtime) to
     run a dedicated agent's actual code inside its own container.
 
-    The agent id IS the subagent package name by convention; `module` in the
-    spec is an optional override for the rare case they differ."""
+    The agent id IS the subagent package name — one convention, no override. An
+    agent key in workflow.json maps to app/subagents/<that key>/, so adding an
+    agent is a config entry plus a folder, and nothing has to name it twice."""
     spec = AGENTS[agent_id]
-    module = importlib.import_module(f"app.subagents.{spec.get('module', agent_id)}")
+    module = importlib.import_module(f"app.subagents.{agent_id}")
     return _configure(module.agent, agent_id, spec)
 
 

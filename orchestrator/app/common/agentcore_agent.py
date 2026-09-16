@@ -3,7 +3,7 @@ in its OWN AgentCore Runtime (workflow.json `runtime: "dedicated"`).
 
 Instead of running the agent in-process, it calls bedrock-agentcore
 InvokeAgentRuntime against that agent's dedicated runtime ARN, passing the same
-inputs an in-process agent would read (topic, upstream outputs,
+inputs an in-process agent would read (topic, subject, upstream outputs,
 reviewer feedback) and returning the runtime's output text. Same Agent
 interface and node wrapper as an in-process agent, so the graph wiring is
 identical — only where the compute happens differs.
@@ -45,12 +45,17 @@ class AgentCoreRuntimeAgent(Agent):
             await ctx.log(f"No dedicated runtime ARN for '{self.id}' (AGENT_RUNTIME_ARNS)")
             return f"[dedicated runtime for {self.id} not configured]"
 
+        from app.features.observability import otel
         payload = {
             "agent_id": self.id,
             "topic": ctx.topic,
+            "subject_id": (ctx.state or {}).get("subject_id", ""),
             "outputs": (ctx.state or {}).get("outputs", {}) or {},
             "feedback": getattr(ctx, "feedback", "") or "",
             "session_id": ctx.session_id,
+            # Propagate the trace context so this dedicated runtime's spans join
+            # the SAME CloudWatch trace as the orchestrator (distributed trace).
+            "otel_context": otel.carrier(),
         }
         # Session id must be >= 33 chars; make it deterministic per (session, agent).
         session = f"{ctx.session_id}-{self.id}".ljust(33, "0")[:33]

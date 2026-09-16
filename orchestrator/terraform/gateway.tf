@@ -1,20 +1,15 @@
-# --- AgentCore Gateway in front of an MCP server --------------------------
+# --- AgentCore Gateway (the tool plane's front door) -----------------------
 #
-# One Gateway fronts a remote MCP server (default: the public AWS Knowledge MCP,
-# which needs no egress credentials). Inbound auth is a CUSTOM_JWT authorizer
-# backed by Cognito (client-credentials): the agent runtime fetches a short-lived
-# Cognito access token and calls the Gateway's MCP URL.
+# ONE Gateway fronts every tool your agents can call. Inbound auth is a
+# CUSTOM_JWT authorizer backed by the configured IdP (see identity.tf): the agent
+# runtime fetches a short-lived client-credentials token and calls the Gateway's
+# MCP URL.
 #
-# To front a DIFFERENT MCP server later:
-#   * point var.gateway_mcp_endpoint at the provider's MCP endpoint, and
-#   * if it requires a key, add a `credential_provider_configuration { api_key { ... } }`
-#     block on the target below referencing an
-#     aws_bedrockagentcore_api_key_credential_provider that holds the key.
-# A REST API can instead be attached as an OpenAPI target (see the note below).
+# The TARGETS behind it are generated from the `tools` block in
+# app/workflow.json — see terraform/tools.tf. Add a data source there, not here.
 #
-# The Gateway target `name` MUST equal the `mcp` label in app/workflow.json
-# ("knowledge" for the web_research agent). A separate KB retrieve target ("kb",
-# in kb.tf) backs the RAG agent.
+# A Cedar policy engine (policy.tf) is attached below, so every tool call is
+# authorized server-side against permits generated from that same config.
 
 # --- Gateway service role -------------------------------------------------
 
@@ -43,7 +38,7 @@ resource "aws_iam_role_policy" "gateway" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat([
       {
         Effect   = "Allow"
         Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
@@ -51,20 +46,64 @@ resource "aws_iam_role_policy" "gateway" {
       },
       {
         # Needed when a target uses an API-key / OAuth credential provider.
-        # Harmless for the public Knowledge MCP.
+        # Harmless when every target is public or SigV4.
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
         Resource = "arn:aws:secretsmanager:${var.region}:${local.account_id}:secret:bedrock-agentcore*"
+      },
+      {
+        # Lets the Gateway read + evaluate the attached Cedar Policy Engine on
+        # each tool call (required to attach a policy_engine_configuration).
+        Sid    = "PolicyEngineEvaluate"
+        Effect = "Allow"
+        Action = [
+          "bedrock-agentcore:GetPolicyEngine",
+          "bedrock-agentcore:ListPolicies",
+          "bedrock-agentcore:GetPolicy",
+          "bedrock-agentcore:*Authorize*"
+        ]
+        # AuthorizeAction is checked against BOTH the policy engine and the
+        # gateway resource, so grant on both ARNs.
+        Resource = [
+          "arn:aws:bedrock-agentcore:${var.region}:${local.account_id}:policy-engine/*",
+          "arn:aws:bedrock-agentcore:${var.region}:${local.account_id}:gateway/*"
+        ]
       }
-    ]
+      # OUTBOUND permission for the managed web-search connector. The connector
+      # runs inside AWS and the Gateway reaches it as ITSELF, so without this a
+      # call fails at INVOKE time (not at apply time) with
+      #   -32002 "Execution role is not authorized for connector web-search"
+      # Generated from config: present only when a tools entry declares
+      # type=websearch.
+      ], length(local.websearch_tools) == 0 ? [] : [
+      {
+        # Scoped to the AWS-OWNED tool ARN exactly as documented (note the
+        # literal "aws" where the account id would normally be — authorization is
+        # enforced per invocation against that ARN). This was "*" before, which
+        # worked but granted more than the docs call for.
+        Sid      = "InvokeWebSearch"
+        Effect   = "Allow"
+        Action   = ["bedrock-agentcore:InvokeWebSearch"]
+        Resource = "arn:aws:bedrock-agentcore:${var.region}:aws:tool/web-search.v1"
+      },
+      {
+        # The documented Web Search service-role policy pairs InvokeWebSearch with
+        # InvokeGateway on the gateway.
+        #
+        # Scoped to gateway/* rather than the concrete ARN, to stay identical to
+        # the CDK path: there, referencing the Gateway from this role's policy is a
+        # CloudFormation circular dependency (the Gateway waits for the policy).
+        # The PolicyEngineEvaluate statement above is scoped the same way.
+        Sid      = "InvokeGateway"
+        Effect   = "Allow"
+        Action   = ["bedrock-agentcore:InvokeGateway"]
+        Resource = "arn:aws:bedrock-agentcore:${var.region}:${local.account_id}:gateway/*"
+      }
+    ])
   })
 }
 
-# --- Gateway + MCP-server target ------------------------------------------
-#
-# Inbound auth: Cognito client-credentials. The runtime presents a Cognito
-# access token whose scope matches the Resource Server; the Gateway validates
-# via the Cognito User Pool's OIDC discovery endpoint.
+# --- The Gateway ----------------------------------------------------------
 
 resource "aws_bedrockagentcore_gateway" "mcp" {
   count           = var.enable_gateway ? 1 : 0
@@ -73,48 +112,48 @@ resource "aws_bedrockagentcore_gateway" "mcp" {
   protocol_type   = "MCP"
   authorizer_type = "CUSTOM_JWT"
 
+  # Inbound auth is provider-specific, because the two token formats differ:
+  #
+  #   Cognito client-credentials tokens carry `client_id` + `scope` and NO `aud`
+  #   claim, so the caller must be pinned with allowed_clients — an
+  #   allowed_audience check could never match.
+  #
+  #   Auth0 M2M tokens are the mirror image: they carry `aud` (the API
+  #   identifier) and no `client_id`, so we pin the audience and additionally
+  #   constrain the calling application via its `azp` claim.
   authorizer_configuration {
     custom_jwt_authorizer {
-      discovery_url    = "https://cognito-idp.${var.region}.amazonaws.com/${var.cognito_user_pool_id}/.well-known/openid-configuration"
-      allowed_audience = [var.cognito_gateway_client_id]
+      discovery_url = local.gateway_discovery_url
 
-      # Cognito client-credentials tokens carry the client_id claim.
-      allowed_clients = [var.cognito_gateway_client_id]
-    }
-  }
-}
+      allowed_clients  = local.is_cognito ? [local.gateway_client_id] : null
+      allowed_audience = local.is_auth0 ? [local.gateway_audience] : null
 
-resource "aws_bedrockagentcore_gateway_target" "mcp" {
-  count              = var.enable_gateway ? 1 : 0
-  gateway_identifier = aws_bedrockagentcore_gateway.mcp[0].gateway_id
-  name               = "knowledge"
-  description        = "Remote MCP server fronted by the Gateway"
-
-  target_configuration {
-    mcp {
-      mcp_server {
-        endpoint = var.gateway_mcp_endpoint
+      dynamic "custom_claim" {
+        for_each = local.is_auth0 ? [1] : []
+        content {
+          inbound_token_claim_name       = "azp"
+          inbound_token_claim_value_type = "STRING"
+          authorizing_claim_match_value {
+            claim_match_operator = "EQUALS"
+            claim_match_value {
+              match_value_string = local.gateway_client_id
+            }
+          }
+        }
       }
     }
   }
-}
 
-# ==========================================================================
-# ADDING YOUR OWN MCP / REST PROVIDER
-# ==========================================================================
-# The Gateway can front additional providers alongside the default "knowledge"
-# target. In short:
-#
-#   * Another MCP server: add a second `aws_bedrockagentcore_gateway_target`
-#     with `target_configuration { mcp { mcp_server { endpoint = "..." } } }`,
-#     naming it to match a new `mcp` label in app/workflow.json. If it needs a
-#     key, attach a `credential_provider_configuration { api_key { ... } }`
-#     referencing an `aws_bedrockagentcore_api_key_credential_provider` (its
-#     name MUST start with "bedrock-agentcore" so the Gateway role can read it).
-#
-#   * A REST API: attach it as an OpenAPI target
-#     (`target_configuration { mcp { open_api_schema { s3 { uri = "..." } } } }`).
-#     The operation the agent calls must accept a parameter named `query`.
-#
-# CRITICAL: a target `name` MUST exactly equal the `mcp` label in
-# app/workflow.json, or the agent silently falls back to simulated data.
+  # AgentCore Policy: attach the Cedar policy engine (terraform/policy.tf) so the
+  # Gateway evaluates policies on every tool call. `mode` comes from workflow.json
+  # (orchestrator.policy.mode): LOG_ONLY = log decisions only; ENFORCE = block.
+  # When policy.enabled is false, local.policy_enabled is false and this block is
+  # omitted entirely — the Gateway does no policy evaluation.
+  dynamic "policy_engine_configuration" {
+    for_each = local.policy_enabled ? [1] : []
+    content {
+      arn  = aws_bedrockagentcore_policy_engine.main[0].policy_engine_arn
+      mode = local.policy_mode
+    }
+  }
+}

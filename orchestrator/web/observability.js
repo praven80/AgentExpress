@@ -1,14 +1,18 @@
 /* Observability tab — self-contained.
  *
- * Everything for the cost/latency/token views lives here: styles, data fetches
- * (the /api/telemetry/* endpoints), charts (Chart.js), and drilldown. It only
- * borrows the global `api()` and `esc()` from index.html; remove the two <script>
- * tags + this file and the app is unchanged.
+ * Everything for the cost/latency/token/quality views lives here: styles, data
+ * fetches (the /api/telemetry/*, /api/insights endpoints), charts (Chart.js), and
+ * drilldown. It only borrows the global `api()`, `esc()` and `workflow` from
+ * index.html; remove the two <script> tags + this file and the app is unchanged.
  *
- * Two levels:
- *   Overview   — aggregate by date / model over a range (chart + table).
- *   Run detail — one session: per-agent cost/latency/tokens, expandable to
- *                   the individual model/tool/compute calls (lowest level).
+ * Three levels:
+ *   Overview    — aggregate by date / model / user over a range (chart + table).
+ *   Run detail  — one session: per-agent cost/latency/tokens, expandable to the
+ *                 individual model/tool/memory/guardrail/policy calls, plus a
+ *                 "Prompts & I/O" inspector per agent (per run version) with the
+ *                 AgentCore Evaluations scores for each named prompt.
+ *   Insights    — cross-run AgentCore batch analysis: failure patterns, user
+ *                 intents and execution summaries over a lookback window.
  */
 (function () {
   "use strict";
@@ -18,6 +22,11 @@
   const esc = window.esc || ((s) => String(s == null ? "" : s).replace(/[&<>"']/g,
     (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m])));
   const api = (p, o) => window.api(p, o);
+  // RBAC (workflow.json -> authorization), enforced server-side in bff/authz.py.
+  // These only stop the panel offering a control that would 403. Both fall back to
+  // "allowed" when index.html hasn't defined them, so this file still works alone.
+  const authzCan = (a) => (window.can ? window.can(a) : true);
+  const authzGate = (a) => (window.gate ? window.gate(a) : "");
 
   const fmtUsd = (x) => "$" + Number(x || 0).toLocaleString(undefined,
     { minimumFractionDigits: 2, maximumFractionDigits: 6 });
@@ -35,7 +44,10 @@
     + "will not match your actual AWS bill (private pricing, region, and caching "
     + "discounts differ).";
 
-  // Price-book provenance — keep in sync with app/observability/pricing.py.
+  // Price-book provenance, displayed with every cost figure. These describe the
+  // PRICE BOOK, not the deploy region: the rates in
+  // app/features/observability/pricing.py are us-east-1 list prices, so a
+  // deployment elsewhere still prices against them. Update both together.
   const PRICES_AS_OF = "2026-08-20";
   const PRICES_REGION = "us-east-1";
 
@@ -127,12 +139,132 @@
   tr.obs-calls td { background:#fbfdff; padding:0; }
   .obs-calls-inner { padding:8px 12px 14px 30px; }
 
-  /* Pills */
+  /* Pills — one per telemetry kind (llm | tool | agentcore | memory | guardrail | policy | eval) */
   .obs-pill { display:inline-block; font-size:10px; font-weight:700; padding:2px 8px; border-radius:999px; text-transform:capitalize; }
   .obs-pill.llm { background:#eef2ff; color:#4338ca; }
   .obs-pill.tool { background:#ecfdf5; color:#047857; }
   .obs-pill.agentcore { background:#fff7ed; color:#c2410c; }
-  .obs-pill.simulated { background:#f1f5f9; color:#64748b; }
+  .obs-pill.memory { background:#fdf4ff; color:#a21caf; }
+  .obs-pill.guardrail { background:#fff1f2; color:#be123c; }
+  .obs-pill.policy { background:#fefce8; color:#a16207; }
+  .obs-pill.eval { background:#f0fdfa; color:#0f766e; }
+
+  /* Per-agent "Prompts & I/O" trigger button (in the agent row) */
+  .obs-io { margin-left:10px; font-size:10.5px; font-weight:700; color:var(--blue,#2563eb);
+      background:#eff6ff; border:1px solid #bfdbfe; border-radius:7px; padding:2px 9px; cursor:pointer;
+      vertical-align:middle; transition:background .15s; }
+  .obs-io:hover { background:#dbeafe; }
+
+  /* Modal (Prompts & I/O inspector) */
+  .obs-modal-back { position:fixed; inset:0; background:rgba(15,23,42,.55); z-index:1000;
+      display:flex; align-items:flex-start; justify-content:center; padding:40px 18px; overflow-y:auto; }
+  .obs-modal { background:#fff; border-radius:16px; width:min(920px,100%); box-shadow:0 24px 64px #0f172a55;
+      display:flex; flex-direction:column; max-height:calc(100vh - 80px); overflow:hidden; }
+  .obs-modal-head { display:flex; align-items:center; gap:12px; padding:18px 22px; border-bottom:1px solid var(--border,#e2e8f0);
+      background:linear-gradient(180deg,#f8fafc,#eef2f7); }
+  .obs-modal-head .mt { font-size:16px; font-weight:800; color:#0f172a; letter-spacing:-.01em; }
+  .obs-modal-head .ms { font-size:12px; color:var(--muted,#64748b); }
+  .obs-modal-x { margin-left:auto; border:0; background:#e2e8f0; color:#334155; width:30px; height:30px; border-radius:8px;
+      font-size:16px; cursor:pointer; line-height:1; } .obs-modal-x:hover { background:#cbd5e1; }
+  .obs-modal-body { padding:16px 22px 24px; overflow-y:auto; }
+
+  /* KPI chips inside the modal */
+  .obs-mchips { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:14px; align-items:center; }
+  .obs-mchip { background:#f1f5f9; border:1px solid #e2e8f0; border-radius:999px; padding:4px 12px; font-size:11.5px; color:#334155; }
+  .obs-mchip b { color:#0f172a; }
+  .obs-mchip code { font-family:ui-monospace,Menlo,monospace; font-size:11px; }
+
+  /* Per-call title row + labeled meta grid */
+  .obs-callttl { display:flex; align-items:center; flex-wrap:wrap; gap:10px; padding:11px 14px; background:#f8fafc; border-bottom:1px solid #eef2f7; }
+  .obs-callttl .cn { font-weight:800; color:#0f172a; font-size:13px; }
+  .obs-callttl .cmodel { font-size:12px; color:var(--muted,#64748b); font-family:ui-monospace,Menlo,monospace; }
+  .obs-badge { display:inline-block; font-size:10px; font-weight:800; padding:2px 9px; border-radius:999px; text-transform:capitalize; }
+  .obs-badge.ok { background:#ecfdf5; color:#047857; }
+  .obs-badge.error { background:#fef2f2; color:#b91c1c; }
+  .obs-badge.agentcore { background:#fdf4ff; color:#a21caf; }
+  .obs-badge.passed { background:#ecfdf5; color:#047857; }
+  .obs-badge.blocked { background:#fef2f2; color:#b91c1c; }
+  .obs-badge.allowed { background:#ecfdf5; color:#047857; }
+  .obs-badge.denied { background:#fef2f2; color:#b91c1c; }
+  .obs-badge.logonly { background:#fefce8; color:#a16207; }
+  .obs-metagrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(104px,1fr)); gap:10px 16px; padding:12px 16px; border-bottom:1px solid #f1f5f9; }
+  .obs-kv { display:flex; flex-direction:column; gap:2px; min-width:0; }
+  .obs-kv .k { font-size:9.5px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--muted2,#94a3b8); }
+  .obs-kv .val { font-size:13.5px; font-weight:700; color:#0f172a; font-variant-numeric:tabular-nums; }
+  .obs-kv .val small { font-size:11px; font-weight:600; color:var(--muted,#64748b); }
+
+  /* One call block */
+  .obs-callblk { border:1px solid var(--border,#e2e8f0); border-radius:12px; margin-bottom:14px; overflow:hidden; }
+  .obs-seg { border-top:1px solid #f1f5f9; }
+  .obs-seg > summary { cursor:pointer; padding:9px 14px; font-size:11px; font-weight:700; text-transform:uppercase;
+      letter-spacing:.04em; color:var(--muted,#64748b); list-style:none; display:flex; align-items:center; gap:8px; user-select:none; }
+  .obs-seg > summary::-webkit-details-marker { display:none; }
+  .obs-seg > summary:hover { background:#f8fafc; color:#0f172a; }
+  .obs-seg > summary .tw { color:var(--blue,#2563eb); font-size:10px; }
+  .obs-seg > summary .cc { margin-left:auto; text-transform:none; letter-spacing:0; font-weight:600; color:var(--muted2,#94a3b8); }
+  .obs-seg pre { margin:0; padding:12px 16px 16px; background:#0f172a; color:#e2e8f0; font-size:12px; line-height:1.55;
+      white-space:pre-wrap; word-break:break-word; max-height:360px; overflow:auto;
+      font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .obs-seg.sys pre { background:#1e293b; }
+  .obs-copy { margin-left:8px; font-size:10px; font-weight:700; color:var(--blue,#2563eb); background:#eff6ff;
+      border:1px solid #bfdbfe; border-radius:6px; padding:1px 8px; cursor:pointer; text-transform:none; letter-spacing:0; }
+  .obs-copy:hover { background:#dbeafe; }
+  .obs-seg-empty { padding:10px 16px 14px; font-size:12px; color:var(--muted2,#94a3b8); font-style:italic; }
+
+  /* Per-version grouping in the Prompts & I/O modal */
+  .obs-verhead { display:flex; align-items:center; flex-wrap:wrap; gap:10px; padding:12px 14px;
+      background:linear-gradient(180deg,#eef2ff,#e0e7ff); border:1px solid #c7d2fe; border-radius:10px; margin-bottom:14px; }
+  .obs-vertag { font-size:12px; font-weight:800; color:#3730a3; background:#fff; border:1px solid #c7d2fe;
+      border-radius:999px; padding:3px 10px; }
+  .obs-vernote { font-size:12px; color:var(--muted,#64748b); }
+  .obs-verfb { flex:1 1 100%; font-size:12.5px; color:#334155; background:#fffbeb; border:1px solid #fde68a;
+      border-radius:8px; padding:8px 11px; }
+  .obs-verfb b { color:#92400e; }
+  /* Version picker (dropdown) at the top of the Prompts & I/O modal */
+  .obs-vercontrols { display:flex; align-items:center; gap:10px; margin:0 0 14px; padding:10px 12px;
+      background:#eef2ff; border:1px solid #c7d2fe; border-radius:10px; }
+  .obs-vercontrols label { font-size:12px; font-weight:700; color:#3730a3; }
+  .obs-verselect { font-size:12.5px; color:#0f172a; background:#fff; border:1px solid #c7d2fe;
+      border-radius:8px; padding:6px 9px; cursor:pointer; }
+  .obs-vercount { font-size:11.5px; color:var(--muted,#64748b); margin-left:auto; }
+
+  /* Evaluation (AgentCore, LLM-as-judge) section */
+  .obs-eval-run { margin-left:auto; font-size:11px; font-weight:700; color:#0f766e; background:#f0fdfa;
+      border:1px solid #99f6e4; border-radius:7px; padding:3px 12px; cursor:pointer; }
+  .obs-eval-run:hover:not(:disabled) { background:#ccfbf1; }
+  .obs-eval-run:disabled { opacity:.6; cursor:default; }
+  .obs-evalgrid { display:flex; flex-direction:column; gap:10px; }
+  .obs-evalcard { border:1px solid #e2e8f0; border-radius:10px; padding:12px 14px; background:#fff; }
+  .obs-evalhd { display:flex; align-items:center; gap:10px; margin-bottom:8px; }
+  .obs-evalname { font-weight:800; font-size:13px; color:#0f172a; }
+  .obs-evalscore { font-weight:800; font-size:13px; font-variant-numeric:tabular-nums; margin-left:auto; }
+  .obs-evalscore.good { color:#059669; } .obs-evalscore.mid { color:#b45309; } .obs-evalscore.low { color:#be123c; }
+  .obs-evallabel { font-size:11px; font-weight:700; text-transform:capitalize; color:var(--muted,#64748b);
+      background:#f1f5f9; border-radius:999px; padding:2px 9px; }
+  .obs-evalbar { height:8px; border-radius:999px; background:#eef2f7; overflow:hidden; }
+  .obs-evalfill { display:block; height:100%; border-radius:999px; }
+  .obs-evalfill.good { background:#10b981; } .obs-evalfill.mid { background:#f59e0b; } .obs-evalfill.low { background:#f43f5e; }
+  .obs-evalexpl { font-size:12px; color:#334155; margin-top:8px; line-height:1.5; }
+
+  /* Insights panel (cluster details) */
+  .obs-optgrid { display:flex; flex-direction:column; gap:8px; }
+  .obs-optcard { border:1px solid #e2e8f0; border-radius:10px; padding:8px 12px; background:#fff; }
+  .obs-optcard > summary { cursor:pointer; font-weight:700; font-size:12px; color:#0f172a; }
+  /* Clickable session ids inside an insights cluster */
+  .obs-sesslink { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px; font-weight:700;
+      color:#0f766e; text-decoration:none; background:#f0fdfa; border:1px solid #99f6e4;
+      border-radius:6px; padding:1px 7px; }
+  .obs-sesslink:hover { background:#ccfbf1; border-color:#5eead4; }
+  .obs-sesslink-dead { color:#94a3b8; background:#f1f5f9; border:1px solid #e2e8f0; cursor:not-allowed; }
+  /* Insights failure detail: subcategory -> root cause -> session -> span */
+  .obs-ins-sub { margin:8px 0 0; padding:8px 0 0; border-top:1px solid #eef0f3; }
+  .obs-ins-sub-h { font-size:12px; font-weight:700; color:#0f172a; }
+  .obs-ins-rc { margin:8px 0 0 8px; padding:8px 10px; border-left:2px solid #e2e8f0; }
+  .obs-ins-rc-h { font-size:12px; color:#0f172a; }
+  .obs-ins-sess { margin:8px 0 0 8px; padding:6px 10px; background:#f8fafc; border:1px solid #eef0f3; border-radius:8px; }
+  .obs-ins-span { margin:4px 0 0 8px; font-size:11px; color:#475569; }
+  .obs-ins-span > code { font-size:10.5px; color:#0f766e; }
+  .obs-note.warn { color:#b45309; }
 
   /* Est. marker + notes */
   .obs-est { color:var(--muted2,#94a3b8); font-style:italic; }
@@ -180,7 +312,8 @@
                    "#db2777", "#65a30d", "#4f46e5", "#ea580c", "#0d9488", "#9333ea", "#e11d48"];
 
   // ---- one-time layout -------------------------------------------------------
-  let built = false, tab = "overview", flowCalls = [], lastBuckets = [], lastBy = "date";
+  let built = false, tab = "overview", flowCalls = [], flowHistory = {},
+      lastBuckets = [], lastBy = "date";
   function build() {
     if (built) return; built = true;
     const todayStr = etDateStr();                       // ET "today"
@@ -190,9 +323,11 @@
       <div class="obs-hero">
         <div class="obs-hero-ic">📊</div>
         <div>
-          <h1>Observability &amp; Cost</h1>
-          <p>Every model call, tool call and compute burst captured per run — with token
-             counts, latency and cost you can drill into, aggregate, and plan against.</p>
+          <h1>Observability, Cost &amp; Quality</h1>
+          <p>Every model call, tool call, memory op, guardrail check, policy decision and
+             compute burst captured per run — with token counts, latency, cost, the exact
+             prompts and I/O, and LLM-as-judge evaluation scores you can drill into,
+             aggregate, and plan against.</p>
         </div>
       </div>
 
@@ -206,6 +341,7 @@
       <div class="obs-tabs">
         <button class="obs-tab active" id="obsTabOverview" onclick="obsGoto('overview')">Overview</button>
         <button class="obs-tab" id="obsTabFlow" onclick="obsGoto('flow')">Run detail</button>
+        <button class="obs-tab" id="obsTabInsights" onclick="obsGoto('insights')">Insights</button>
       </div>
 
       <section id="obsOverview">
@@ -257,9 +393,35 @@
         <div class="obs-strip" id="obsFlowKpis"></div>
         <div class="obs-card"><h3>Model rates <span class="obs-note">USD per 1M tokens, from the price book</span></h3><div id="obsRates"></div></div>
         <div class="obs-card"><h3>Cost by agent</h3><div class="obs-chart-wrap"><canvas id="obsFlowChart"></canvas></div></div>
-        <div class="obs-card"><h3>Per-agent breakdown <span class="obs-note">click a row to see individual calls</span></h3>
+        <div class="obs-card"><h3>Per-agent breakdown <span class="obs-note">click a row to see individual calls, or “Prompts &amp; I/O” for the full inspector</span></h3>
           <div class="obs-tablewrap" id="obsFlowTable"></div>
           <div class="obs-note" id="obsFlowLegend"></div></div>
+      </section>
+
+      <section id="obsInsights" style="display:none">
+        <div class="obs-card">
+          <div class="obs-controls">
+            <div class="grow"><h3 style="margin:0">Cross-run insights <span class="obs-note">AgentCore batch analysis over recent runs</span></h3>
+              <div class="obs-note" style="margin:4px 0 0">Failure-pattern, user-intent and behavior analysis across ALL runs in the window.
+                Runs a batch evaluation over the runtime's CloudWatch traces — takes a few minutes.
+                Requires Transaction Search (provisioned by <code>terraform/transaction_search.tf</code>).</div></div>
+            <label>Window
+              <select id="obsInsLookback">
+                <option value="1">Last 1 hour</option>
+                <option value="3">Last 3 hours</option>
+                <option value="6">Last 6 hours</option>
+                <option value="12">Last 12 hours</option>
+                <option value="24">Last 24 hours</option>
+                <option value="72">Last 3 days</option>
+                <option value="168" selected>Last 7 days</option>
+                <option value="720">Last 30 days</option>
+              </select>
+            </label>
+            <button class="obs-btn"${authzGate("insights")} onclick="obsRunInsights()">Run insights</button>
+            <button class="obs-btn ghost" onclick="obsLoadInsights()">Refresh</button>
+          </div>
+        </div>
+        <div class="obs-card"><div id="obsInsightsBody"><div class="obs-note" style="margin:0">Loading…</div></div></div>
       </section>
      </div>`;
     wireCombo();
@@ -282,10 +444,13 @@
     tab = t;
     $("obsTabOverview").classList.toggle("active", t === "overview");
     $("obsTabFlow").classList.toggle("active", t === "flow");
+    if ($("obsTabInsights")) $("obsTabInsights").classList.toggle("active", t === "insights");
     $("obsOverview").style.display = t === "overview" ? "" : "none";
     $("obsFlow").style.display = t === "flow" ? "" : "none";
+    if ($("obsInsights")) $("obsInsights").style.display = t === "insights" ? "" : "none";
     if (t === "overview") loadOverview();
-    else { loadSessions(); }
+    else if (t === "insights") loadInsights();
+    else loadSessions();
   }
 
   // ---- overview --------------------------------------------------------------
@@ -437,9 +602,25 @@
     try { data = await api(`/api/sessions/${sid}/telemetry`); }
     catch (e) { $("obsFlowTable").innerHTML = `<div class="obs-empty">Couldn't load: ${esc(e.message)}</div>`; return; }
     flowCalls = data.calls || [];
+    // Also pull the session snapshot so the per-agent inspector can show the human
+    // feedback that triggered each re-run (that lives in snapshot.history[agent],
+    // not in telemetry). Best-effort: the flow still renders if this fails.
+    try { const snap = await api(`/api/sessions/${sid}`); flowHistory = (snap && snap.history) || {}; }
+    catch (e) { flowHistory = {}; }
     renderRates(flowCalls);
     const t = data.totals || {};
-    $("obsFlowKpis").innerHTML = kpi(fmtUsd(t.costUsd), "Flow cost", "#2563eb")
+    // When this run happened: derive the window from the telemetry timestamps.
+    const times = flowCalls.map((c) => String(c.ts || "")).filter(Boolean).sort();
+    let ranTile = "";
+    if (times.length) {
+      const start = shortTime(times[0]);
+      const endT = shortTime(times[times.length - 1]).split(" ")[1] || "";
+      const day = start.split(" ")[0], startT = start.split(" ")[1] || "";
+      ranTile = kpi(day, "Run date", "#475569",
+                    startT + (endT && endT !== startT ? " → " + endT : "") + " ET");
+    }
+    $("obsFlowKpis").innerHTML = ranTile
+      + kpi(fmtUsd(t.costUsd), "Run cost", "#2563eb")
       + kpi(fmtInt((Number(t.inputTokens || 0) + Number(t.outputTokens || 0))), "Tokens", "#0891b2",
             fmtInt(t.inputTokens) + " in · " + fmtInt(t.outputTokens) + " out")
       + kpi(fmtInt(t.calls), "Calls", "#059669")
@@ -467,7 +648,9 @@
       <th class="num">Tools</th><th class="num">Latency</th><th class="num">Cost</th></tr></thead><tbody>${
       agents.map((a) => `
         <tr class="obs-agent" onclick="obsToggle('${esc(a.agentId)}')">
-          <td><span class="caret" id="caret-${esc(a.agentId)}">▸</span> ${esc(friendlyAgent(a.agentId))}</td>
+          <td><span class="caret" id="caret-${esc(a.agentId)}">▸</span> ${esc(friendlyAgent(a.agentId))}${
+            a.agentId === "__session__" ? "" :
+            `<button class="obs-io" onclick="event.stopPropagation();obsAgentIO('${esc(a.agentId)}')" title="View this agent's system prompt, input, output and evaluation scores">⤢ Prompts &amp; I/O</button>`}</td>
           <td>${(a.models || []).map((m) => esc(shortModel(m))).join(", ") || "—"}</td>
           <td class="num">${fmtInt(a.inputTokens)}</td>
           <td class="num">${fmtInt(a.outputTokens)}</td>
@@ -527,7 +710,7 @@
         <th>Kind</th><th>Model / provider</th><th class="num">Input</th><th class="num">Output</th>
         <th class="num" title="The agent's system-prompt share of the input tokens — exact, via the Bedrock CountTokens API. A subset of Input. A leading ~ marks a rare estimate fallback.">Sys prompt</th>
         <th class="num">In $/M</th><th class="num">Out $/M</th>
-        <th class="num">Latency</th><th class="num">Cost</th><th>Mode</th></tr></thead><tbody>${
+        <th class="num">Latency</th><th class="num">Cost</th><th>Result</th></tr></thead><tbody>${
         calls.map((c) => `<tr>
           <td><span class="obs-pill ${esc(c.kind)}">${esc(c.kind)}</span></td>
           <td>${esc(providerLabel(c))}</td>
@@ -538,10 +721,31 @@
           <td class="num">${rate(c, "out_rate")}</td>
           <td class="num">${fmtMs(c.latency_ms)}</td>
           <td class="num">${fmtUsd(c.cost_usd)}</td>
-          <td>${c.mode === "simulated" ? '<span class="obs-pill simulated">simulated</span>' : esc(c.mode)}</td>
+          <td>${resultCell(c)}</td>
         </tr>`).join("")}</tbody></table>
         <div class="obs-note">${LEGEND}</div>` : `<div class="obs-note">No calls recorded.</div>`;
     }
+  }
+
+  // Rightmost column: how the call resolved. LLM/tool rows show the access mode
+  // (bedrock / gateway / denied); the feature rows show their own outcome
+  // (passed|blocked, allowed|denied|log-only, an eval score). There is no
+  // "simulated" mode — an unreachable tool raises ToolUnavailable and the run fails.
+  function resultCell(c) {
+    if (c.kind === "eval") {
+      const v = Number(c.value || 0);
+      return String(c.status || "") === "error"
+        ? '<span class="obs-badge error">error</span>'
+        : `<span class="obs-evalscore ${scoreClass(v)}">${v.toFixed(2)}</span>`;
+    }
+    if (c.kind === "guardrail" || c.kind === "policy") {
+      const st = String(c.status || "").toLowerCase();
+      const cls = { blocked: "blocked", denied: "denied", passed: "passed",
+                    allowed: "allowed", "log-only": "logonly" }[st] || "ok";
+      return `<span class="obs-badge ${cls}">${esc(st || "ok")}</span>`;
+    }
+    if (c.mode === "denied") return '<span class="obs-badge denied">denied</span>';
+    return esc(c.mode);
   }
 
   function shortModel(m) {
@@ -550,10 +754,21 @@
   }
   // "__session__" is the synthetic bucket for AgentCore Runtime compute (not a
   // real agent, and not a model call — so it has no tokens, only a compute cost).
-  function friendlyAgent(id) { return id === "__session__" ? "AgentCore Runtime · compute" : id; }
+  function friendlyAgent(id) {
+    if (id === "__session__") return "AgentCore Runtime · compute";
+    const meta = ((typeof workflow !== "undefined" && workflow && workflow.agents) || {})[id];
+    return meta && meta.name ? `${meta.name} (${id})` : id;
+  }
+  // What the "Model / provider" column shows, per telemetry kind.
   function providerLabel(c) {
-    if (c.kind === "agentcore") return "AgentCore Runtime — compute (vCPU + GB-hours)";
-    return shortModel(c.label);
+    switch (c.kind) {
+      case "agentcore": return "AgentCore Runtime — compute (vCPU + GB-hours)";
+      case "memory":    return `Long-term memory · ${c.label || "?"}${c.namespace ? ` (${c.namespace})` : ""}`;
+      case "guardrail": return `Bedrock Guardrails · ${String(c.label || "").toUpperCase()}`;
+      case "policy":    return `Cedar policy · ${c.label || "?"}`;
+      case "eval":      return `Evaluator · ${String(c.label || "").replace(/^Builtin\./, "")}`;
+      default:          return shortModel(c.label);
+    }
   }
   function kpi(v, l, accent, sub) {
     const a = accent ? ` style="--kpi-accent:${accent}"` : "";
@@ -630,11 +845,587 @@
       download(`run-${sid}-${stamp()}.json`, JSON.stringify(flowCalls, null, 2), "application/json");
       return;
     }
-    const head = ["agent_id", "kind", "label", "mode", "input_tokens", "output_tokens",
-      "system_tokens", "system_tokens_exact", "embed_tokens_est", "in_rate", "out_rate", "latency_ms", "cost_usd", "ts"];
-    // (embed_tokens_est is the estimated KB-query embedding token count for tool rows)
+    const head = ["agent_id", "kind", "label", "mode", "status", "version", "prompt",
+      "input_tokens", "output_tokens", "system_tokens", "system_tokens_exact",
+      "embed_tokens_est", "in_rate", "out_rate", "latency_ms", "cost_usd", "value",
+      "namespace", "finish_reason", "ts"];
+    // embed_tokens_est = estimated KB-query embedding tokens (tool rows);
+    // value = the evaluator score (eval rows); namespace = memory rows.
     const rows = [head].concat(flowCalls.map((c) => head.map((k) => c[k])));
     download(`run-${sid}-${stamp()}.csv`, toCsv(rows), "text/csv");
+  }
+
+  // ---- per-agent "Prompts & I/O" inspector -----------------------------------
+  // Shows, for one agent and one run version, every model call's system prompt,
+  // input and output (captured into the telemetry rows), plus tool queries, memory
+  // reads/writes, guardrail checks, policy decisions, and the AgentCore
+  // Evaluations scores per named prompt — so you can see exactly what each agent
+  // was told, what it produced, and how it scored. Data comes from the
+  // already-loaded `flowCalls`; no extra fetch.
+
+  const seg = (cls, title, text, count) => {
+    const body = (text && String(text).trim())
+      ? `<pre>${esc(text)}</pre>`
+      : `<div class="obs-seg-empty">Not captured for this call (an older run, a tool/compute row, or content dropped on a cold-start container).</div>`;
+    const cc = count != null ? `<span class="cc">${esc(count)}</span>` : "";
+    const copy = (text && String(text).trim())
+      ? `<button class="obs-copy" onclick="event.preventDefault();obsCopy(this)">copy</button>` : "";
+    return `<details class="obs-seg ${cls}" open><summary><span class="tw">▸</span>${esc(title)}${copy}${cc}</summary>${body}</details>`;
+  };
+
+  const badge = (status) => {
+    const s = status || "ok";
+    return `<span class="obs-badge ${esc(s)}">${esc(s)}</span>`;
+  };
+  const kv = (k, val) => `<div class="obs-kv"><div class="k">${esc(k)}</div><div class="val">${val}</div></div>`;
+  // Short local time from an ET timestamp string ("YYYY-MM-DD HH:MM:SS…").
+  // Full "YYYY-MM-DD HH:MM:SS" when the row carries a date; falls back to
+  // time-only, then a dash.
+  const shortTime = (ts) => {
+    const s = String(ts || "");
+    const dt = s.match(/(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})/);
+    if (dt) return dt[1] + " " + dt[2];
+    const t = s.match(/\d{2}:\d{2}:\d{2}/);
+    return t ? t[0] : "—";
+  };
+
+  // Build the per-kind call blocks (model / tool / memory / guardrail / policy)
+  // for a subset of calls. Reused per version so a re-run's calls render under
+  // their own "Version N" header.
+  function callBlocks(calls) {
+    const llm = calls.filter((c) => c.kind === "llm");
+    const tools = calls.filter((c) => c.kind === "tool");
+    const mems = calls.filter((c) => c.kind === "memory");
+    const guards = calls.filter((c) => c.kind === "guardrail");
+    const pols = calls.filter((c) => c.kind === "policy");
+
+    // ---- one model call ----
+    let blocks = llm.map((c, i) => {
+      const temp = (c.temperature != null && c.temperature !== "") ? Number(c.temperature) : null;
+      const meta = `<div class="obs-metagrid">
+        ${kv("Input tokens", fmtInt(c.input_tokens) + ` <small>${fmtInt(c.system_tokens)} sys</small>`)}
+        ${kv("Output tokens", fmtInt(c.output_tokens))}
+        ${kv("Temperature", temp == null ? "—" : esc(String(temp)))}
+        ${kv("Max tokens", c.max_tokens ? fmtInt(c.max_tokens) : "—")}
+        ${kv("Finish", c.finish_reason ? esc(c.finish_reason) : "—")}
+        ${kv("Latency", fmtMs(c.latency_ms))}
+        ${kv("Cost", fmtUsd(c.cost_usd))}
+        ${kv("Time", esc(shortTime(c.ts)))}
+      </div>`;
+      const pname = String(c.prompt || "").trim();
+      return `<div class="obs-callblk">
+        <div class="obs-callttl"><span class="cn">Model call ${i + 1}</span>
+          ${pname ? `<span class="obs-mchip"><code>${esc(pname)}</code></span>` : ""}
+          <span class="cmodel">${esc(shortModel(c.label))}</span>${badge(c.status)}</div>
+        ${meta}
+        ${seg("sys", "System prompt", c.system_prompt)}
+        ${seg("in", "Input", c.user_input)}
+        ${seg("out", "Output", c.output_text)}</div>`;
+    }).join("");
+
+    // ---- tool / KB calls ----
+    if (tools.length) {
+      blocks += `<div class="obs-mchips" style="margin:18px 0 8px"><span class="obs-mchip"><b>Tool &amp; knowledge-base calls</b></span></div>`;
+      blocks += tools.map((c, i) => {
+        const meta = `<div class="obs-metagrid">
+          ${kv("Provider", esc(c.label || "—"))}
+          ${kv("Embed tokens", Number(c.embed_tokens_est || 0) ? "~" + fmtInt(c.embed_tokens_est) : "—")}
+          ${kv("Latency", fmtMs(c.latency_ms))}
+          ${kv("Cost", fmtUsd(c.cost_usd))}
+          ${kv("Time", esc(shortTime(c.ts)))}
+        </div>`;
+        return `<div class="obs-callblk">
+          <div class="obs-callttl"><span class="cn">Tool call ${i + 1}</span>
+            <span class="cmodel">${esc(providerLabel(c))}</span>${badge(c.status)}</div>
+          ${meta}
+          ${seg("in", "Query", c.user_input)}
+          ${seg("out", "Retrieved context", c.output_text)}</div>`;
+      }).join("");
+    }
+
+    // ---- long-term memory reads / writes ----
+    if (mems.length) {
+      blocks += `<div class="obs-mchips" style="margin:18px 0 8px"><span class="obs-mchip"><b>Long-term memory</b> (recall / store)</span></div>`;
+      blocks += mems.map((c) => {
+        const isRecall = String(c.label || "").toLowerCase() === "recall";
+        const meta = `<div class="obs-metagrid">
+          ${kv("Operation", isRecall ? "Recall (read)" : "Store (write)")}
+          ${kv("Namespace", esc(c.namespace || "—"))}
+          ${kv("Latency", fmtMs(c.latency_ms))}
+          ${kv("Time", esc(shortTime(c.ts)))}
+        </div>`;
+        const body = isRecall
+          ? seg("in", "Recall query", c.user_input) + seg("out", "Recalled insights", c.output_text)
+          : seg("out", "Stored insight", c.output_text);
+        return `<div class="obs-callblk">
+          <div class="obs-callttl"><span class="cn">${isRecall ? "Recall" : "Store"}</span>
+            <span class="cmodel">${esc(c.namespace || "")}</span>
+            <span class="obs-badge agentcore">memory</span></div>
+          ${meta}${body}</div>`;
+      }).join("");
+    }
+
+    // ---- guardrail checks (input / output) ----
+    if (guards.length) {
+      blocks += `<div class="obs-mchips" style="margin:18px 0 8px"><span class="obs-mchip"><b>Guardrails</b> (content safety)</span></div>`;
+      blocks += guards.map((c) => {
+        const st = String(c.status || "").toLowerCase();
+        const src = String(c.label || "").toUpperCase();
+        const meta = `<div class="obs-metagrid">
+          ${kv("Check", src === "INPUT" ? "Input (before LLM)" : "Output (after LLM)")}
+          ${kv("Result", st === "blocked" ? "Blocked" : "Passed")}
+          ${kv("Latency", fmtMs(c.latency_ms))}
+          ${kv("Time", esc(shortTime(c.ts)))}
+        </div>`;
+        const detail = st === "blocked" ? seg("out", "Guardrail message", c.output_text) : "";
+        return `<div class="obs-callblk">
+          <div class="obs-callttl"><span class="cn">Guardrail — ${esc(src)}</span>
+            <span class="obs-badge ${st === "blocked" ? "blocked" : "passed"}">${esc(st || "passed")}</span></div>
+          ${meta}${detail}</div>`;
+      }).join("");
+    }
+
+    // ---- policy (Cedar authorization at the Gateway) ----
+    if (pols.length) {
+      blocks += `<div class="obs-mchips" style="margin:18px 0 8px"><span class="obs-mchip"><b>Policy</b> (Cedar authorization at the Gateway)</span></div>`;
+      blocks += pols.map((c) => {
+        const st = String(c.status || "").toLowerCase(); // allowed | denied | log-only
+        const badgeCls = st === "denied" ? "denied" : (st === "allowed" ? "allowed" : "logonly");
+        const meta = `<div class="obs-metagrid">
+          ${kv("Tool", esc(c.label || "—"))}
+          ${kv("Parameter", esc(c.user_input || "—"))}
+          ${kv("Mode", esc(String(c.mode || "").toUpperCase()))}
+          ${kv("Latency", fmtMs(c.latency_ms))}
+          ${kv("Time", esc(shortTime(c.ts)))}
+        </div>`;
+        return `<div class="obs-callblk">
+          <div class="obs-callttl"><span class="cn">Policy check</span>
+            <span class="cmodel">${esc(c.label || "")}</span>
+            <span class="obs-badge ${badgeCls}">${esc(st || "n/a")}</span></div>
+          ${meta}
+          ${seg("out", "Decision detail", c.output_text)}</div>`;
+      }).join("");
+    }
+
+    return blocks;
+  }
+
+  // Normalise a call's version: untagged rows (from a run before version tagging)
+  // are treated as Version 1, so the first run shows as "Version 1" rather than a
+  // confusing "Version 0".
+  const callVersion = (c) => { const v = Number(c.version || 0); return v > 0 ? v : 1; };
+
+  // Versions we can actually SHOW = the distinct versions present in telemetry.
+  // We deliberately do NOT add versions that only exist in history: a run from
+  // before version tagging has all its calls in one bucket, so offering a
+  // "Version N" the telemetry can't back would just show an empty pane.
+  function agentVersions(agentId) {
+    const set = new Set();
+    flowCalls.forEach((c) => { if (c.agent_id === agentId) set.add(callVersion(c)); });
+    const arr = [...set].filter((v) => v > 0).sort((a, b) => a - b);
+    return arr.length ? arr : [1];
+  }
+
+  const versionHeader = (agentId, v, versions) => {
+    const h = (flowHistory[agentId] || []).find((x) => Number(x.version) === Number(v));
+    const fb = h && h.comment ? h.comment : "";
+    const isLatest = v === versions[versions.length - 1];
+    const tag = `Version ${esc(String(v))}${Number(v) === 1 ? " · initial" : ""}${isLatest && versions.length > 1 ? " · latest" : ""}`;
+    return `<div class="obs-verhead">
+      <span class="obs-vertag">${tag}</span>
+      ${fb ? `<div class="obs-verfb"><b>Human feedback (triggered this version):</b> ${esc(fb)}</div>`
+           : `<span class="obs-vernote">${Number(v) === 1 ? "Initial run — no reviewer feedback" : "Re-run — no feedback recorded"}</span>`}
+    </div>`;
+  };
+
+  // Chips + version header + call blocks + evaluation, for ONE selected version.
+  function agentIOBody(agentId, sel) {
+    const versions = agentVersions(agentId);
+    if (!versions.includes(sel)) sel = versions[versions.length - 1];
+    const calls = flowCalls
+      .filter((c) => c.agent_id === agentId && callVersion(c) === sel)
+      .sort((a, b) => String(a.sk || a.ts || "").localeCompare(String(b.sk || b.ts || "")));
+
+    const llm = calls.filter((c) => c.kind === "llm");
+    const tools = calls.filter((c) => c.kind === "tool");
+    const mems = calls.filter((c) => c.kind === "memory");
+    const guards = calls.filter((c) => c.kind === "guardrail");
+    const pols = calls.filter((c) => c.kind === "policy");
+    const totIn = llm.reduce((s, c) => s + Number(c.input_tokens || 0), 0);
+    const totOut = llm.reduce((s, c) => s + Number(c.output_tokens || 0), 0);
+    const totSys = llm.reduce((s, c) => s + Number(c.system_tokens || 0), 0);
+    const totCost = calls.reduce((s, c) => s + Number(c.cost_usd || 0), 0);
+    const totLat = calls.reduce((s, c) => s + Number(c.latency_ms || 0), 0);
+
+    const chips = `<div class="obs-mchips">
+      <span class="obs-mchip"><b>${fmtInt(llm.length)}</b> model call${llm.length === 1 ? "" : "s"}</span>
+      ${tools.length ? `<span class="obs-mchip"><b>${fmtInt(tools.length)}</b> tool call${tools.length === 1 ? "" : "s"}</span>` : ""}
+      ${mems.length ? `<span class="obs-mchip"><b>${fmtInt(mems.length)}</b> memory op${mems.length === 1 ? "" : "s"}</span>` : ""}
+      ${guards.length ? `<span class="obs-mchip"><b>${fmtInt(guards.length)}</b> guardrail check${guards.length === 1 ? "" : "s"}</span>` : ""}
+      ${pols.length ? `<span class="obs-mchip"><b>${fmtInt(pols.length)}</b> policy check${pols.length === 1 ? "" : "s"}</span>` : ""}
+      <span class="obs-mchip"><b>${fmtInt(totIn)}</b> in · <b>${fmtInt(totOut)}</b> out · <b>${fmtInt(totSys)}</b> sys tokens</span>
+      <span class="obs-mchip">total latency <b>${fmtMs(totLat)}</b></span>
+      <span class="obs-mchip">est. cost <b>${fmtUsd(totCost)}</b></span></div>`;
+
+    // If the snapshot history knows about more re-runs than the telemetry can
+    // separate, this run predates per-version telemetry — say so plainly.
+    const knownVersions = (flowHistory[agentId] || []).length;
+    const legacyNote = (knownVersions > versions.length)
+      ? `<div class="obs-note" style="margin:0 0 12px">This run predates per-version telemetry, so its ${fmtInt(knownVersions)} versions can't be separated here — all recorded calls are shown together. New runs are split by version.</div>`
+      : "";
+
+    const body = calls.length ? callBlocks(calls)
+      : `<div class="obs-empty">No telemetry was captured for Version ${esc(String(sel))} (a compute-only step, or a run recorded before per-version telemetry).</div>`;
+    // Evaluation is scoped to the SELECTED version, so each version shows the
+    // eval that scored that version's run.
+    return chips + legacyNote + versionHeader(agentId, sel, versions) + body + evalSection(agentId, sel);
+  }
+
+  // ---- AgentCore Evaluations (LLM-as-judge) ----------------------------------
+  // Per-evaluator score bar + label + explanation, plus an on-demand "Evaluate"
+  // button. Eval rows are kind="eval" telemetry written by the runtime
+  // (bedrock-agentcore:Evaluate over the agent's spans / persisted prompt I/O).
+  function scoreClass(v) { return v >= 0.7 ? "good" : (v >= 0.4 ? "mid" : "low"); }
+
+  // The judge's own band when AgentCore returned one (eval_label, e.g. "Very
+  // Helpful") — it is authoritative. Only when it is absent do we derive a band
+  // from the score, which means inventing thresholds the evaluator never set.
+  function evalBand(c) {
+    if (c.status && c.status !== "ok" && c.status !== "error") return c.status;
+    if (c.eval_label) return c.eval_label;
+    const v = Number(c.value || 0);
+    return v >= 0.7 ? "strong" : (v >= 0.4 ? "moderate" : "weak");
+  }
+
+  // Per-agent feature flags from the workflow definition (loaded by index.html).
+  // The BFF ships `evalAgents` = the ids with evaluations.enabled in workflow.json.
+  function agentFlags(agentId) {
+    const wf = (typeof workflow !== "undefined" && workflow) || {};
+    const ev = wf.evalAgents || [];
+    return { evalEnabled: ev.indexOf(agentId) !== -1 };
+  }
+
+  // Distinct named prompts an agent issued in the selected version (first-seen
+  // order). An agent can make several model calls with different prompts (e.g.
+  // "analysis" and "analysis-scoring"). Runs with no prompt tag yield [""] so
+  // they still render as a single block.
+  function agentPrompts(agentId, sel) {
+    const seen = [];
+    flowCalls
+      .filter((c) => c.agent_id === agentId && c.kind === "llm" && callVersion(c) === sel)
+      .sort((a, b) => String(a.sk || a.ts || "").localeCompare(String(b.sk || b.ts || "")))
+      .forEach((c) => { const p = String(c.prompt || "").trim(); if (!seen.includes(p)) seen.push(p); });
+    return seen.length ? seen : [""];
+  }
+
+  // Eval rows for ONE prompt of ONE version, scoped only by the dimensions that
+  // are actually tagged (older rows lack version/prompt → shown unscoped).
+  function evalRowsFor(agentId, prompt, sel) {
+    const all = flowCalls.filter((c) => c.agent_id === agentId && c.kind === "eval");
+    const versioned = all.some((c) => Number(c.version) > 0);
+    const prompted = all.some((c) => String(c.prompt || "").trim() !== "");
+    return all.filter((c) =>
+        (!versioned || Number(c.version) === Number(sel)) &&
+        (!prompted || String(c.prompt || "").trim() === prompt))
+      .sort((a, b) => String(a.sk || a.ts || "").localeCompare(String(b.sk || b.ts || "")));
+  }
+
+  // The most-recent result per evaluator, rendered as score cards.
+  function evalCards(rows) {
+    const latest = {};
+    rows.forEach((r) => { latest[r.label] = r; });
+    return Object.values(latest).map((c) => {
+      const err = String(c.status || "").toLowerCase() === "error";
+      const v = Number(c.value || 0);
+      const pct = Math.round(v * 100);
+      const name = String(c.label || "").replace(/^Builtin\./, "");
+      if (err) {
+        return `<div class="obs-evalcard">
+          <div class="obs-evalhd"><span class="obs-evalname">${esc(name)}</span>
+            <span class="obs-badge error">error</span></div>
+          <div class="obs-evalexpl">${esc(c.output_text || "Evaluation error.")}</div></div>`;
+      }
+      return `<div class="obs-evalcard">
+        <div class="obs-evalhd"><span class="obs-evalname">${esc(name)}</span>
+          <span class="obs-evallabel">${esc(evalBand(c) || "")}</span>
+          <span class="obs-evalscore ${scoreClass(v)}">${v.toFixed(2)}</span></div>
+        <div class="obs-evalbar"><span class="obs-evalfill ${scoreClass(v)}" style="width:${pct}%"></span></div>
+        ${c.output_text ? `<div class="obs-evalexpl">${esc(c.output_text)}</div>` : ""}</div>`;
+    }).join("");
+  }
+
+  // ONE block per prompt for the selected version, each with its own score cards
+  // + Evaluate button. Shown only for agents with evaluations.enabled.
+  function evalSection(agentId, sel) {
+    if (!agentFlags(agentId).evalEnabled) return "";
+    const prompts = agentPrompts(agentId, sel);
+    const multi = prompts.length > 1 || !!(prompts[0] || "");
+    const blocks = prompts.map((p) => promptEvalBlock(agentId, p, sel)).join("");
+    return `<div class="obs-mchips" style="margin:22px 0 8px">
+        <span class="obs-mchip"><b>Evaluation</b> (AgentCore, LLM-as-judge)${multi ? " · per prompt" : ""}</span></div>
+      ${blocks}`;
+  }
+
+  function promptEvalBlock(agentId, prompt, sel) {
+    const rows = evalRowsFor(agentId, prompt, sel);
+    const cards = evalCards(rows);
+    const runBtn = `<button class="obs-eval-run"${authzGate("evaluate")} onclick="obsRunEval('${esc(agentId)}','${esc(prompt)}')">${rows.length ? "Re-evaluate" : "Evaluate"}</button>`;
+    const title = prompt ? `Prompt <code>${esc(prompt)}</code>` : "Prompt";
+    const emptyMsg = `Not evaluated yet${prompt ? ` for <code>${esc(prompt)}</code>` : ""} at <b>Version ${esc(String(sel))}</b>. Click <b>Evaluate</b> to score it.`;
+    return `<div style="border-top:1px solid #eef0f3;padding-top:10px;margin-top:10px">
+        <div class="obs-mchips" style="margin:0 0 8px">
+          <span class="obs-mchip">${title}</span>${runBtn}</div>
+        <div class="obs-evalgrid">${cards || `<div class="obs-note" style="margin:0">${emptyMsg}</div>`}</div>
+      </div>`;
+  }
+
+  async function runEval(agentId, prompt = "") {
+    const sid = resolveSessionId();
+    if (!sid) return;
+    document.querySelectorAll(".obs-eval-run").forEach((b) => { b.disabled = true; });
+    try {
+      const r = await api(`/api/sessions/${sid}/evaluate`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentId, prompt }),
+      });
+      if (r && r.ok === false) { alert(r.error || "Evaluation is not available here."); return; }
+      // Scoring is asynchronous (LLM judge + CloudWatch reads); poll twice.
+      setTimeout(() => refreshEval(agentId), 25000);
+      setTimeout(() => refreshEval(agentId), 50000);
+    } catch (e) {
+      alert("Couldn't start evaluation: " + e.message);
+    } finally {
+      // Only re-enable if the user is actually allowed to evaluate — otherwise this
+      // blanket re-enable would undo the gate applied when the block was rendered.
+      if (authzCan("evaluate")) {
+        setTimeout(() => document.querySelectorAll(".obs-eval-run").forEach((b) => { b.disabled = false; }), 1000);
+      }
+    }
+  }
+
+  async function refreshEval(agentId) {
+    try { const d = await api(`/api/sessions/${resolveSessionId()}/telemetry`); flowCalls = d.calls || []; }
+    catch (e) { return; }
+    // Re-render the open modal body (if still open) so new eval rows appear.
+    if ($("obsIOBody")) $("obsIOBody").innerHTML = agentIOBody(agentId, agentVersions(agentId).slice(-1)[0]);
+  }
+
+  // ---- the modal itself ------------------------------------------------------
+  // A <select> to switch versions inside the modal (only when >1 version).
+  function versionPicker(agentId, sel) {
+    const versions = agentVersions(agentId);
+    if (versions.length <= 1) return "";
+    const opts = versions.slice().reverse().map((v) =>
+      `<option value="${v}"${v === sel ? " selected" : ""}>Version ${esc(String(v))}` +
+      `${v === versions[versions.length - 1] ? " (latest)" : ""}${v === 1 ? " · initial" : ""}</option>`).join("");
+    return `<div class="obs-vercontrols"><label for="obsVerSel">Show version</label>
+      <select id="obsVerSel" class="obs-verselect" onchange="obsPickVersion('${esc(agentId)}', Number(this.value))">${opts}</select>
+      <span class="obs-vercount">${versions.length} versions</span></div>`;
+  }
+
+  function openAgentIO(agentId) {
+    const versions = agentVersions(agentId);
+    const sel = versions[versions.length - 1];
+    const html = `<div class="obs-modal-back" id="obsModalBack">
+      <div class="obs-modal" role="dialog" aria-modal="true">
+        <div class="obs-modal-head">
+          <div><div class="mt">${esc(friendlyAgent(agentId))}</div>
+            <div class="ms">System prompt · input · output · features · evaluation${versions.length > 1 ? " — pick a version" : ""}</div></div>
+          <button class="obs-modal-x" onclick="obsCloseModal()" aria-label="Close">✕</button>
+        </div>
+        <div class="obs-modal-body">${versionPicker(agentId, sel)}<div id="obsIOBody">${agentIOBody(agentId, sel)}</div></div>
+      </div></div>`;
+    let host = $("obsModalHost");
+    if (!host) { host = document.createElement("div"); host.id = "obsModalHost"; document.body.appendChild(host); }
+    host.innerHTML = html;
+    $("obsModalBack").addEventListener("mousedown", (e) => { if (e.target.id === "obsModalBack") closeModal(); });
+    document.addEventListener("keydown", escClose);
+  }
+
+  // Re-render just the modal body for the picked version (dropdown onchange).
+  function pickVersion(agentId, v) {
+    const el = $("obsIOBody");
+    if (el) el.innerHTML = agentIOBody(agentId, v);
+  }
+  function escClose(e) { if (e.key === "Escape") closeModal(); }
+  function closeModal() {
+    const host = $("obsModalHost");
+    if (host) host.innerHTML = "";
+    document.removeEventListener("keydown", escClose);
+  }
+  function copyPre(btn) {
+    const pre = btn.closest("summary") && btn.closest("summary").parentElement.querySelector("pre");
+    if (!pre) return;
+    navigator.clipboard.writeText(pre.textContent || "").then(() => {
+      const t = btn.textContent; btn.textContent = "copied"; setTimeout(() => { btn.textContent = t; }, 1200);
+    }).catch(() => {});
+  }
+
+  // ---- Insights (cross-run batch analysis) ----------------------------------
+  // A clickable session id -> opens the Run detail tab for that session.
+  function sessionChip(sid, available) {
+    if (!sid) return "";
+    const s = esc(String(sid));
+    // available === false: the run's data has aged out (Insights analyzes a wider
+    // CloudWatch window than the app retains) — show it, but don't link.
+    if (available === false) {
+      return `<span class="obs-sesslink obs-sesslink-dead" title="This run is no longer available (aged out of retention or deleted) — nothing to open">${s} · n/a</span>`;
+    }
+    return `<a href="#" class="obs-sesslink" onclick="obsOpenSession('${s}');return false;" title="Open run detail for ${s}">${s}</a>`;
+  }
+
+  function sectionHead(title, subtitle, n) {
+    return `<div class="obs-mchips" style="margin:16px 0 4px"><span class="obs-mchip"><b>${esc(title)}</b> (${n})</span></div>`
+      + (subtitle ? `<div class="obs-note" style="margin:0 0 8px">${esc(subtitle)}</div>` : "");
+  }
+
+  // The span-level evidence under a failed session (spanId + strongest signal).
+  function failureSpans(spans) {
+    if (!spans || !spans.length) return "";
+    const rows = spans.map((sp) => `
+      <div class="obs-ins-span">
+        <code>${esc(String(sp.spanId || ""))}</code>${sp.category ? ` <span class="obs-note" style="margin:0">(${esc(String(sp.category))})</span>` : ""}
+        ${sp.evidence ? `<div class="obs-evalexpl" style="margin-top:3px">${esc(String(sp.evidence))}</div>` : ""}
+      </div>`).join("");
+    return `<div class="obs-note" style="margin:6px 0 2px">Failure spans</div>${rows}`;
+  }
+
+  function failureSessionRows(sessions) {
+    if (!sessions || !sessions.length) return "";
+    return sessions.map((se) => `
+      <div class="obs-ins-sess">
+        <div class="obs-note" style="margin:0">Session ${sessionChip(se.sid, se.available)}${se.fixType ? ` · <b>${esc(String(se.fixType))}</b>` : ""}</div>
+        ${se.explanation ? `<div class="obs-evalexpl">${esc(String(se.explanation))}</div>` : ""}
+        ${se.recommendation ? `<div class="obs-note" style="margin:4px 0 0"><b>Fix:</b> ${esc(String(se.recommendation))}</div>` : ""}
+        ${failureSpans(se.spans)}
+      </div>`).join("");
+  }
+
+  function rootCauseRows(rcs) {
+    if (!rcs || !rcs.length) return "";
+    return rcs.map((rc, i) => `
+      <div class="obs-ins-rc">
+        <div class="obs-ins-rc-h"><b>Root cause ${i + 1}:</b> ${esc(String(rc.name || ""))} <span class="obs-note" style="margin:0">· ${esc(String(rc.affectedSessionCount || 0))} session(s)</span></div>
+        ${rc.rootCause ? `<div class="obs-evalexpl">${esc(String(rc.rootCause))}</div>` : ""}
+        ${rc.recommendation ? `<div class="obs-note" style="margin:4px 0 0"><b>Recommendation:</b> ${esc(String(rc.recommendation))}</div>` : ""}
+        ${failureSessionRows(rc.sessions)}
+      </div>`).join("");
+  }
+
+  // Failure patterns: cluster -> subcategory -> root causes -> sessions -> spans.
+  function failureClusters(items) {
+    if (!items || !items.length) return "";
+    const rows = items.map((c) => `
+      <details class="obs-optcard">
+        <summary>${esc(String(c.name || "cluster"))} <span class="obs-note" style="margin:0">· ${esc(String(c.affectedSessionCount || 0))} session(s)</span></summary>
+        ${c.description ? `<div class="obs-evalexpl">${esc(String(c.description))}</div>` : ""}
+        ${(c.subCategories || []).map((sc) => `
+          <div class="obs-ins-sub">
+            <div class="obs-ins-sub-h">${esc(String(sc.name || ""))} <span class="obs-note" style="margin:0">· ${esc(String(sc.affectedSessionCount || 0))} session(s)</span></div>
+            ${sc.description ? `<div class="obs-evalexpl">${esc(String(sc.description))}</div>` : ""}
+            ${rootCauseRows(sc.rootCauses)}
+          </div>`).join("")}
+      </details>`).join("");
+    return sectionHead("Failure patterns",
+      "Recurring ways runs broke — clustered by root cause, with the affected sessions and span-level evidence.", items.length)
+      + `<div class="obs-optgrid">${rows}</div>`;
+  }
+
+  // User intents: goal clusters with a sample user message per session.
+  function intentClusters(items) {
+    if (!items || !items.length) return "";
+    const rows = items.map((c) => `
+      <details class="obs-optcard">
+        <summary>${esc(String(c.name || "intent"))} <span class="obs-note" style="margin:0">· ${esc(String(c.affectedSessionCount || 0))} session(s)</span></summary>
+        ${c.description ? `<div class="obs-evalexpl">${esc(String(c.description))}</div>` : ""}
+        ${(c.sessions || []).map((se) => `
+          <div class="obs-ins-sess">
+            <div class="obs-note" style="margin:0">Session ${sessionChip(se.sid, se.available)}</div>
+            ${(se.messages || []).map((m) => `<div class="obs-evalexpl">“${esc(String(m))}”</div>`).join("")}
+          </div>`).join("")}
+      </details>`).join("");
+    return sectionHead("User intents",
+      "What users were trying to get done, grouped by goal.", items.length)
+      + `<div class="obs-optgrid">${rows}</div>`;
+  }
+
+  // Execution summaries: how the agents approached the work + the outcome.
+  function summaryClusters(items) {
+    if (!items || !items.length) return "";
+    const rows = items.map((c) => `
+      <details class="obs-optcard">
+        <summary>${esc(String(c.name || "summary"))} <span class="obs-note" style="margin:0">· ${esc(String(c.affectedSessionCount || 0))} session(s)</span></summary>
+        ${c.description ? `<div class="obs-evalexpl">${esc(String(c.description))}</div>` : ""}
+        ${(c.sessions || []).map((se) => `
+          <div class="obs-ins-sess">
+            <div class="obs-note" style="margin:0">Session ${sessionChip(se.sid, se.available)}</div>
+            ${se.approach ? `<div class="obs-evalexpl"><b>Approach:</b> ${esc(String(se.approach))}</div>` : ""}
+            ${se.outcome ? `<div class="obs-evalexpl"><b>Outcome:</b> ${esc(String(se.outcome))}</div>` : ""}
+          </div>`).join("")}
+      </details>`).join("");
+    return sectionHead("Execution summaries",
+      "How the agents approached the work and the outcomes reached.", items.length)
+      + `<div class="obs-optgrid">${rows}</div>`;
+  }
+
+  // Jump from an insights cluster to the Run detail tab for a given session.
+  function openSession(sid) {
+    if (!sid) return;
+    goto("flow");
+    const inp = $("obsSession");
+    if (inp) { sessionMap[sid] = sid; inp.value = sid; }
+    loadFlow();
+  }
+
+  function insightsHtml(data) {
+    const st = data.status || "none";
+    if (st === "none") {
+      const note = data.note ? ` ${esc(String(data.note))}` : "";
+      return `<div class="obs-note" style="margin:0">No insights run yet. Pick a window and click <b>Run insights</b> — it analyzes recent runs for failure patterns, user intents, and behavior summaries.${note}</div>`;
+    }
+    if (st === "IN_PROGRESS" || st === "PENDING") return `<div class="obs-note" style="margin:0"><span class="obs-mchip">Running…</span> AgentCore is analyzing recent runtime traces (a few minutes). Click <b>Refresh</b> to check.</div>`;
+    if (st === "FAILED") return `<div class="obs-note warn" style="margin:0">Insights run failed. Ensure at least one run has completed and Transaction Search is enabled, then try again.</div>`;
+    const f = data.findings || {};
+    const s = f.sessions || {};
+    const total = Number(s.total || 0), analyzed = Number(s.completed || 0), skipped = Number(s.failed || 0);
+    const head = `<div class="obs-mchips" style="margin:0 0 8px">
+      <span class="obs-mchip"><b>${esc(st)}</b></span>
+      <span class="obs-mchip">${analyzed} of ${total} sessions analyzed${skipped ? ` · ${skipped} skipped` : ""}</span>
+      ${data.updated_at ? `<span class="obs-note" style="margin:0">updated ${esc(String(data.updated_at))}</span>` : ""}</div>`;
+    const errNote = (st === "COMPLETED_WITH_ERRORS" && skipped)
+      ? `<div class="obs-note" style="margin:0 0 10px">Completed with partial errors — ${skipped} session(s) couldn't be analyzed (typically control-plane/one-off sessions, or runs with no scorable agent content). The findings below come from the ${analyzed} analyzed session(s).</div>`
+      : "";
+    const body = failureClusters(f.failures) + intentClusters(f.userIntents) + summaryClusters(f.executionSummaries);
+    return head + errNote + (body || `<div class="obs-note" style="margin:0">No clusters returned for this window.</div>`);
+  }
+
+  async function loadInsights() {
+    const el = $("obsInsightsBody");
+    if (!el) return;
+    try {
+      const data = await api("/api/insights");
+      el.innerHTML = insightsHtml(data || {});
+    } catch (e) {
+      el.innerHTML = `<div class="obs-note warn" style="margin:0">Couldn't load insights: ${esc(e.message)}</div>`;
+    }
+  }
+
+  async function runInsights() {
+    const lookback = Number(($("obsInsLookback") && $("obsInsLookback").value) || 168);
+    try {
+      const r = await api("/api/insights/run", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lookbackHours: lookback }),
+      });
+      if (r && r.ok === false) {
+        if ($("obsInsightsBody")) $("obsInsightsBody").innerHTML = `<div class="obs-note warn" style="margin:0">${esc(r.error || "Insights is not available here.")}</div>`;
+        return;
+      }
+      if ($("obsInsightsBody")) $("obsInsightsBody").innerHTML = `<div class="obs-note" style="margin:0"><span class="obs-mchip">Running…</span> analyzing the last ${lookback}h of runs. This takes a few minutes — click <b>Refresh</b> to check.</div>`;
+      [60, 120, 180, 240].forEach((s) => setTimeout(loadInsights, s * 1000));
+    } catch (e) {
+      alert("Couldn't start insights: " + e.message);
+    }
   }
 
   // ---- expose the handlers the inline HTML calls -----------------------------
@@ -647,4 +1438,12 @@
   window.obsReproject = reproject;
   window.obsExport = exportOverview;
   window.obsExportFlow = exportFlow;
+  window.obsAgentIO = openAgentIO;
+  window.obsPickVersion = pickVersion;
+  window.obsRunEval = runEval;
+  window.obsCloseModal = closeModal;
+  window.obsCopy = copyPre;
+  window.obsRunInsights = runInsights;
+  window.obsLoadInsights = loadInsights;
+  window.obsOpenSession = openSession;
 })();

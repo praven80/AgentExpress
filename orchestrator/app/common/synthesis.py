@@ -14,115 +14,20 @@ identity — its prompt, its contract, and which upstream assets it reads.
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
-from app.common import clock
-from app.common.contracts.base import AssetStatus, Source, SourceType
+from app.common import assets, clock
+from app.common.contracts.base import AssetStatus
 
-_SOURCE_TYPES = set(SourceType.__args__)
-
-
-def slug(text: str, limit: int = 48) -> str:
-    s = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
-    return s[:limit] or "request"
-
-
-def extract_json(text: str) -> dict | None:
-    t = (text or "").strip()
-    if t.startswith("```"):
-        t = t.split("\n", 1)[1] if "\n" in t else t
-        if t.rstrip().endswith("```"):
-            t = t.rstrip()[:-3]
-    start = t.find("{")
-    if start == -1:
-        return None
-    t = t[start:]
-    # Fast path: the whole object parses.
-    end = t.rfind("}")
-    if end != -1:
-        try:
-            return json.loads(t[: end + 1])
-        except (ValueError, TypeError):
-            pass
-    # Resilient path: the model output was truncated mid-JSON (hit the token
-    # budget). Rebalance the open braces/brackets and retry, dropping the last
-    # (partial) line if needed, so we salvage a usable partial object instead of
-    # degrading the whole agent.
-    return _repair_json(t)
-
-
-def _balance_close(s: str) -> str | None:
-    """Close any unclosed strings/brackets in a JSON prefix and return the parsed
-    object, or None if it still won't parse."""
-    stack: list[str] = []
-    in_str = False
-    esc = False
-    for ch in s:
-        if in_str:
-            if esc:
-                esc = False
-            elif ch == "\\":
-                esc = True
-            elif ch == '"':
-                in_str = False
-            continue
-        if ch == '"':
-            in_str = True
-        elif ch in "{[":
-            stack.append(ch)
-        elif ch == "}" and stack and stack[-1] == "{":
-            stack.pop()
-        elif ch == "]" and stack and stack[-1] == "[":
-            stack.pop()
-    fixed = s
-    if in_str:
-        fixed += '"'
-    fixed = re.sub(r",\s*$", "", fixed.rstrip())
-    fixed += "".join("}" if o == "{" else "]" for o in reversed(stack))
-    try:
-        return json.loads(fixed)
-    except (ValueError, TypeError):
-        return None
-
-
-def _repair_json(t: str) -> dict | None:
-    lines = t.splitlines()
-    # Try the full prefix first, then progressively drop trailing (truncated)
-    # lines until a balanced close parses.
-    for cut in range(len(lines), 0, -1):
-        candidate = "\n".join(lines[:cut])
-        obj = _balance_close(candidate)
-        if isinstance(obj, dict):
-            return obj
-    return None
-
-
-def _parse(raw: str | None) -> dict:
-    if not raw:
-        return {}
-    try:
-        return json.loads(raw)
-    except (TypeError, ValueError):
-        return {}
-
-
-def brief(ctx) -> tuple[dict, str]:
-    """The approved request-brief plus its display title."""
-    b = _parse(ctx.input("intake"))
-    title = b.get("title") or ctx.topic or ctx.agent_id
-    return b, str(title)
-
-
-def prior_version(ctx) -> int:
-    """This agent's own previous output version (for the revise cycle)."""
-    raw = ctx.input(ctx.agent_id)
-    if not raw:
-        return 1
-    try:
-        return int(json.loads(raw).get("version", 1)) + 1
-    except (TypeError, ValueError):
-        return 1
+# Re-exported so a synthesis agent has ONE import. The implementations live in
+# app/common/assets.py because research.py needs the same five mechanics — they
+# were duplicated in both runners, and `extract_json` had already diverged.
+brief = assets.brief
+build_sources = assets.build_sources
+extract_json = assets.extract_json
+prior_version = assets.prior_version
+slug = assets.slug
+str_list = assets.str_list
 
 
 def envelope(ctx, meta: dict, asset_type_slug: str) -> dict[str, Any]:
@@ -136,38 +41,16 @@ def envelope(ctx, meta: dict, asset_type_slug: str) -> dict[str, Any]:
     }
 
 
-def build_sources(payload: dict) -> list[Source]:
-    """Coerce the model's `sources` into validated Source objects. An
-    out-of-vocabulary sourceType is kept in sourceName and coerced to 'other'."""
-    out: list[Source] = []
-    for i, s in enumerate(payload.get("sources", []) or []):
-        if not isinstance(s, dict):
-            continue
-        st = str(s.get("sourceType", "other")).strip().lower()
-        if st not in _SOURCE_TYPES:
-            st = "other"
-        out.append(Source(
-            sourceId=s.get("sourceId") or f"source-{i}",
-            sourceType=st,
-            sourceName=str(s.get("sourceName") or s.get("sourceType") or "source"),
-            sourceAssetId=s.get("sourceAssetId"),
-        ))
-    return out
-
-
-def str_list(payload: dict, key: str) -> list[str]:
-    return [str(x) for x in (payload.get(key) or []) if str(x).strip()]
-
-
 async def synthesize(ctx, *, upstream_ids: list[str], system_prompt: str,
-                     schema: str, max_tokens: int = 4500) -> tuple[dict, dict]:
+                     schema: str, max_tokens: int | None = None) -> tuple[dict, dict]:
     """Gather approved upstream assets, ask the model for structured JSON, and
     return (payload, meta). meta carries title/version and the list of upstream
     assetIds available for claim tracing. payload is {} if the model output was
     unavailable/unparseable, so the agent can degrade cleanly.
     """
-    b, title = brief(ctx)
-    version = prior_version(ctx)
+    b = assets.brief(ctx)
+    title = assets.brief_title(b, ctx)
+    version = assets.prior_version(ctx)
 
     blocks: list[str] = []
     upstream_asset_ids: list[str] = []
@@ -175,7 +58,7 @@ async def synthesize(ctx, *, upstream_ids: list[str], system_prompt: str,
         raw = ctx.input(aid)
         if not raw:
             continue
-        asset_id = _parse(raw).get("assetId")
+        asset_id = assets.parse(raw).get("assetId")
         if asset_id:
             upstream_asset_ids.append(asset_id)
         label = aid.replace("_", " ").upper()
@@ -197,8 +80,10 @@ async def synthesize(ctx, *, upstream_ids: list[str], system_prompt: str,
     )
     user += f"\nReturn ONLY JSON matching this schema:\n{schema}"
 
+    # max_tokens=None -> the agent's own `maxTokens` from workflow.json. A caller
+    # may still override for one call, but no shipped agent needs to.
     text = await ctx.llm(system_prompt, user, max_tokens=max_tokens)
-    payload = extract_json(text) or {}
+    payload = assets.extract_json(text) or {}
     meta = {
         "title": title,
         "version": version,

@@ -76,8 +76,12 @@
   .stage-group-title { position:absolute; top:-10px; left:50%; transform:translateX(-50%); white-space:nowrap;
                        background:#eef2ff; color:#3730a3; border:1px solid #c7d2fe; font-size:10px; font-weight:700;
                        padding:3px 12px; border-radius:999px; letter-spacing:.02em; }
-  /* Parallel = agents stacked VERTICALLY (they run at the same time). */
-  .stage-col { display:flex; flex-direction:column; gap:11px; }
+  /* Parallel = agents in a GRID, two per row (they all run at the same time, so
+     there is no order to convey — unlike .stage-row, which uses arrows).
+     Two per row rather than one column so a wide stage stays readable without the
+     stage growing taller than the sequential group beside it. The column count is
+     set inline per stage (min(2, agents)) so a 1-agent group leaves no empty track. */
+  .stage-col { display:grid; gap:11px; justify-content:center; }
   .stage-col .node { width:200px; }
   /* Sequential = agents laid out left-to-right with arrows (they run in order). */
   .stage-row { display:flex; align-items:center; gap:6px; }
@@ -227,6 +231,57 @@
   .spinner { display:inline-block; width:14px; height:14px; border:2px solid #cbd5e1; border-top-color:var(--orange);
              border-radius:50%; animation:spin .8s linear infinite; vertical-align:middle; }
   @keyframes spin { to { transform:rotate(360deg); } }
+
+  /* --- "Rerun from here" control (in the focused agent's output panel) --- */
+  .rerunbox { margin-top:12px; padding:12px; border:1px dashed #c7d2fe; border-radius:10px; background:#f5f7ff; }
+  .rerunbox .rerunhd { font-size:13px; font-weight:700; color:#4338ca; }
+  .rerunbox .rerunsub { font-size:12px; color:var(--muted); margin:4px 0 8px; }
+  .rerunbox textarea { width:100%; min-height:56px; box-sizing:border-box; border:1px solid #d9dff5;
+                       border-radius:8px; padding:8px; font:inherit; font-size:12px; resize:vertical; margin-bottom:8px; }
+  /* --- Post-completion multi-agent rerun panel (one parallel stage) --- */
+  .rr-stage { border:1px solid var(--border); border-radius:12px; padding:12px 14px; margin-bottom:12px; background:#fbfdff; }
+  .rr-stage-title { font-size:11px; font-weight:700; color:#3730a3; text-transform:uppercase; letter-spacing:.03em; margin-bottom:8px; }
+  .rr-agent { display:flex; flex-direction:column; gap:0; padding:7px 0; border-bottom:1px dashed var(--border); }
+  .rr-agent:last-of-type { border-bottom:0; }
+  .rr-agent.sel { background:#eef2ff33; }
+  .rr-pick { display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px; }
+  .rr-pick input { width:15px; height:15px; cursor:pointer; }
+  .rr-fb { margin-top:8px; min-height:48px; }
+  #rerunPanel button.revise { margin-top:10px; }
+
+  /* --- In-app assistant (chatbot) --- */
+  .cbot-fab { position:fixed; right:22px; bottom:22px; width:56px; height:56px; border-radius:50%;
+              background:#4338ca; color:#fff; border:none; cursor:pointer; z-index:900;
+              box-shadow:0 6px 20px #0f172a33; font-size:24px; display:flex; align-items:center; justify-content:center;
+              transition:transform .15s, box-shadow .15s; }
+  .cbot-fab:hover { transform:translateY(-2px); box-shadow:0 10px 26px #0f172a44; }
+  .cbot-panel { position:fixed; right:22px; bottom:88px; width:380px; max-width:calc(100vw - 44px);
+                height:560px; max-height:calc(100vh - 130px); background:#fff; border:1px solid var(--border);
+                border-radius:16px; box-shadow:0 16px 44px #0f172a2e; z-index:901; display:none; flex-direction:column; overflow:hidden; }
+  .cbot-panel.open { display:flex; }
+  .cbot-head { background:linear-gradient(135deg,#4338ca,#6d28d9); color:#fff; padding:13px 16px; display:flex; align-items:center; gap:9px; }
+  .cbot-head .t { font-weight:700; font-size:14px; } .cbot-head .s { font-size:11px; opacity:.85; }
+  .cbot-x { margin-left:auto; background:transparent; border:none; color:#fff; font-size:18px; cursor:pointer; opacity:.85; }
+  .cbot-x:hover { opacity:1; }
+  .cbot-msgs { flex:1; overflow-y:auto; padding:14px; display:flex; flex-direction:column; gap:10px; background:#f8fafc; }
+  .cbot-msg { max-width:85%; padding:9px 12px; border-radius:13px; font-size:13px; line-height:1.5; white-space:pre-wrap; word-break:break-word; }
+  .cbot-msg.user { align-self:flex-end; background:#4338ca; color:#fff; border-bottom-right-radius:4px; }
+  .cbot-msg.bot { align-self:flex-start; background:#fff; border:1px solid var(--border); color:#0f172a; border-bottom-left-radius:4px; }
+  .cbot-msg.bot .act { display:block; margin-top:6px; font-size:11px; color:#15803d; font-weight:600; }
+  .cbot-msg.bot .cbot-p { margin:0 0 6px; } .cbot-msg.bot .cbot-p:last-child { margin-bottom:0; }
+  .cbot-msg.bot .cbot-h { font-weight:700; font-size:13px; margin:8px 0 4px; color:#0f172a; }
+  .cbot-msg.bot .cbot-h:first-child { margin-top:0; }
+  .cbot-msg.bot ul { margin:4px 0 6px; padding-left:18px; } .cbot-msg.bot li { margin:2px 0; }
+  .cbot-msg.bot strong { font-weight:700; } .cbot-msg.bot em { font-style:italic; }
+  .cbot-msg.bot code { background:#f1f5f9; padding:1px 5px; border-radius:5px;
+                       font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:11.5px; }
+  .cbot-typing { align-self:flex-start; color:var(--muted); font-size:12px; font-style:italic; padding:4px 6px; }
+  .cbot-foot { border-top:1px solid var(--border); padding:10px; display:flex; gap:8px; background:#fff; }
+  .cbot-foot textarea { flex:1; resize:none; min-height:38px; max-height:110px; border:1px solid var(--border);
+                        border-radius:10px; padding:9px 11px; font:inherit; font-size:13px; }
+  .cbot-foot textarea:focus { outline:none; border-color:#6d28d9; box-shadow:0 0 0 3px #6d28d922; }
+  .cbot-send { background:#4338ca; color:#fff; border:none; border-radius:10px; padding:0 15px; cursor:pointer; font-weight:600; }
+  .cbot-send:disabled { opacity:.5; cursor:not-allowed; }
 </style>
 </head>
 <body>
@@ -236,7 +291,12 @@
     <button id="navCampaigns" class="navbtn active" onclick="showCampaignsView && showCampaignsView()">Sessions</button>
     <button id="navObs" class="navbtn" onclick="showObsView && showObsView()">📊 Observability</button>
   </div>
-  <input id="topic" type="text" value="Design a serverless data pipeline on AWS" />
+  <!-- Value and placeholder come from workflow.json `ui` at load time (see
+       applyUiConfig). Left empty here so the sample's topic never flashes up in a
+       customer's deployment before the config arrives. -->
+  <input id="topic" type="text" />
+  <input id="subject" type="text" placeholder="Subject (optional, for memory)"
+         title="Optional grouping key. Scopes long-term memory so agents recall insights for THIS subject across runs (e.g. a customer, product, or project)." />
   <button id="start">Start session</button>
   <div class="spacer"></div>
   <span id="user" class="user"></span>
@@ -253,103 +313,263 @@ let current = null;
 let workflow = { agents:{}, steps:[] };
 let idToken = null;
 let lastSig = null, feedbackDraft = "";
-let selectedNode = null, lastNodes = {}, lastHistory = {};
+let selectedNode = null, lastNodes = {}, lastHistory = {}, lastOverall = "";
 let groupDraft = {}, groupIds = [], groupGateNode = null;  // per-agent group-gate review
+let rerunSel = {};  // post-completion multi-agent rerun selection: agentId -> {checked, comment}
+/* Who the signed-in user is and which run actions they may take, from GET
+   /api/me (workflow.json -> authorization). ADVISORY ONLY: this hides and
+   disables controls so nobody is offered a button that 403s, but every action is
+   independently enforced server-side in bff/authz.py. `permittedActions: null`
+   means "not loaded yet / no restrictions" and allows everything. */
+let me = { user: "", groups: [], permittedActions: null, authzEnabled: false };
 
 async function api(path, opts = {}) {
   const headers = Object.assign({}, opts.headers || {});
   if (idToken) headers["Authorization"] = "Bearer " + idToken;
   const r = await fetch(path, Object.assign({}, opts, { headers }));
-  if (r.status === 401) { cognitoLogin(); return; }
+  if (r.status === 401) { authLogin(); return; }
   if (!r.ok) throw new Error((await r.json().catch(()=>({}))).error || r.statusText);
   return r.json();
 }
 
-function cognitoLogin() {
-  const cfg = window.AUTH_CONFIG;
-  const base = `https://${cfg.domainPrefix}.auth.${cfg.region}.amazoncognito.com`;
-  const params = new URLSearchParams({
-    client_id: cfg.clientId,
-    response_type: "code",
-    scope: "openid email profile",
-    redirect_uri: window.location.origin,
-  });
-  window.location.href = `${base}/login?${params}`;
-}
+/* ========================================================================
+   AUTHENTICATION — configuration driven
+   ========================================================================
+   auth-config.js is generated by Terraform (see terraform/identity.tf) and sets
+   window.AUTH_CONFIG.provider to "cognito", "auth0" or "none". Each provider is
+   a small strategy below with the same three methods:
 
-function cognitoLogout() {
-  const cfg = window.AUTH_CONFIG;
-  const base = `https://${cfg.domainPrefix}.auth.${cfg.region}.amazoncognito.com`;
-  const params = new URLSearchParams({
-    client_id: cfg.clientId,
-    logout_uri: window.location.origin,
-  });
-  idToken = null;
-  localStorage.removeItem("cognito_id_token");
-  localStorage.removeItem("cognito_access_token");
-  window.location.href = `${base}/logout?${params}`;
-}
+     init()   -> resolve an ID token (handling any redirect callback), or null
+     login()  -> send the user off to the provider's login page
+     logout() -> clear local state and end the provider session
 
-async function exchangeCode(code) {
-  const cfg = window.AUTH_CONFIG;
-  const base = `https://${cfg.domainPrefix}.auth.${cfg.region}.amazoncognito.com`;
-  const body = new URLSearchParams({
-    grant_type: "authorization_code",
-    client_id: cfg.clientId,
-    code,
-    redirect_uri: window.location.origin,
-  });
-  const resp = await fetch(`${base}/oauth2/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body,
-  });
-  if (!resp.ok) { cognitoLogin(); return; }
-  const tokens = await resp.json();
-  localStorage.setItem("cognito_id_token", tokens.id_token);
-  localStorage.setItem("cognito_access_token", tokens.access_token);
-  return tokens.id_token;
-}
+   Nothing else in the app knows which IdP is in play: everything reads the
+   `idToken` variable. To add a provider, add one entry to AUTH_PROVIDERS.      */
 
 function parseJwt(token) {
   try { return JSON.parse(atob(token.split(".")[1].replace(/-/g,"+").replace(/_/g,"/"))); }
   catch { return {}; }
 }
 
-async function initAuth() {
-  const cfg = window.AUTH_CONFIG || { enabled:false };
-  if (!cfg.enabled) return;
+// Load a script tag once, on demand — keeps the Auth0 SDK off the wire for
+// deployments that don't use Auth0.
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector(`script[src="${src}"]`)) return resolve();
+    const s = document.createElement("script");
+    s.src = src; s.onload = () => resolve(); s.onerror = () => reject(new Error("failed to load " + src));
+    document.head.appendChild(s);
+  });
+}
 
-  // Handle OAuth2 authorization code callback
-  const params = new URLSearchParams(window.location.search);
-  if (params.has("code")) {
-    const token = await exchangeCode(params.get("code"));
-    history.replaceState({}, document.title, window.location.pathname);
-    if (!token) return;
-    idToken = token;
-  } else {
-    idToken = localStorage.getItem("cognito_id_token");
-  }
+const AUTH_PROVIDERS = {
+  /* --- No authentication -------------------------------------------------
+     The UI and /api/* are open. Local trials / throwaway sandboxes only.    */
+  none: {
+    async init() { return null; },
+    login() {},
+    logout() {},
+  },
 
-  // Validate token expiry
-  if (idToken) {
-    const claims = parseJwt(idToken);
-    if (claims.exp && claims.exp * 1000 < Date.now()) {
+  /* --- Amazon Cognito ----------------------------------------------------
+     Hosted UI authorization-code flow, done by hand: Cognito public clients
+     can exchange a code without PKCE, so no SDK is required. Tokens are kept
+     in localStorage and re-validated for expiry on load.                    */
+  cognito: {
+    _base() {
+      const cfg = window.AUTH_CONFIG;
+      return `https://${cfg.domainPrefix}.auth.${cfg.region}.amazoncognito.com`;
+    },
+    async _exchangeCode(code) {
+      const cfg = window.AUTH_CONFIG;
+      const resp = await fetch(`${this._base()}/oauth2/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          client_id: cfg.clientId,
+          code,
+          redirect_uri: window.location.origin,
+        }),
+      });
+      if (!resp.ok) { this.login(); return null; }
+      const tokens = await resp.json();
+      localStorage.setItem("cognito_id_token", tokens.id_token);
+      localStorage.setItem("cognito_access_token", tokens.access_token);
+      return tokens.id_token;
+    },
+    async init() {
+      const params = new URLSearchParams(window.location.search);
+      let token;
+      if (params.has("code")) {
+        token = await this._exchangeCode(params.get("code"));
+        history.replaceState({}, document.title, window.location.pathname);
+      } else {
+        token = localStorage.getItem("cognito_id_token");
+      }
+      // Drop an expired token so we re-login instead of sending a dead one.
+      if (token) {
+        const claims = parseJwt(token);
+        if (claims.exp && claims.exp * 1000 < Date.now()) {
+          localStorage.removeItem("cognito_id_token");
+          localStorage.removeItem("cognito_access_token");
+          token = null;
+        }
+      }
+      return token || null;
+    },
+    login() {
+      const cfg = window.AUTH_CONFIG;
+      const params = new URLSearchParams({
+        client_id: cfg.clientId,
+        response_type: "code",
+        scope: "openid email profile",
+        redirect_uri: window.location.origin,
+      });
+      window.location.href = `${this._base()}/login?${params}`;
+    },
+    logout() {
+      const cfg = window.AUTH_CONFIG;
       localStorage.removeItem("cognito_id_token");
       localStorage.removeItem("cognito_access_token");
-      idToken = null;
-    }
+      const params = new URLSearchParams({
+        client_id: cfg.clientId,
+        logout_uri: window.location.origin,
+      });
+      window.location.href = `${this._base()}/logout?${params}`;
+    },
+  },
+
+  /* --- Auth0 -------------------------------------------------------------
+     auth0-spa-js handles the code+PKCE flow, callback and token refresh, so
+     unlike Cognito we don't hand-roll the exchange. The SDK is fetched from
+     the CDN only when this provider is selected.                            */
+  auth0: {
+    _client: null,
+    async init() {
+      const cfg = window.AUTH_CONFIG;
+      await loadScript("https://cdn.auth0.com/js/auth0-spa-js/2.1/auth0-spa-js.production.js");
+      this._client = await auth0.createAuth0Client({
+        domain: cfg.domain,
+        clientId: cfg.clientId,
+        authorizationParams: { redirect_uri: window.location.origin },
+        cacheLocation: "localstorage",
+      });
+      if (location.search.includes("code=") && location.search.includes("state=")) {
+        await this._client.handleRedirectCallback();
+        history.replaceState({}, document.title, window.location.pathname);
+      }
+      if (!(await this._client.isAuthenticated())) return null;
+      const claims = await this._client.getIdTokenClaims();
+      return claims ? claims.__raw : null;
+    },
+    login() {
+      if (this._client) this._client.loginWithRedirect();
+    },
+    logout() {
+      if (this._client) this._client.logout({ logoutParams: { returnTo: window.location.origin } });
+    },
+  },
+};
+
+// The strategy in force for this deployment.
+function authProvider() {
+  const cfg = window.AUTH_CONFIG || {};
+  if (!cfg.enabled) return AUTH_PROVIDERS.none;
+  return AUTH_PROVIDERS[cfg.provider] || AUTH_PROVIDERS.cognito;
+}
+
+// Fail LOUDLY when auth-config.js is missing. Without this, a deploy that failed
+// to publish it would leave window.AUTH_CONFIG undefined, the app would quietly
+// treat that as "no authentication", and every /api/* call would 401 against a
+// UI that shows no way to log in. Better to say so than to look broken.
+function authConfigMissing() {
+  if (window.AUTH_CONFIG) return false;
+  document.body.innerHTML =
+    '<div style="max-width:44rem;margin:4rem auto;font:14px/1.6 system-ui;color:#b91c1c">' +
+    "<h2>Configuration missing</h2><p><code>auth-config.js</code> did not load, so the " +
+    "identity provider for this deployment is unknown. The UI will not start, because " +
+    "guessing here would either lock you out or silently run with no authentication.</p>" +
+    "<p>Re-run the deploy so the file is published next to <code>index.html</code> " +
+    "(Terraform: <code>aws_s3_object.auth_config</code>; CDK: the <code>UiDeploy</code> " +
+    "bucket deployment).</p></div>";
+  return true;
+}
+
+function authLogin() { authProvider().login(); }
+
+function authLogout() {
+  idToken = null;
+  authProvider().logout();
+}
+
+async function initAuth() {
+  if (authConfigMissing()) throw new Error("auth-config.js not loaded");
+  const cfg = window.AUTH_CONFIG;
+  if (!cfg.enabled) return;              // idp = "none": nothing to do
+
+  const provider = authProvider();
+  try {
+    idToken = await provider.init();
+  } catch (e) {
+    console.error("auth init failed", e);
+    idToken = null;
   }
+  if (!idToken) { provider.login(); return; }
 
-  if (!idToken) { cognitoLogin(); return; }
-
+  // Same claim names across providers, with the provider-specific fallbacks
+  // last (cognito:username for Cognito, name for Auth0).
   const claims = parseJwt(idToken);
-  const u = document.getElementById("user"); if (u) u.textContent = claims.email || claims["cognito:username"] || claims.sub || "";
+  const u = document.getElementById("user");
+  if (u) u.textContent = claims.email || claims.name || claims["cognito:username"] || claims.sub || "";
   const lo = document.getElementById("logout");
-  if (lo) { lo.style.display="inline-block"; lo.onclick = cognitoLogout; }
+  if (lo) { lo.style.display = "inline-block"; lo.onclick = authLogout; }
 }
 
 async function loadWorkflow() { try { workflow = await api("/api/workflow"); } catch {} }
+
+/* --- Authorization (advisory UI layer) ----------------------------------
+   Loaded once at boot. If the call fails we deliberately leave
+   permittedActions = null and show everything: a failed lookup must not lock a
+   legitimate reviewer out of the UI, and the server is the real gate anyway. */
+async function loadMe() {
+  try { me = await api("/api/me"); } catch { /* keep the permissive default */ }
+}
+
+/* May the signed-in user perform `action` ("decision" | "rerun" | "cancel" |
+   "evaluate" | "insights" | "delete")? */
+function can(action) {
+  return !Array.isArray(me.permittedActions) || me.permittedActions.includes(action);
+}
+
+/* Attributes for a button that requires `action`: disabled + a title saying why.
+   Interpolated into the markup so every re-render re-applies it. */
+function gate(action) {
+  return can(action) ? "" :
+    ` disabled title="You are not authorized to ${action}. Your groups: ${esc((me.groups || []).join(", ") || "none")}."`;
+}
+
+/* One-line explanation to sit above a set of disabled controls. */
+function gateNote(action) {
+  if (can(action)) return "";
+  return `<p class="sub" style="color:#b45309">🔒 You don't have permission to ${esc(action)} — ` +
+    `your groups: ${esc((me.groups || []).join(", ") || "none")}. Ask an administrator for access.</p>`;
+}
+
+/* Presentation strings come from workflow.json's `ui` block, so re-branding the
+   app for a customer is a config edit rather than an index.html edit. Every
+   field is optional; the markup's own text is the fallback. */
+function applyUiConfig() {
+  const ui = (workflow && workflow.ui) || {};
+  if (ui.title) document.title = ui.title;
+  if (ui.heading) {
+    const h = document.querySelector("header h1");
+    if (h) h.textContent = ui.heading;
+  }
+  const topic = document.getElementById("topic");
+  if (topic && ui.defaultTopic) topic.value = ui.defaultTopic;
+  if (topic && ui.topicPlaceholder) topic.placeholder = ui.topicPlaceholder;
+}
 
 // "Start session" kicks off a run with the topic in the input box.
 document.getElementById("start").onclick = startSession;
@@ -358,12 +578,14 @@ async function startSession() {
   const btn = document.getElementById("start");
   btn.disabled = true;
   const topic = document.getElementById("topic").value.trim() || "Untitled";
+  const subjEl = document.getElementById("subject");
+  const subjectId = subjEl ? subjEl.value.trim() : "";
   try {
     const { session_id } = await api("/api/sessions", {
       method:"POST", headers:{ "Content-Type":"application/json" },
-      body: JSON.stringify({ topic }),
+      body: JSON.stringify({ topic, subjectId }),
     });
-    current = session_id; lastSig = null; feedbackDraft = ""; selectedNode = null;
+    current = session_id; lastSig = null; feedbackDraft = ""; selectedNode = null; rerunSel = {};
     await refreshList(); refreshDetail();
   } catch (e) {
     alert(e.message);
@@ -376,14 +598,14 @@ async function refreshList() {
   const sessions = await api("/api/sessions").catch(()=>[]);
   document.getElementById("sidebar").innerHTML = sessions.map(s => `
     <div class="sess ${s.session_id===current?"active":""}" onclick="select('${s.session_id}')">
-      <button class="sessdel" title="Delete this run" onclick="deleteSession(event,'${s.session_id}')">🗑</button>
+      ${can("delete") ? `<button class="sessdel" title="Delete this run" onclick="deleteSession(event,'${s.session_id}')">🗑</button>` : ""}
       <div class="topic">${esc(s.topic)}</div>
       <div class="id">${s.session_id}</div>
       <div style="margin-top:6px">${badge(s.overall)}</div>
     </div>`).join("") || '<div class="empty" style="margin-top:24px">No sessions yet</div>';
 }
 
-function select(id) { current = id; lastSig = null; feedbackDraft = ""; selectedNode = null; refreshList(); refreshDetail(); }
+function select(id) { current = id; lastSig = null; feedbackDraft = ""; selectedNode = null; rerunSel = {}; refreshList(); refreshDetail(); }
 
 async function deleteSession(ev, id) {
   ev.stopPropagation();   // don't select the row we're deleting
@@ -404,12 +626,13 @@ function nodeCard(nodes, agentId) {
   const meta = workflow.agents[agentId] || { name:agentId, kind:"" };
   const d = nodes[agentId] || { status:"pending", pct:0, output:"" };
   const modelShort = meta.model ? String(meta.model).split(".").pop().replace(/-\d+-v\d+:\d+$/,"") : "";
-  const srcLabel = (!meta.mcp && !meta.rag) ? agentSource(meta) : "";
+  // Agents bound to a tool show that binding; the rest show a derived source.
+  const srcLabel = meta.tool ? "" : agentSource(meta);
   const tags = [
     meta.kind ? `<span class="tag">${esc(meta.kind)}</span>` : "",
     meta.runtime==="dedicated" ? `<span class="tag dedicated">dedicated</span>` : "",
-    meta.mcp ? `<span class="tag mcp">mcp:${esc(meta.mcp)}</span>` : "",
-    meta.rag ? `<span class="tag rag">rag:${esc(meta.rag)}</span>` : "",
+    meta.tool ? `<span class="tag mcp">tool:${esc(meta.tool)}</span>` : "",
+    meta.corpus ? `<span class="tag rag">corpus:${esc(meta.corpus)}</span>` : "",
     (srcLabel && srcLabel !== "—") ? `<span class="tag src">${esc(srcLabel.toLowerCase())}</span>` : "",
     modelShort ? `<span class="tag model">${esc(modelShort)}</span>` : "",
   ].join("");
@@ -433,14 +656,17 @@ function stageHtml(step, i, nodes) {
   const numBadge = `<div class="stage-num">${i + 1}</div>`;
   const gate = step.hitl ? '<div class="stage-gate" title="Human review gate after this stage">🔒 Review</div>' : "";
 
-  // Parallel group: agents stacked VERTICALLY (they run concurrently).
+  // Parallel group: agents in a grid, TWO PER ROW (they run concurrently, so
+  // there is no order to show). The column count is capped at 2 and floored at the
+  // agent count, so a single-agent group doesn't reserve an empty second column.
   if (step.parallel) {
     const ids = step.parallel;
     const title = "⇉ " + esc(step.gateName || "Parallel") + " · " + ids.length + " parallel";
     const cards = ids.map(id => nodeCard(nodes, id)).join("");
+    const cols = Math.min(2, ids.length);
     return `<div class="stage-body">${numBadge}${gate}
       <div class="stage-group"><div class="stage-group-title">${title}</div>
-        <div class="stage-col">${cards}</div></div></div>`;
+        <div class="stage-col" style="grid-template-columns:repeat(${cols},200px)">${cards}</div></div></div>`;
   }
 
   // Sequence group: agents left-to-right with arrows (they run in order).
@@ -499,6 +725,12 @@ const ASSET_ENVELOPE = new Set(["assetId","assetType","version","status",
   "createdAt","createdByAgent","executiveSummary","summary","findings","dataLimitations",
   "sources","sourceAssetIds","artifacts"]);
 
+/* Only ever emit http(s) links. A citation url arrives from a model, so treating
+   it as trusted markup would be an injection vector (javascript:, data:, …). */
+function safeUrl(u){
+  if (!u || typeof u !== "string") return false;
+  return /^https?:\/\//i.test(u.trim());
+}
 function humanizeKey(k){
   return String(k).replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ")
     .replace(/\b\w/g, c => c.toUpperCase()).trim();
@@ -544,10 +776,18 @@ function renderAsset(d){
     if (v === null || v === "" || (Array.isArray(v) && !v.length)) continue;
     P.push(`<div class="asset-sec"><h5>${esc(humanizeKey(k))}</h5>${renderAssetVal(v)}</div>`);
   }
+  // Sources are CITATIONS. AgentCore Web Search's acceptable-use terms require the
+  // returned links to be displayed wherever a result is surfaced, so a source that
+  // carries a url renders as a real anchor (not just its name).
   if (Array.isArray(d.sources) && d.sources.length){
-    P.push(`<div class="asset-sec"><h5>Sources</h5><ul class="blist">${d.sources.map(s =>
-      `<li>${esc(s.sourceName || s.sourceType || "source")}` +
-      `${s.sourceType ? ` <span class="muted">(${esc(s.sourceType)})</span>` : ""}</li>`).join("")}</ul></div>`);
+    P.push(`<div class="asset-sec"><h5>Sources</h5><ul class="blist">${d.sources.map(s => {
+      const label = esc(s.sourceName || s.sourceType || "source");
+      const link = safeUrl(s.url)
+        ? `<a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${label}</a>`
+        : label;
+      return `<li>${link}` +
+        `${s.sourceType ? ` <span class="muted">(${esc(s.sourceType)})</span>` : ""}</li>`;
+    }).join("")}</ul></div>`);
   }
   if (Array.isArray(d.dataLimitations) && d.dataLimitations.length){
     P.push(`<details class="asset-sec warn asset-collapse"><summary>Data limitations (${
@@ -567,11 +807,12 @@ function renderAssetHtml(raw){
 }
 
 // Short human label for where an agent gets its data. The BFF ships a compact,
-// display-ready `source`; fall back to deriving it from mcp/rag/access.
+// display-ready `source` derived from the tool's declared TYPE; these fallbacks
+// only matter if that field is ever absent.
 function agentSource(meta){
   if (meta.source) return meta.source;
-  if (meta.mcp) return "MCP · " + meta.mcp;
-  if (meta.rag) return "Knowledge Base · " + meta.rag;
+  if (meta.corpus) return "Knowledge Base · " + meta.corpus;
+  if (meta.tool) return "Tool · " + meta.tool;
   const acc = (Array.isArray(meta.access) && meta.access[0]) || "";
   if (/session/i.test(acc)) return "Session input";
   if (/upstream/i.test(acc)) return "Upstream agent outputs";
@@ -591,6 +832,7 @@ async function refreshDetail() {
   lastNodes = nodes;
   lastHistory = snap.history || {};
   const overall = snap.overall || "";
+  lastOverall = overall;   // so renderOutputs can offer "rerun from here" when settled
   const hitl = buildHitl(snap, nodes);
 
   const result = snap.result ? `<details class="result"><summary class="secsum"><span class="ochev">▸</span><strong>Result</strong></summary><div class="result-body">${esc(snap.result)}</div></details>` : "";
@@ -603,7 +845,7 @@ async function refreshDetail() {
         <span style="font-weight:700;font-size:15px">${esc(snap.topic)}</span>
         ${overall==="running" ? '<span class="spinner"></span>' : ''}
         <span style="flex:1"></span>
-        ${["running","waiting_human","cancelling"].includes(overall)
+        ${["running","waiting_human","cancelling"].includes(overall) && can("cancel")
           ? '<button class="deny" onclick="cancelSession()" title="Stop this workflow immediately">⏹ Stop workflow</button>' : ''}
       </div>
     </div>
@@ -614,6 +856,7 @@ async function refreshDetail() {
         <span class="hint">Click a node to focus its output · click empty space to show all</span></div>
       <div id="outputs"></div>
     </div>
+    ${rerunPanelHtml(overall)}
     ${result}
     <details class="card logs"><summary class="secsum"><span class="ochev">▸</span><h2>Timeline</h2></summary>${logs || '<div class="log">…</div>'}</details>`;
 
@@ -674,14 +917,129 @@ function renderOutputs() {
       body = outHtml ? `<div class="outbody">${outHtml}</div>`
                      : `<div class="outbody muted">No output yet.</div>`;
     }
+    // "Rerun from here": only in the focused single-agent view, only once the run
+    // is settled (not mid-flight), and only for an agent that has produced output.
+    // Rewinds to this agent and re-runs it + everything after, with the note
+    // injected as its feedback; downstream reviews pause again.
+    const settled = ["done", "denied", "failed", "waiting_human", "cancelled"].includes(lastOverall);
+    const ran = hist.length > 0 || d.status === "done";
+    const rerunBox = (selectedNode === id && settled && ran) ? `
+      <div class="rerunbox">
+        <div class="rerunhd">↻ Rerun from ${esc(meta.name)}</div>
+        <div class="rerunsub">Re-runs this agent and every stage after it. Your note is added as context for ${esc(meta.name)}. Each downstream review will pause again.</div>
+        ${gateNote("rerun")}
+        <textarea id="rerunfb-${id}" placeholder="What should ${esc(meta.name)} change? (optional)"></textarea>
+        <button class="revise"${gate("rerun")} onclick="rerunFrom('${id}')">Rerun from here</button>
+      </div>` : "";
     return `<details class="outblock"${selectedNode ? " open" : ""}>
       <summary class="outhead"><span class="ochev">▸</span><span class="avatar-sm">${esc(mono)}</span>
         <span class="oname">${esc(meta.name)}</span>
         ${hist.length > 1 ? `<span class="vcount">${hist.length} versions</span>` : ""}
         ${badge(d.status)}</summary>
-      ${body}
+      ${body}${rerunBox}
     </details>`;
   }).join("");
+}
+
+// --- Rewind & re-run -------------------------------------------------------
+// Two flavours, both hitting POST /api/sessions/{id}/rerun:
+//   1. rerunFrom(agentId)          — one agent + everything downstream.
+//   2. submitStageRerun(gateId)    — a SUBSET of one gated parallel stage, which
+//      re-runs those agents in parallel and re-pauses at that stage's gate.
+async function rerunFrom(id) {
+  const meta = workflow.agents[id] || { name: id };
+  const ta = document.getElementById("rerunfb-" + id);
+  const comment = ta ? ta.value.trim() : "";
+  if (!confirm(`Rerun from ${meta.name}?\n\nThis re-runs that agent and every stage after it (including the final output). Downstream reviews will pause again.`)) return;
+  const btn = ta && ta.parentElement ? ta.parentElement.querySelector("button") : null;
+  if (btn) btn.disabled = true;
+  try {
+    await api(`/api/sessions/${current}/rerun`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agentId: id, comment }),
+    });
+    selectedNode = null; lastSig = null;   // clear focus + force a fresh render
+    applySelection(); refreshDetail();
+  } catch (e) {
+    alert(e.message);
+    if (btn) btn.disabled = false;
+  }
+}
+
+// Once a run has settled, let the reviewer pick one or more agents from ONE
+// parallel stage, add per-agent feedback, and re-run just those in parallel.
+// They re-run, the stage's review gate re-pauses so the refreshed outputs can be
+// checked, then approving cascades downstream. (A multi-agent rerun must stay
+// within one stage — the button is scoped per stage to enforce that.)
+function rerunPanelHtml(overall) {
+  const settled = ["done", "denied", "failed", "cancelled"].includes(overall);
+  const stages = (workflow.steps || []).filter(s => s.parallel && s.hitl);
+  if (!settled || !stages.length) return "";
+  return `<div class="card" id="rerunPanel">${rerunPanelInner()}</div>`;
+}
+function rerunPanelInner() {
+  const stages = (workflow.steps || []).filter(s => s.parallel && s.hitl);
+  const blocks = stages.map(s => {
+    const gid = s.gateId || s.gateName;
+    const rows = s.parallel.map(id => {
+      const meta = workflow.agents[id] || { name: id };
+      const sel = rerunSel[id] || {};
+      const mono = monogramFor(meta.name);
+      return `<div class="rr-agent ${sel.checked ? "sel" : ""}">
+        <label class="rr-pick"><input type="checkbox" ${sel.checked ? "checked" : ""}
+            onchange="toggleRerunSel('${id}')">
+          <span class="avatar-sm">${esc(mono)}</span><span class="oname">${esc(meta.name)}</span></label>
+        ${sel.checked ? `<textarea class="rr-fb" placeholder="What should ${esc(meta.name)} change? (optional)"
+            oninput="setRerunComment('${id}', this.value)">${esc(sel.comment || "")}</textarea>` : ""}
+      </div>`;
+    }).join("");
+    const picked = s.parallel.filter(id => (rerunSel[id] || {}).checked).length;
+    return `<div class="rr-stage">
+      <div class="rr-stage-title">${esc(s.gateName || gid)}</div>
+      ${rows}
+      <button class="revise" ${picked && can("rerun") ? "" : "disabled"}${gate("rerun")} onclick="submitStageRerun('${esc(gid)}')">
+        ↻ Rerun selected agent${picked === 1 ? "" : "s"}${picked ? ` (${picked})` : ""}</button>
+    </div>`;
+  }).join("");
+  return `<div class="outputs-head"><h2>Re-run agents</h2>
+      <span class="hint">Pick one or more agents from a stage, add feedback, and re-run them together.
+        You review the results at that stage's gate, then approve to regenerate everything downstream.</span></div>
+    ${gateNote("rerun")}
+    ${blocks}`;
+}
+function renderRerunPanel() {
+  const el = document.getElementById("rerunPanel");
+  if (el) el.innerHTML = rerunPanelInner();
+}
+function toggleRerunSel(id) {
+  const s = (rerunSel[id] = rerunSel[id] || {});
+  s.checked = !s.checked;
+  renderRerunPanel();
+}
+function setRerunComment(id, val) { (rerunSel[id] = rerunSel[id] || {}).comment = val; }
+async function submitStageRerun(gid) {
+  const stages = (workflow.steps || []).filter(s => s.parallel && s.hitl);
+  const stage = stages.find(s => (s.gateId || s.gateName) === gid);
+  if (!stage) return;
+  const agents = stage.parallel
+    .filter(id => (rerunSel[id] || {}).checked)
+    .map(id => ({ agentId: id, comment: (rerunSel[id].comment || "").trim() }));
+  if (!agents.length) { alert("Select at least one agent to re-run."); return; }
+  const names = agents.map(a => (workflow.agents[a.agentId] || {}).name || a.agentId).join(", ");
+  if (!confirm(`Re-run ${agents.length} agent(s) — ${names}?\n\nThey re-run in parallel; you review the results at the `
+    + `${stage.gateName || gid} gate, then approve to regenerate everything downstream.`)) return;
+  document.querySelectorAll("#rerunPanel button").forEach(b => b.disabled = true);
+  try {
+    await api(`/api/sessions/${current}/rerun`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agents }),
+    });
+    rerunSel = {}; lastSig = null;   // force a fresh render on next poll
+    refreshDetail();
+  } catch (e) {
+    alert(e.message);
+    document.querySelectorAll("#rerunPanel button").forEach(b => b.disabled = false);
+  }
 }
 
 function applySelection() {
@@ -728,11 +1086,12 @@ function sequenceHitlHtml(step, snap, nodes) {
       <p class="sub">${esc(ids.join(" → "))} ran in sequence. Approve to continue, revise to
         re-run the sequence with your feedback, or deny to halt.</p>
       ${gateOut ? `<div class="detail">${esc(gateOut)}</div>` : ""}
+      ${gateNote("decision")}
       <textarea id="feedback" placeholder="If revising: what should change?"></textarea>
       <div class="actions">
-        <button class="approve" onclick="decide('approve')">Approve</button>
-        <button class="revise" onclick="decide('revise')" title="Provide feedback and re-run the sequence">Revise &amp; re-run</button>
-        <button class="deny" onclick="decide('deny')">Deny (halt)</button>
+        <button class="approve"${gate("decision")} onclick="decide('approve')">Approve</button>
+        <button class="revise"${gate("decision")} onclick="decide('revise')" title="Provide feedback and re-run the sequence">Revise &amp; re-run</button>
+        <button class="deny"${gate("decision")} onclick="decide('deny')">Deny (halt)</button>
       </div></div>`;
 }
 
@@ -743,11 +1102,12 @@ function singleHitlHtml(snap, nodes) {
       <h3>⏸ Human review — ${esc(meta.name || snap.hitl.node)} (${esc(snap.hitl.node)})</h3>
       <p class="sub">Approve to continue, revise to re-run this agent with your feedback, or deny to halt.</p>
       ${gateOut ? `<div class="detail">${esc(gateOut)}</div>` : ""}
+      ${gateNote("decision")}
       <textarea id="feedback" placeholder="If revising: what should change?"></textarea>
       <div class="actions">
-        <button class="approve" onclick="decide('approve')">Approve</button>
-        <button class="revise" onclick="decide('revise')" title="Provide feedback and re-run this agent">Revise &amp; re-run</button>
-        <button class="deny" onclick="decide('deny')">Deny (halt)</button>
+        <button class="approve"${gate("decision")} onclick="decide('approve')">Approve</button>
+        <button class="revise"${gate("decision")} onclick="decide('revise')" title="Provide feedback and re-run this agent">Revise &amp; re-run</button>
+        <button class="deny"${gate("decision")} onclick="decide('deny')">Deny (halt)</button>
       </div></div>`;
 }
 
@@ -761,6 +1121,7 @@ function groupHitlHtml(step, snap, nodes) {
       <h3>⏸ Human review — ${esc(gname)}</h3>
       <p class="sub">Per agent: <b>Approve</b>, <b>Revise</b> (re-run with feedback), or <b>Re-run</b> (redo).
         The stage continues only when every agent is approved.</p>
+      ${gateNote("decision")}
       <div class="gbulk">
         <button class="ghost" onclick="setGAAll('approve')">Approve all</button>
         <button class="ghost" onclick="setGAAll('revise')">Revise all</button>
@@ -768,8 +1129,8 @@ function groupHitlHtml(step, snap, nodes) {
       </div>
       <div id="gagents">${groupAgentsHtml(groupIds)}</div>
       <div class="actions">
-        <button class="approve" onclick="submitGroupReview()">Submit review</button>
-        <button class="deny" onclick="decide('deny')">Deny (halt)</button>
+        <button class="approve"${gate("decision")} onclick="submitGroupReview()">Submit review</button>
+        <button class="deny"${gate("decision")} onclick="decide('deny')">Deny (halt)</button>
       </div></div>`;
 }
 
@@ -876,11 +1237,124 @@ function mdInline(s){
 // Click anywhere that isn't a node clears the focus and shows all outputs again.
 document.addEventListener("click", (e) => {
   if (e.target.closest(".node")) return;
+  if (e.target.closest(".rerunbox")) return;   // keep focus while typing a rerun note
   if (selectedNode !== null) { selectedNode = null; applySelection(); }
 });
 
-(async () => { await initAuth(); await loadWorkflow(); refreshList(); refreshDetail();
-  setInterval(refreshList, 3000); setInterval(refreshDetail, 1500); })();
+// --- In-app assistant (chatbot) --------------------------------------------
+// Config-driven: shown only when workflow.chatbot.enabled (workflow.json ->
+// orchestrator.chatbot). Talks to POST /api/chat, which runs a Bedrock tool-use
+// loop (see bff/chatbot.py). The currently-open run is sent so "this run" resolves.
+let chatHistory = [];   // [{role:"user"|"assistant", text}]
+let chatBusy = false;
+const CBOT_GREETING = "Hi! I can answer questions about your workflow runs — status, cost, latency, outputs, guardrails, evaluations — and take actions like approving a review gate, re-running an agent, or running an evaluation. What would you like to know?";
+const CBOT_PLACEHOLDER = "Ask about a run, or tell me to do something…";
+const CBOT_TITLE = "Run Assistant";
+function initChatbot() {
+  const cfg = (workflow && workflow.chatbot) || {};
+  const uiCfg = (workflow && workflow.ui) || {};
+  if (!cfg.enabled) return;
+  if (document.getElementById("cbotFab")) return;   // once
+  const fab = document.createElement("button");
+  fab.id = "cbotFab"; fab.className = "cbot-fab"; fab.title = "Ask the assistant";
+  fab.innerHTML = "💬"; fab.onclick = chatToggle;
+  const panel = document.createElement("div");
+  panel.id = "cbotPanel"; panel.className = "cbot-panel";
+  panel.innerHTML = `
+    <div class="cbot-head"><div><div class="t">${esc(uiCfg.assistantTitle || CBOT_TITLE)}</div>
+      <div class="s">Ask about status, cost, evals — or run actions</div></div>
+      <button class="cbot-x" onclick="chatToggle()" title="Close">✕</button></div>
+    <div class="cbot-msgs" id="cbotMsgs"></div>
+    <div class="cbot-foot">
+      <textarea id="cbotInput" rows="1" placeholder="${esc(cfg.placeholder || CBOT_PLACEHOLDER)}"
+        onkeydown="chatKey(event)"></textarea>
+      <button class="cbot-send" id="cbotSend" onclick="chatSend()">Send</button>
+    </div>`;
+  document.body.appendChild(fab);
+  document.body.appendChild(panel);
+  pushChatMsg("bot", cfg.greeting || CBOT_GREETING, null, false);
+}
+function chatToggle() {
+  const p = document.getElementById("cbotPanel");
+  if (!p) return;
+  p.classList.toggle("open");
+  if (p.classList.contains("open")) setTimeout(() => { const i = document.getElementById("cbotInput"); if (i) i.focus(); }, 50);
+}
+function chatKey(ev) {
+  if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); chatSend(); }
+}
+// Render the assistant's light markdown (bold/italic/code, bullet lists,
+// headings, paragraphs) into safe HTML. Escapes first so nothing user- or
+// model-supplied becomes live markup.
+function cbotMd(src) {
+  const inline = (s) => esc(s)
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/__(.+?)__/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*(?!\s)([^*]+?)\*(?!\*)/g, "$1<em>$2</em>")
+    .replace(/`([^`]+?)`/g, "<code>$1</code>");
+  const lines = String(src || "").replace(/\r/g, "").split("\n");
+  let html = "", inList = false;
+  const closeList = () => { if (inList) { html += "</ul>"; inList = false; } };
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, "");
+    const li = line.match(/^\s*[-*\u2022]\s+(.*)$/);
+    const hd = line.match(/^\s*#{1,6}\s+(.*)$/);
+    if (li) { if (!inList) { html += "<ul>"; inList = true; } html += "<li>" + inline(li[1]) + "</li>"; continue; }
+    closeList();
+    if (hd) { html += "<div class='cbot-h'>" + inline(hd[1]) + "</div>"; continue; }
+    if (line.trim() === "") continue;
+    html += "<div class='cbot-p'>" + inline(line) + "</div>";
+  }
+  closeList();
+  return html || esc(src);
+}
+function pushChatMsg(kind, text, actions, track = true) {
+  const box = document.getElementById("cbotMsgs");
+  if (box) {
+    const div = document.createElement("div");
+    div.className = "cbot-msg " + kind;
+    div.innerHTML = (kind === "user" ? esc(text) : cbotMd(text)) + (actions && actions.length
+      ? actions.map(a => `<span class="act">✓ ${esc(a)}</span>`).join("") : "");
+    box.appendChild(div); box.scrollTop = box.scrollHeight;
+  }
+  if (track) chatHistory.push({ role: kind === "user" ? "user" : "assistant", text });
+}
+async function chatSend() {
+  if (chatBusy) return;
+  const input = document.getElementById("cbotInput");
+  const msg = (input.value || "").trim();
+  if (!msg) return;
+  input.value = "";
+  pushChatMsg("user", msg);
+  chatBusy = true;
+  document.getElementById("cbotSend").disabled = true;
+  const box = document.getElementById("cbotMsgs");
+  const typing = document.createElement("div");
+  typing.className = "cbot-typing"; typing.id = "cbotTyping"; typing.textContent = "…thinking";
+  if (box) { box.appendChild(typing); box.scrollTop = box.scrollHeight; }
+  try {
+    const data = await api("/api/chat", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: msg, history: chatHistory.slice(0, -1), session_id: current || "" }),
+    });
+    pushChatMsg("bot", data.reply || "(no response)", data.actions);
+    if (data.actions && data.actions.length) { lastSig = null; refreshDetail(); }  // reflect triggered actions
+  } catch (e) {
+    pushChatMsg("bot", "Sorry — I couldn't reach the assistant (" + e.message + ").", null, false);
+  } finally {
+    const t = document.getElementById("cbotTyping"); if (t) t.remove();
+    chatBusy = false; document.getElementById("cbotSend").disabled = false;
+    const i = document.getElementById("cbotInput"); if (i) i.focus();
+  }
+}
+
+(async () => {
+  // initAuth throws only when auth-config.js is missing; it has already rendered
+  // the explanation, so stop here rather than starting the polling loops.
+  try { await initAuth(); } catch (e) { console.error(e); return; }
+  await loadWorkflow(); await loadMe(); applyUiConfig(); initChatbot(); refreshList(); refreshDetail();
+  setInterval(refreshList, 3000); setInterval(refreshDetail, 1500);
+})();
 </script>
 <!-- Observability tab: self-contained (charts, cost/latency/token drilldown).
      All of its code lives in observability.js; Chart.js is loaded from CDN. -->

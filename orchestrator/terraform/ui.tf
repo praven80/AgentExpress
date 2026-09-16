@@ -26,25 +26,16 @@ resource "aws_s3_object" "index" {
 # Non-secret Cognito settings injected into the SPA at deploy time. Rendered from
 # a template so index.html stays static (its JS uses ${...} literals that must
 # not be interpreted by Terraform).
+# Non-secret IdP settings the SPA reads at load time. local.ui_auth is built in
+# identity.tf and already carries the right fields for the selected provider, so
+# this stays provider-agnostic.
 resource "aws_s3_object" "auth_config" {
   bucket        = aws_s3_bucket.ui.id
   key           = "auth-config.js"
   content_type  = "application/javascript"
   cache_control = "no-cache"
-  content = templatefile("${path.module}/../web/auth-config.js.tftpl", {
-    enabled        = local.auth_enabled ? "true" : "false"
-    region         = var.region
-    user_pool_id   = local.cognito_pool_id
-    client_id      = local.cognito_client_id
-    domain_prefix  = local.cognito_domain
-  })
-  etag = md5(templatefile("${path.module}/../web/auth-config.js.tftpl", {
-    enabled        = local.auth_enabled ? "true" : "false"
-    region         = var.region
-    user_pool_id   = local.cognito_pool_id
-    client_id      = local.cognito_client_id
-    domain_prefix  = local.cognito_domain
-  }))
+  content       = templatefile("${path.module}/../web/auth-config.js.tftpl", local.ui_auth)
+  etag          = md5(templatefile("${path.module}/../web/auth-config.js.tftpl", local.ui_auth))
 }
 
 resource "aws_cloudfront_origin_access_control" "ui" {

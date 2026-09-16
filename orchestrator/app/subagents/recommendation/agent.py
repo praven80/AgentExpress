@@ -12,12 +12,14 @@ import json
 
 from app.common import synthesis
 from app.common.base import Agent
+from app.common.config import upstream_of
 from app.common.context import AgentContext
 from app.common.contracts import Recommendation, RecommendationItem
 
 from .prompts import SCHEMA, SYSTEM_PROMPT
 
-UPSTREAM = ["analysis", "intake"]
+# Derived from the workflow.json topology (see app/common/config.upstream_of).
+UPSTREAM = upstream_of("recommendation")
 
 _PRIORITY = {"high", "medium", "low"}
 
@@ -43,7 +45,7 @@ class RecommendationAgent(Agent):
 
     async def run(self, ctx: AgentContext) -> str:
         payload, meta = await synthesis.synthesize(
-            ctx, upstream_ids=UPSTREAM, system_prompt=SYSTEM_PROMPT, schema=SCHEMA, max_tokens=6000
+            ctx, upstream_ids=UPSTREAM, system_prompt=SYSTEM_PROMPT, schema=SCHEMA
         )
         items = _items(payload)
         summary = str(payload.get("summary") or "").strip()

@@ -1,11 +1,11 @@
-"""Shared runner for the step-2 research sub-agents.
+"""Shared runner for the research sub-agents.
 
-The two research agents (knowledge_research over the Knowledge Base, and
-web_research over an MCP server) share one flow:
+Every research agent shares one flow, regardless of where its evidence comes
+from — the difference is one line of config (its `tool`), not code:
 
   1. take the approved request brief (from the intake agent upstream),
-  2. gather grounding evidence — Knowledge Base retrieval (RAG) and/or a Gateway
-     MCP server, depending on how the agent is configured,
+  2. gather grounding evidence from the tool the agent is bound to (Knowledge
+     Base, Web Search, a remote MCP server, or a REST API), or none at all,
   3. ask the model for a structured analysis with every finding classified by
      evidence type and every data limitation named,
   4. assemble and validate a ResearchOutput asset (contract-adherent).
@@ -19,67 +19,87 @@ from __future__ import annotations
 import json
 import re
 
-from app.common import clock
+from app.common import assets, clock
+from app.common.config import TOOLS
 from app.common.contracts import EvidenceClass, Finding, ResearchOutput
-from app.common.contracts.base import AssetStatus, Source, SourceType
+from app.common.contracts.base import AssetStatus
+from app.common.errors import ModelOutputUnusable
 
 _EVIDENCE = set(EvidenceClass.__args__)
-_SOURCE_TYPES = set(SourceType.__args__)
 
-_SCHEMA = (
+# How each tool type is labelled in the evidence block handed to the model, so the
+# model can attribute a finding to the right kind of source.
+_EVIDENCE_LABELS = {
+    "kb": "KNOWLEDGE BASE",
+    "websearch": "WEB SEARCH",
+    "mcp": "MCP SERVER",
+    "openapi": "REST API",
+    # A customer's own Lambda, fronting whatever the Gateway cannot reach directly
+    # (a warehouse, an internal service, something inside a VPC). The label is
+    # deliberately generic: only the customer knows what is behind it, and naming
+    # the transport is more honest than guessing at the source.
+    "lambda": "TOOL FUNCTION",
+}
+# The JSON shape asked of the model. NOT a parameter: it is the wire form of the
+# ResearchOutput contract this module returns, and the parsing below (_findings,
+# assets.build_sources, summary, dataLimitations) is its other half. Changing one without the
+# other yields ModelOutputUnusable. To emit a DIFFERENT shape, write your own
+# `run()` in app/subagents/<id>/agent.py and return your own contract — nothing
+# obliges an agent to use this runner.
+RESEARCH_SCHEMA = (
     '{"summary": "...", '
     '"findings": [{"statement": "...", '
     '"classification": "sourced-fact | calculation | assumption | agent-interpretation", '
     '"sourceRef": "which source supplied it"}], '
     '"dataLimitations": ["named unavailable/incomplete/unsupported evidence, or [] if none"], '
-    '"sources": [{"sourceType": "knowledge-base | mcp-tool | calculation | '
-    'assumption | other", "sourceName": "...", "sourceAssetId": "optional"}]}'
+    '"sources": [{"sourceType": "the kind of source", '
+    '"sourceName": "the title of the source, verbatim", '
+    '"url": "the url EXACTLY as shown in the evidence block, or omit if it had none", '
+    '"sourceAssetId": "optional"}]}'
+)
+
+# How to use the inputs. Domain-neutral on purpose — it talks about evidence,
+# provenance and citations, not about any particular subject matter. Override it
+# per agent from app/subagents/<id>/prompts.py when your domain needs different
+# wording:
+#
+#     research.synthesize(ctx, system_prompt=SYSTEM, instructions=MY_INSTRUCTIONS)
+#
+# Keep whatever your version says about citations: the URL rules below are not
+# style, they are what makes the citation verification downstream meaningful.
+RESEARCH_INSTRUCTIONS = (
+    "\n=== HOW TO USE THESE INPUTS ===\n"
+    "1. The REQUEST above is the APPROVED, AUTHORITATIVE input. Treat it as "
+    "complete and current.\n"
+    "2. Label a finding 'sourced-fact' ONLY when the value appears in an "
+    "EVIDENCE block above. If a value is not present in these inputs, do not "
+    "assert it; use 'assumption' or 'agent-interpretation', or omit it. Every "
+    "finding's sourceRef must name an input actually shown above.\n"
+    "3. Do NOT echo the request back as findings. A finding must be YOUR domain "
+    "analysis for this request, or a fact drawn from a retrieved EVIDENCE block "
+    "above. Prefer 3-8 meaningful findings over a long list.\n"
+    "3a. CITATIONS. Each evidence item is numbered and may carry 'title:', "
+    "'url:' and 'published:'. When a finding comes from one, its sourceRef MUST "
+    "be that item's url when it has one (copy it character for character), or "
+    "its title when it does not. NEVER write a url that is not shown above — "
+    "not even a plausible-looking one. Reproduce every url you were given in "
+    "`sources` so it can be displayed to the reader; omit `url` for an item "
+    "that had none.\n"
+    "4. dataLimitations: list ONLY genuinely missing evidence relevant to your "
+    "job (e.g. the tool returned no relevant documents for this query). Return "
+    "[] if you had what you needed.\n"
 )
 
 
-def _slug(text: str, limit: int = 48) -> str:
-    s = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
-    return s[:limit] or "request"
+def _findings(payload: dict, evidence: str = "") -> list[Finding]:
+    """Coerce the model's `findings` into validated Finding objects.
 
-
-def _extract_json(text: str) -> dict | None:
-    t = (text or "").strip()
-    if t.startswith("```"):
-        t = t.split("\n", 1)[1] if "\n" in t else t
-        if t.rstrip().endswith("```"):
-            t = t.rstrip()[:-3]
-    start, end = t.find("{"), t.rfind("}")
-    if start == -1 or end == -1:
-        return None
-    try:
-        return json.loads(t[start : end + 1])
-    except (ValueError, TypeError):
-        return None
-
-
-def _brief(ctx) -> dict:
-    """The approved request-brief asset from intake, parsed."""
-    raw = ctx.input("intake")
-    if not raw:
-        return {}
-    try:
-        return json.loads(raw)
-    except (TypeError, ValueError):
-        return {}
-
-
-def _prior_version(ctx) -> int:
-    """This agent's own previous output version (for the revise cycle)."""
-    raw = ctx.input(ctx.agent_id)
-    if not raw:
-        return 1
-    try:
-        return int(json.loads(raw).get("version", 1)) + 1
-    except (TypeError, ValueError):
-        return 1
-
-
-def _findings(payload: dict) -> list[Finding]:
+    A sourceRef that is a URL is verified against the evidence, same as in
+    assets.build_sources: an unverifiable link is replaced with an explicit marker
+    rather than passed on as though it were a real citation. A finding claiming to be a
+    sourced-fact on the strength of an invented URL is also downgraded, since its
+    provenance cannot be established.
+    """
     out: list[Finding] = []
     for f in payload.get("findings", []) or []:
         if not isinstance(f, dict) or not f.get("statement"):
@@ -87,110 +107,110 @@ def _findings(payload: dict) -> list[Finding]:
         cls = str(f.get("classification", "")).strip().lower()
         if cls not in _EVIDENCE:
             cls = "agent-interpretation"  # unclassified -> the most cautious label
+        ref = f.get("sourceRef")
+        ref_s = str(ref or "")
+        if evidence and "http" in ref_s:
+            for url in re.findall(r"https?://[^\s\"'<>）)]+", ref_s):
+                if url not in evidence:
+                    ref_s = ref_s.replace(url, "[unverifiable link removed]")
+                    if cls == "sourced-fact":
+                        cls = "agent-interpretation"
+            ref = ref_s
         out.append(Finding(statement=str(f["statement"]), classification=cls,
-                           sourceRef=f.get("sourceRef")))
-    return out
-
-
-def _sources(payload: dict) -> list[Source]:
-    out: list[Source] = []
-    for i, s in enumerate(payload.get("sources", []) or []):
-        if not isinstance(s, dict):
-            continue
-        st = str(s.get("sourceType", "other")).strip().lower()
-        if st not in _SOURCE_TYPES:
-            st = "other"  # keep the real provider in sourceName, coerce the enum
-        out.append(Source(
-            sourceId=s.get("sourceId") or f"source-{i}",
-            sourceType=st,
-            sourceName=str(s.get("sourceName") or s.get("sourceType") or "source"),
-            sourceAssetId=s.get("sourceAssetId"),
-        ))
+                           sourceRef=ref))
     return out
 
 
 async def synthesize(ctx, *, system_prompt: str,
-                     mcp_label: str | None = None, use_rag: bool = True,
-                     kb_filter: str | None = None) -> str:
-    """Run the research flow and return the validated ResearchOutput as JSON.
+                     instructions: str = RESEARCH_INSTRUCTIONS) -> str:
+    """Run the evidence-gathering flow and return a validated ResearchOutput as JSON.
 
-    Data access is per-agent: set `use_rag=True` to retrieve from the Bedrock
-    Knowledge Base (RAG), and/or `mcp_label` to call a Gateway MCP server. An
-    MCP-only agent passes use_rag=False; a RAG-only agent passes no mcp_label.
-    Both degrade to a simulated response with a noted data limitation when the
-    backend is not wired.
+    Data access is entirely CONFIG-driven: the agent's `tool` field in
+    workflow.json names an entry in the `tools` block, and that entry's `type`
+    decides how the call is made — Knowledge Base retrieval, the managed Web
+    Search connector, a remote MCP server, an OpenAPI-described REST API, or your
+    own Lambda. For a Knowledge Base tool the agent's `corpus` scopes retrieval to
+    one document set.
 
-    `kb_filter` scopes RAG retrieval to a single corpus by `doc_type` (the KB is
-    one shared index; each doc is tagged with its folder). This keeps a research
-    agent's evidence within its own document set.
+    An agent with no `tool` reasons purely over its upstream inputs. A tool that
+    cannot be called RAISES (ToolUnavailable / ToolDenied) — the run fails with the
+    reason on the failing agent rather than continuing without the evidence.
+
+    So a new agent of this kind needs a folder and a workflow.json entry, nothing
+    here. What you CAN vary from your agent folder:
+      * `system_prompt`  — who the agent is (app/subagents/<id>/prompts.py)
+      * `instructions`   — how it should use the inputs; defaults to the
+                           domain-neutral RESEARCH_INSTRUCTIONS above
+    What you cannot vary here is the OUTPUT SHAPE, which is the ResearchOutput
+    contract. To emit something else, write your own `run()` and return your own
+    contract — this runner is a convenience, not a requirement.
     """
-    brief = _brief(ctx)
+    brief = assets.brief(ctx)
     brief_text = json.dumps(brief, default=str) if brief else ctx.topic
-    query = (brief.get("objective") or brief.get("title") or brief_text)[:200]
+    query = assets.brief_query(brief, brief_text)
 
     evidence_parts: list[str] = []
     limitations: list[str] = []
 
-    if use_rag:
-        kb_text, kb_mode = await ctx.retrieve(query, doc_type=kb_filter)
-        if kb_text:
-            evidence_parts.append(f"=== KNOWLEDGE BASE (mode={kb_mode}) ===\n{kb_text}")
-        if kb_mode == "simulated":
-            limitations.append("Knowledge Base returned simulated grounding (not live data).")
+    tool_key = getattr(ctx, "tool", None)
+    if tool_key:
+        spec = TOOLS.get(tool_key) or {}
+        kind = str(spec.get("type", "mcp")).lower()
+        label = _EVIDENCE_LABELS.get(kind, "TOOL")
 
-    if mcp_label:
-        mcp_text, mcp_mode = await ctx.mcp(mcp_label, query)
-        if mcp_text:
-            evidence_parts.append(f"=== {mcp_label.upper()} (mode={mcp_mode}) ===\n{mcp_text}")
-        if mcp_mode == "simulated":
-            limitations.append(f"{mcp_label} data is simulated for this run (provider not live).")
+        if kind == "kb":
+            corpus = getattr(ctx, "corpus", None)
+            text, mode = await ctx.retrieve(query, doc_type=corpus)
+            scope = f", corpus={corpus}" if corpus else ""
+        else:
+            text, mode = await ctx.call_tool(tool_key, query)
+            scope = ""
+
+        # A failed call raises, so reaching here means the tool answered.
+        if text:
+            evidence_parts.append(f"=== {label}: {tool_key} (mode={mode}{scope}) ===\n{text}")
+        else:
+            # The tool ran and legitimately had nothing to say. That is real
+            # information, not a failure — name it so the model does not invent.
+            limitations.append(
+                f"'{tool_key}' returned no matching results for this query.")
 
     evidence = "\n\n".join(evidence_parts)
-    user = f"=== APPROVED REQUEST BRIEF ===\n{brief_text}\n"
+    user = f"=== APPROVED REQUEST ===\n{brief_text}\n"
     if evidence:
         user += f"\n{evidence}\n"
     if ctx.feedback:
         user += f"\n=== REVIEWER GUIDANCE ===\n{ctx.feedback}\n"
-    user += (
-        "\n=== HOW TO USE THESE INPUTS ===\n"
-        "1. The REQUEST BRIEF above is the APPROVED, AUTHORITATIVE input. Treat it "
-        "as complete and current.\n"
-        "2. Label a finding 'sourced-fact' ONLY when the value appears in an "
-        "EVIDENCE block above. If a value is not present in these inputs, do not "
-        "assert it; use 'assumption' or 'agent-interpretation', or omit it. Every "
-        "finding's sourceRef must name an input actually shown above.\n"
-        "3. Do NOT echo the brief back as findings. A finding must be YOUR domain "
-        "analysis for this request, or a fact drawn from a retrieved EVIDENCE block "
-        "above. Prefer 3-8 meaningful findings over a long list.\n"
-        "4. dataLimitations: list ONLY genuinely missing evidence relevant to your "
-        "job (e.g. a provider returned no data, or the Knowledge Base had no "
-        "relevant documents). An EVIDENCE block marked 'simulated' or empty means "
-        "that source is not available for this run \u2014 a valid limitation. Return "
-        "[] if you had what you needed.\n"
-    )
-    user += f"\nReturn ONLY JSON matching this schema:\n{_SCHEMA}"
+    user += instructions
+    user += f"\nReturn ONLY JSON matching this schema:\n{RESEARCH_SCHEMA}"
 
-    # Research emits a full structured JSON (summary + several classified findings
-    # + sources + limitations); the default per-agent budget would truncate it
-    # mid-JSON and make it unparseable, so request a generous budget.
-    text = await ctx.llm(system_prompt, user, max_tokens=4000)
-    payload = _extract_json(text) or {}
+    # No max_tokens override: the budget is the agent's own `maxTokens` from
+    # workflow.json (see app/orchestrator/registry.py). Research emits a full
+    # structured JSON — summary + several classified findings + sources +
+    # limitations — so too small a budget truncates it mid-JSON and it fails to
+    # parse. Raise that agent's maxTokens rather than editing this line.
+    text = await ctx.llm(system_prompt, user)
+    payload = assets.extract_json(text) or {}
 
-    findings = _findings(payload)
-    sources = _sources(payload)
-    data_limits = [str(x) for x in (payload.get("dataLimitations") or [])] + limitations
+    findings = _findings(payload, evidence)
+    # `evidence` is passed so a citation URL can be verified against what the model
+    # was actually shown, rather than trusted.
+    sources = assets.build_sources(payload, verify_urls_against=evidence)
+    data_limits = assets.str_list(payload, "dataLimitations") + limitations
     summary = str(payload.get("summary") or "").strip()
     if not summary and not findings:
-        # Model unavailable / unparseable (e.g. simulated local). Degrade to a
-        # well-formed asset that says so, rather than failing the whole group.
-        summary = "Research could not be synthesised from available evidence."
-        data_limits.append("Model output was unavailable or unparseable for this run.")
+        # The model answered but produced nothing usable. Fail rather than emit an
+        # empty asset that looks like a completed research step.
+        raise ModelOutputUnusable(
+            f"{ctx.agent_id}: the model returned no parseable research JSON "
+            f"({len(text or '')} chars). Raising rather than emitting an empty asset, "
+            f"which downstream agents would treat as real findings.")
 
-    title = brief.get("title") or ctx.topic or ctx.agent_id
-    version = _prior_version(ctx)
+    title = assets.brief_title(brief, ctx)
+    version = assets.prior_version(ctx)
 
     asset = ResearchOutput(
-        assetId=f"asset-research-{ctx.agent_id}-{_slug(str(title))}-v{version}",
+        assetId=f"asset-research-{ctx.agent_id}-{assets.slug(str(title))}-v{version}",
         version=version,
         status=AssetStatus.IN_REVIEW,
         createdAt=clock.now_et(),  # Eastern wall-clock

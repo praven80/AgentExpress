@@ -13,24 +13,14 @@ from pydantic import Field
 
 from .base import AssetEnvelope, AssetType, Base
 
-SectionType = Literal[
-    "executive-summary",
-    "background",
-    "findings",
-    "analysis",
-    "recommendations",
-    "next-steps",
-]
-
-# The sections in presentation order — used to order output and detect gaps.
-SECTION_ORDER: tuple[SectionType, ...] = (
-    "executive-summary",
-    "background",
-    "findings",
-    "analysis",
-    "recommendations",
-    "next-steps",
-)
+# Open on purpose: a section type is any slug. Closing this Literal previously
+# meant an unrecognised sectionType was SILENTLY DROPPED from the report.
+#
+# Which sections a report HAS, and in what order, is deliberately NOT here — it is
+# domain vocabulary, so it lives with the agent that produces it
+# (app/subagents/report/prompts.py SECTIONS). This contract only says a report is
+# a list of typed sections.
+SectionType = str
 
 
 class ReportSection(Base):

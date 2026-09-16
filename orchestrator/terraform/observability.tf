@@ -9,9 +9,10 @@ resource "aws_s3_object" "observability_js" {
 }
 
 # --- Observability: telemetry store + access -------------------------------
-# One row per model / tool / compute event (written by app/observability). PK is
-# the session_id so a whole run reads back with one query; the by_date
-# GSI powers the by-date / by-model / by-user aggregation (grouped in the BFF).
+# One row per model / tool / memory / guardrail / policy / eval / compute event
+# (written by app/features/observability). PK is the session_id so a whole run
+# reads back with one query; the by_date GSI powers the by-date / by-model /
+# by-user aggregation (grouped in the BFF).
 
 resource "aws_dynamodb_table" "telemetry" {
   name         = "${var.agent_name}_telemetry"
@@ -52,25 +53,27 @@ resource "aws_dynamodb_table" "telemetry" {
   }
 }
 
-# Orchestrator runtime writes telemetry.
+# Orchestrator runtime writes telemetry, and also READS it back: AgentCore
+# Evaluations scores each prompt from its persisted model-call I/O, which means
+# querying this table.
 resource "aws_iam_role_policy" "runtime_telemetry" {
-  name = "TelemetryWrite-${var.agent_name}"
+  name = "TelemetryReadWrite-${var.agent_name}"
   role = aws_iam_role.runtime.id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect   = "Allow"
-      Action   = ["dynamodb:PutItem"]
-      Resource = [aws_dynamodb_table.telemetry.arn]
+      Action   = ["dynamodb:PutItem", "dynamodb:Query", "dynamodb:GetItem"]
+      Resource = [aws_dynamodb_table.telemetry.arn, "${aws_dynamodb_table.telemetry.arn}/index/*"]
     }]
   })
 }
 
 # Dedicated per-agent runtimes write telemetry too (only when any exist).
 resource "aws_iam_role_policy" "subagent_telemetry" {
-  count  = length(local.dedicated_agents) > 0 ? 1 : 0
-  name   = "TelemetryWrite-${var.agent_name}-subagent"
-  role   = aws_iam_role.subagent[0].id
+  count = length(local.dedicated_agents) > 0 ? 1 : 0
+  name  = "TelemetryWrite-${var.agent_name}-subagent"
+  role  = aws_iam_role.subagent[0].id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{

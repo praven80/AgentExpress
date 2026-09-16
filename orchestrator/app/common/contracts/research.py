@@ -1,7 +1,6 @@
 """Research finding contract — the output of the step-2 research agents.
 
-Both research sub-agents (knowledge_research over the Knowledge Base, and
-web_research over an MCP server) emit this same structured shape, differing only
+Every research sub-agent emits this same structured shape, differing only
 in their evidence source and content.
 
 The core of the contract is the EVIDENCE CLASSIFICATION on every finding —
