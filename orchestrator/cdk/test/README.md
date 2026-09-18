@@ -9,7 +9,7 @@ npm test
 No AWS credentials and no container builder. `Template.fromStack` renders the
 template without staging the cloud assembly, which is the step that would bundle the
 Docker image — verified by running the suite with `CDK_DOCKER=/nonexistent/builder`.
-The whole thing is under ten seconds.
+The whole suite is 149 tests across four files.
 
 This is the TypeScript half of the config-plane suite. The Python half is
 [`orchestrator/tests/`](../../tests/README.md), which covers the runtime; this covers
@@ -19,9 +19,10 @@ the IaC.
 
 | File | Covers |
 |---|---|
-| `config-plane.test.ts` | the pure projections and validators: `validateTools`, `validateWorkflow`, `authzGroups`, `buildBffWorkflow`, `buildGuardrail`, `stripForEnv`, `cedarStatement` |
+| `config-plane.test.ts` | the pure projections and validators: `validateTools`, `validateWorkflow`, `validateBranches`, `authzGroups`, `buildBffWorkflow`, `buildGuardrail`, `stripForEnv`, `cedarStatement` |
 | `parity.test.ts` | Terraform ↔ CDK agreement: the BFF projection's key set, the API route list, the byte budget, and the constants that are necessarily duplicated across HCL / TypeScript / Python |
 | `stack.test.ts` | the synthesized template: Cognito groups and self-signup, the route set and its authorizer, the BFF environment, the Gateway targets and the Cedar policies |
+| `tool-plane.test.ts` | the tool plane's own projections: one Gateway target per `tools` entry, the Knowledge Base storage naming (the digest that lets an immutable property be replaced rather than fail the deploy), and the generated Cedar statements |
 
 ## Why parity.test.ts exists
 
@@ -41,7 +42,7 @@ vacuously. (That guard has already earned its place — the first version of the
 per-agent key check silently extracted zero keys, because `agents` is a `for`
 comprehension and the keys sit one brace deeper than expected.)
 
-The duplicated-constant checks cover the lists that cannot be shared: the six RBAC
+The duplicated-constant checks cover the lists that cannot be shared: the seven RBAC
 action names live in `bff/authz.py` (which enforces them), `terraform/identity.tf`
 and `lib/orchestrator-stack.ts` (which both need them at plan/synth time to reject a
 typo'd action key). Terraform cannot read the Python and TypeScript cannot read

@@ -5,7 +5,7 @@ prefer `cdk deploy`. It provisions:
 
 - the **orchestrator** AgentCore Runtime (built from `../Dockerfile`, ARM64),
 - one **dedicated** AgentCore Runtime per `dedicated` agent in `../app/workflow.json`
-  (the four research agents),
+  (three of the four research agents),
 - **DynamoDB** tables — status, events, telemetry (+ `by_date` GSI), insights,
 - **AgentCore Memory ×2** — the LangGraph checkpointer *and* the long-term store
   (semantic + summary strategies) that `memory.longTerm` agents recall from,
@@ -79,7 +79,7 @@ Outputs include `uiUrl` (CloudFront), `apiEndpoint`, `agentRuntimeArn`, and `mem
 ## Test
 
 ```bash
-npm test        # ~9s; no AWS credentials, no container builder
+npm test        # 149 tests; no AWS credentials, no container builder
 ```
 
 Config-plane tests for this path: the projections and validators, the synthesized
@@ -256,7 +256,8 @@ stacks or services may depend on it, so tearing it down would be a surprise.
   in `workflow.json`. Nothing splits on the delimiter; `call` is matched against the
   published name.
 - **`tools/list` is paginated.** Follow `nextCursor` when verifying, or a target with
-  tools on page two looks empty. This stack returns 2 tools on page 1, 5 on page 2.
+  tools on page two looks empty. This stack has four targets and the remote MCP server
+  alone publishes five tools, so the catalogue does not fit on one page.
 - **Two CDK-only limits, both surfaced as synth errors rather than silently ignored.**
   `connectorVersion` cannot be expressed (CloudFormation's connector source accepts
   only `connectorId` — use Terraform if you need a version pin), and the workflow

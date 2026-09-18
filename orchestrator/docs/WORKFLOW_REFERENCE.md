@@ -104,24 +104,15 @@ AgentCore Runtime name.
 | `produces` | `nodes.py` | The deliverable name, injected into the agent's task prompt. |
 | `access` | UI chip | A short human label for the data source. **Only read when the agent has no `tool`** — with a tool, the chip is derived from the tool's type. Don't set both. |
 
-**How to decide which agent gets repair — and it is not "the worst one".** From the
-recorded violations, and from what KIND of defect they are.
-
-A re-ask can execute a mechanical instruction: "you are 600 words over the budget",
-"remove the ordinal markers First, Second, Third", "the count says five and you
-listed four". It cannot execute a semantic one. The shipped config turns repair on
-for `report` alone, whose defects are all of the first kind. It was tried on
-`analysis` first — whose `rationale` kept describing the request instead of the
-subject — and measured: the re-ask rewrote the field and landed in the same defect
-class, one violation before and one after, for the price of a call. That agent's
-prompt was revised four times and the defect is now left **recorded rather than
-repaired**, which is the layer working as designed: a visible note telling a reviewer
-which sentence to distrust, on a field whose other sentences are worth keeping.
-
-So: prompt first. If the prompt loses twice, ask whether the defect is something a
-model can mechanically correct. If it is, turn on `repair` for that agent. If it is
-not, leave the violation recorded — deleting good content to clear a counter is the
-check corrupting the deliverable.
+> **There is no `repair` key, and this file used to claim there was.** An earlier
+> version of the framework shipped an output-rules engine that could re-ask an agent
+> to fix its own violations. It was removed, because it encoded one editorial standard
+> (`document`, `record`, `evidence`, `transcript` were treated as artifact nouns) that
+> would misfire in a legal or medical domain — and a framework has no business holding
+> that opinion. The section documenting it outlived it, which is exactly the failure
+> `tests/test_config_keys.py` exists to prevent, in reverse: a key a reader believes in
+> and nothing reads. If you want output checks, put them in your own agent under
+> `app/subagents/<id>/`, where the standard is yours.
 
 ### `maxTokens` — why it is per agent
 
@@ -135,7 +126,8 @@ research JSON"*, because the framework refuses to emit a half-parsed asset that
 downstream agents would treat as real findings. If you see that error, this is the
 first thing to raise.
 
-Current values: `intake` 3000, the four research agents 4000, `analysis` and
+Current values: `intake` 3000, the three evidence-gathering research agents 4000,
+`cost_research` 1500 (it emits a small rates table, not prose), `analysis` and
 `recommendation` 6000, `report` 8000.
 
 These were literals buried at each call site until they were moved here. Nothing in
@@ -335,7 +327,7 @@ each row also carries.
 
 ## `authorization`
 
-Answers "may *this user* do this?", which the JWT authorizer does not. Six actions:
+Answers "may *this user* do this?", which the JWT authorizer does not. Seven actions:
 `start` (begin a run), `decision` (approve / revise / deny a gate), `rerun`,
 `cancel`, `evaluate`,
 `insights`, `delete`.
@@ -384,7 +376,11 @@ Each entry is one of:
 - `{ "sequence": ["a", "b"] }` — chain in order
 
 Add `"hitl": true` for a human-review gate after the step, and `gateId` / `gateName`
-to name it (the id is how the BFF and UI address the gate).
+to name it (the id is how the BFF and UI address the gate). Add `branch` to let the
+step's own output choose what runs next — see below.
+
+Those five are the whole key set: `agent` / `parallel` / `sequence` (pick one),
+`hitl`, `gateId`, `gateName`, `branch`.
 
 Revise behaviour differs by shape, and the difference is the point: a **parallel**
 gate re-runs only the agents the reviewer flags; a **sequence** gate re-runs the
@@ -456,6 +452,30 @@ rules), the timeline records the rule that matched and where it went, and the ag
 the run bypassed are marked **skipped** rather than left looking queued. With a
 review gate on the same step the human approves first, then the branch reads the
 output they approved.
+
+**The branch this sample ships**, on its intake step — two guards that fire only on a
+degenerate brief, so the eight-agent demo is unchanged:
+
+```json
+{ "agent": "intake", "hitl": true,
+  "branch": {
+    "when": [
+      { "field": "objective",    "exists": false, "goto": "END" },
+      { "field": "keyQuestions", "lt": 1,         "goto": "analysis_reco" }
+    ]
+  } }
+```
+
+No objective in the brief and there is nothing downstream can work with, so end the
+run rather than spend seven more agents. No research questions and there is nothing
+for the research stage to gather, so jump to `analysis_reco` — the `gateId` of the
+sequence step — and synthesize over the brief alone. On a normal request neither
+matches and the run continues to the research stage, with one timeline line saying so.
+
+Note what the second rule teaches: `keyQuestions` is a **list**, and the numeric
+operators compare a collection by its **length**, so `lt: 1` means "empty". A field
+that is *absent* is different again — it matches only `exists: false`, because every
+other operator needs a value to compare.
 
 Everything above is checked before anything deploys, because each of these mistakes
 is otherwise silent — a misspelled operator, a rule with no comparison and a target

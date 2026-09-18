@@ -134,13 +134,14 @@ It's vaulted in an AgentCore credential provider and sent by the Gateway as an
 >
 > **2. `tools/list` is PAGINATED. Follow `nextCursor`.** This trips people up: read
 > only the first page and a target looks empty when its tools are simply on page two.
-> This deployment returns 2 tools on page 1 and 5 on page 2. The app paginates
-> correctly — verification scripts often don't.
+> This deployment has four targets, and the remote MCP server alone publishes five
+> tools, so the catalogue does not fit on one page. The app paginates correctly —
+> verification scripts often don't.
 >
 > Confirm what actually got published after deploying:
 >
 > ```bash
-> TOKEN=$(curl -s -X POST "https://$(terraform output -raw cognito_domain_prefix).auth.$(terraform output -raw region 2>/dev/null || echo us-east-1).amazoncognito.com/oauth2/token" \
+> TOKEN=$(curl -s -X POST "https://$(terraform output -raw cognito_domain_prefix).auth.${AWS_REGION:-us-east-1}.amazoncognito.com/oauth2/token" \
 >   -H 'Content-Type: application/x-www-form-urlencoded' \
 >   -u "<m2m-client-id>:<secret>" -d 'grant_type=client_credentials&scope=gateway/invoke' | jq -r .access_token)
 > GW=$(terraform output -raw gateway_url)
@@ -277,12 +278,14 @@ Two things differ from the other types:
   the app refuses to guess between candidates, and both IaC paths enforce that.
 
 The sample ships this live, so you can see it work before writing anything: the
-`runs` tool and the `history_research` agent. It uses `"source": "tool_lambda"`
+`pricing` tool and the `cost_research` agent. It uses `"source": "tool_lambda"`
 instead of `lambdaArn`, which asks the framework to deploy the demo function it
 ships in `orchestrator/tool_lambda/` — that keeps the committed config
 account-neutral, since a real ARN would pin it to one AWS account. The function
-answers from this deployment's own DynamoDB run history, so the rows are real
-without you standing up a database first. `source` accepts no other value: a
+publishes `aws_prices`, returning real AWS on-demand unit rates from the Price List
+Query API, so the rows are real without you standing up a database first. It returns
+RATES and never a total: a total needs usage volumes, which are a property of your
+workload and not of AWS. `source` accepts no other value: a
 framework-deployed function needs an execution role config cannot express. Swap it
 for `lambdaArn` and the framework stops deploying anything.
 
@@ -303,8 +306,8 @@ orchestrator/app/subagents/contract_review/
 
 ```python
 # agent.py
-from app.common import research
 from app.common.base import Agent
+from app.subagents._shared import research
 from app.common.context import AgentContext
 
 from .prompts import SYSTEM_PROMPT
@@ -465,12 +468,13 @@ it, if you want to see default-deny in action.
 
 Logging in proves *who* someone is. It says nothing about whether they may approve a
 review gate, and "any authenticated user can approve" is the wrong default for a
-human-in-the-loop product. Map the six mutating actions to JWT groups:
+human-in-the-loop product. Map the seven mutating actions to JWT groups:
 
 ```json
 "authorization": {
   "groupsClaim": "cognito:groups",
   "actions": {
+    "start":    ["approvers", "operators"],
     "decision": ["approvers"],
     "rerun":    ["approvers"],
     "cancel":   ["approvers", "operators"],
@@ -481,8 +485,9 @@ human-in-the-loop product. Map the six mutating actions to JWT groups:
 }
 ```
 
-- `decision` is approve / revise / deny. The rest are re-run an agent, stop a run, run
-  an evaluation, run cross-run Insights, and delete a run.
+- `start` is starting a run — the most expensive action in the app. `decision` is
+  approve / revise / deny. The rest are re-run an agent, stop a run, run an
+  evaluation, run cross-run Insights, and delete a run.
 - **Absent = unrestricted.** An action you don't list stays open to any authenticated
   caller, so removing the block gives you the old behaviour. Listing an action with an
   **empty** array denies it to everyone — that is how you turn a capability off.
@@ -561,7 +566,7 @@ a `doc_type` no chunk carried, and retrieval quietly returned nothing at all.
 ```bash
 cd orchestrator
 pip install -r requirements.txt -r requirements-dev.txt
-python -m app.orchestrator.server        # needs AWS credentials + Bedrock access
+uvicorn app.orchestrator.server:app --port 8090   # needs AWS credentials + Bedrock access
 ```
 
 > **No offline mode, deliberately.** This framework never fabricates data. A failed
@@ -580,8 +585,8 @@ the runtimes; editing `kb_docs/` re-ingests the corpus and nothing else.
 ### Check your config before you deploy it
 
 ```bash
-cd orchestrator     && pytest      # runtime side — ~1s
-cd orchestrator/cdk && npm test    # IaC side + Terraform↔CDK parity — ~9s
+cd orchestrator     && pytest      # runtime side — 429 tests, a few seconds
+cd orchestrator/cdk && npm test    # IaC side + Terraform↔CDK parity — 149 tests
 ```
 
 Neither needs AWS credentials, a model, or a container builder.

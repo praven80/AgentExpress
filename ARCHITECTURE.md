@@ -62,7 +62,7 @@ fronting the MCP/tool plane. This describes what is actually deployed.
                         │  AgentCore Runtime        │─────────────────▶│ AgentCore Memory ×2       │
                         │  (orchestrator)           │  (graph state)   │ • checkpointer (HITL)     │
                         │  LangGraph                │  recall / store  │ • long-term semantic +    │
-                        │  1→[2‖2]→[3→3]→4          │◀────────────────▶│   summary (per agent +    │
+                        │  1→[2‖2‖2‖2]→[3→3]→4          │◀────────────────▶│   summary (per agent +    │
                         │                           │                  │   per subject)            │
                         │                           │                  └───────────────────────────┘
                         │                           │  write progress  ┌───────────────────────────┐
@@ -107,15 +107,19 @@ fronting the MCP/tool plane. This describes what is actually deployed.
 
 Workflow (4 stages, 8 agents) — a parallel group next to a sequential group:
 `1 Intake ─(HITL)▶ 2 [knowledge_research ‖ web_search ‖ documentation_search ‖
-history_research] ─(HITL)▶ 3 [analysis → recommendation] ─(HITL)▶ 4 Report`. The four
+cost_research] ─(HITL)▶ 3 [analysis → recommendation] ─(HITL)▶ 4 Report`, with a
+`branch` on step 1 that can skip step 2 or end the run (see §Pipeline). The four
 research agents exist to show four different tool patterns behind one Gateway — a
-Knowledge Base, a managed connector, a remote MCP server and a Lambda — and are
-otherwise identical: same shared runner, same contract, one line of config apart.
+Knowledge Base, a managed connector, a remote MCP server and a Lambda. Three share
+one runner and one contract, a line of config apart; `cost_research` deliberately
+does not — it runs `main` rather than `dedicated`, on a smaller token budget, and
+reads the tool's DATA rows through `ctx.call_tool_rows` instead of treating the
+result as evidence to paraphrase.
 The runtime writes to two independent stores (there is no Memory→DynamoDB flow):
 durable graph state to **AgentCore Memory** (the LangGraph checkpointer, for HITL
 pause/resume) and live per-session progress to **DynamoDB** (status + events),
 which the BFF reads for the UI. Most agents run in-process in the orchestrator
-runtime; the two research agents are marked `runtime: "dedicated"` and each runs
+runtime; three of the research agents are marked `runtime: "dedicated"` and each runs
 in its **own** AgentCore Runtime, invoked via `InvokeAgentRuntime`.
 
 ---
@@ -216,9 +220,11 @@ different boundaries, both config-driven.
   redirect a run, never strand one. With a `hitl` gate on the same step, the human
   approves first and the branch then reads the output they approved.
 - Each agent is a small `Agent` subclass in `app/subagents/<id>/`. The research
-  agents share `common/research.py` (RAG/MCP + evidence classification); the
-  analysis/recommendation/report agents share `common/synthesis.py` (gather
-  approved upstream assets → structured JSON → validated contract).
+  agents share `app/subagents/_shared/research.py` (RAG/MCP + evidence
+  classification); the analysis/recommendation/report agents share
+  `app/subagents/_shared/synthesis.py` (gather approved upstream assets → structured
+  JSON → validated contract). Both live under `subagents/` on purpose: they are this
+  SAMPLE's editorial choices, not framework, and a customer replaces them.
 
 ### Agent runtime placement — in-process vs dedicated
 - `runtime: "main"` — the agent runs in-process as a LangGraph node inside the
@@ -228,7 +234,8 @@ different boundaries, both config-driven.
   The orchestrator's node body (`AgentCoreRuntimeAgent`) calls `InvokeAgentRuntime`
   with the same inputs an in-process agent would read, and returns the output. Same
   `Agent` interface either way, so the graph wiring is identical — placement is
-  config only. This sample ships all agents as `main`.
+  config only. This sample ships three of its eight agents as `dedicated`
+  (`knowledge_research`, `web_search`, `documentation_search`); the rest are `main`.
 
 ### Tool access (which tools an agent may call) — AgentCore Gateway
 - Agents reach tools through one **Gateway** MCP endpoint over Streamable HTTP, using
@@ -270,9 +277,10 @@ different boundaries, both config-driven.
   prefix. `call` is matched against the published name; nothing splits on `___`.
 - **`tools/list` is PAGINATED — follow `nextCursor`.** This is the one real trap.
   A client that reads only the first page sees a subset and concludes a target
-  published nothing, when its tools are simply on page two. With three targets this
-  deployment returns 2 tools on page 1 and 5 on page 2. The app's MCP client
-  paginates correctly; hand-rolled verification scripts often do not.
+  published nothing, when its tools are simply on page two. This deployment has four
+  targets, and the remote MCP server alone publishes five tools, so the catalogue
+  does not fit one page. The app's MCP client paginates correctly; hand-rolled
+  verification scripts often do not.
 - **`listingMode`** selects how the Gateway discovers a server's tools: `DEFAULT`
   synchronises and caches the catalogue when the target is created (needed for
   semantic tool search), `DYNAMIC` forwards `tools/list` to the server at invocation
@@ -427,8 +435,8 @@ different boundaries, both config-driven.
 
 ### Config (`workflow.json`)
 ```json
-"orchestrator": { "name": "multiagent_orchestrator", "engine": "langgraph",
-                  "defaultModel": "us.anthropic.claude-haiku-4-5-20251001-v1:0" },
+"orchestrator": { "defaultModel": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                  "runtimeInvoke": {...}, "policy": {...}, "chatbot": {...} },
 "ui":            { "title": "...", "heading": "...", "defaultTopic": "..." },
 "guardrail":     { "contentFilters": {...}, "deniedTopics": [...], "piiEntities": {...} },
 "authorization": { "groupsClaim": "cognito:groups",
@@ -437,7 +445,9 @@ different boundaries, both config-driven.
   "kb":        { "type": "kb", "corpora": ["reference"], "policy": {...} },
   "websearch": { "type": "websearch", "maxResults": 10 },
   "docs":      { "type": "mcp", "endpoint": "https://knowledge-mcp.global.api.aws",
-                 "call": "aws___search_documentation", "arg": "search_phrase" }
+                 "call": "aws___search_documentation", "arg": "search_phrase" },
+  "pricing":   { "type": "lambda", "source": "tool_lambda", "call": "aws_prices",
+                 "arg": "services", "rowFields": {...}, "toolSchema": [...] }
 },
 "agents": {
   "knowledge_research": { "name": "Knowledge Base Research", "runtime": "dedicated",
@@ -448,23 +458,26 @@ different boundaries, both config-driven.
                                          "policy": {"enabled": true} } },
   "web_search":           { "name": "Web Search Research",       "runtime": "dedicated", "tool": "websearch", ... },
   "documentation_search": { "name": "MCP Documentation Research", "runtime": "dedicated", "tool": "docs", ... },
-  "history_research":     { "name": "Prior Run Research",        "runtime": "main",      "tool": "runs", ... },
+  "cost_research":        { "name": "Cost Research",            "runtime": "main",      "tool": "pricing", "maxTokens": 1500, ... },
   "analysis":  { "name": "Analysis", "runtime": "main", "maxTokens": 6000,
                  "agentcore": { "memory": {"longTerm": ["semantic"]},
                                 "guardrails": {"output": true}, ... } }
 },
 "steps": [
-  { "agent": "intake", "hitl": true },
+  { "agent": "intake", "hitl": true,
+    "branch": { "when": [{ "field": "objective",    "exists": false, "goto": "END" },
+                         { "field": "keyQuestions", "lt": 1, "goto": "analysis_reco" }] } },
   { "parallel": ["knowledge_research", "web_search", "documentation_search",
-                 "history_research"],
-    "hitl": true, "gateId": "research" },
-  { "sequence": ["analysis", "recommendation"], "hitl": true, "gateId": "analysis_reco" },
+                 "cost_research"],
+    "hitl": true, "gateId": "research", "gateName": "Research" },
+  { "sequence": ["analysis", "recommendation"], "hitl": true, "gateId": "analysis_reco",
+    "gateName": "Analysis & Recommendation" },
   { "agent": "report" }
 ]
 ```
 Agents are keyed by **semantic id** (the key IS the module/package name). Each
 entry binds to a data source with `tool` (a key in the `tools` block) plus `corpus`
-for a Knowledge Base tool, and carries declarative `sources` / `access` / `produces`
+for a Knowledge Base tool, and carries declarative `access` / `produces`
 metadata plus the `agentcore` block that switches its features on. The `orchestrator`
 block describes the engine rather than an agent: the app consumes `defaultModel`,
 and the IaC consumes `policy` (Cedar on/off + mode) and `chatbot` (assistant on/off
@@ -479,11 +492,12 @@ runtime, a policy engine) is provisioned from this one source of truth.
 Two suites, one per language, both fast enough for a pre-commit hook and needing
 neither AWS credentials nor a container builder:
 
-- **`orchestrator/tests/`** (pytest, 170 tests, ~1s) — the runtime side: topology
-  derivation, graph compilation across 14 step shapes, rewind planning, tool argument
-  shapes, Gateway tool-name resolution, citation verification, contract coercion, and
-  the RBAC rules plus their wiring on every mutating route.
-- **`orchestrator/cdk/test/`** (jest, 84 tests, ~9s) — the IaC side: the projections
+- **`orchestrator/tests/`** (pytest, 429 tests, a few seconds) — the runtime side:
+  topology derivation, graph compilation across 14 step shapes, branch rules and
+  routing, rewind planning, tool argument shapes, Gateway tool-name resolution,
+  citation verification, contract coercion, and the RBAC rules plus their wiring on
+  every mutating route.
+- **`orchestrator/cdk/test/`** (jest, 149 tests) — the IaC side: the projections
   and validators, the synthesized template (Cognito groups, route set + authorizer,
   BFF environment, Gateway targets, Cedar policies), and **Terraform ↔ CDK parity**.
 
@@ -503,7 +517,7 @@ they are independent implementations of the same projection, and the one time th
 drifted it was found by comparing two live deployments. It now reads the HCL as text
 and compares the BFF projection's key set, the API route list, the byte budget, and
 the constants that must be duplicated across HCL / TypeScript / Python (notably the
-six RBAC action names).
+seven RBAC action names).
 
 Not covered by either: the IaC's own resource semantics. `terraform validate` /
 `cdk synth` plus the plan-time preconditions in both paths are the gate there.
@@ -593,7 +607,7 @@ IAM roles — and keeps no secrets in the repo. Before any non-sandbox use, hard
 - **Auth can be turned off.** `idp = "none"` deploys an **open** UI/API (intended only
   for a personal sandbox).
 - **RBAC covers run actions, not agents or data.** `authorization` in `workflow.json`
-  gates the six mutating actions (approve/revise/deny, re-run, cancel, evaluate,
+  gates the seven mutating actions (start a run, approve/revise/deny, re-run, cancel, evaluate,
   insights, delete) on JWT group membership, and the same rules constrain the
   assistant. It does **not** partition *runs* between users: every authenticated user
   can start a run and read every other run's inputs, outputs and telemetry. If you need
@@ -605,10 +619,11 @@ IAM roles — and keeps no secrets in the repo. Before any non-sandbox use, hard
 - **Data protection.** Buckets use `force_destroy = true`; enable versioning,
   retention, log-retention, and alarms for real data.
 - **Untrusted content.** Treat all model/MCP/RAG output as untrusted. Guardrails and
-  Cedar policy are wired in, but the **shipped rules are samples** — replace the
-  filters/denied topics in `terraform/guardrail.tf` and the permitted-corpus list in
-  `terraform/policy.tf` with your domain's, and enable guardrails on every agent
-  that handles untrusted text.
+  Cedar policy are wired in, but the **shipped rules are samples**. Both are
+  generated, so replace them where they are declared — the `guardrail` block and the
+  `kb` tool's `policy.restrictTo` in `app/workflow.json`, not `terraform/guardrail.tf`
+  or `terraform/policy.tf` — and enable guardrails on every agent that handles
+  untrusted text.
 - **Telemetry stores prompt/output content** (that's what powers the Prompts & I/O
   inspector). With sensitive inputs, lower `OBS_MAX_CAPTURE_CHARS`, use the table's
   TTL, and restrict read access to the telemetry table and the Observability tab.

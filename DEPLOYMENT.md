@@ -14,7 +14,8 @@ account/region; they use overlapping resource names):
 | Guide | This document (below) | [`orchestrator/cdk/README.md`](orchestrator/cdk/README.md) + the quick steps at the end here |
 
 Both build the same ARM64 container image and provision the orchestrator plus one
-dedicated AgentCore runtime per `dedicated` agent (the two research agents), and both
+dedicated AgentCore runtime per `dedicated` agent (three of the four research
+agents), and both
 read `app/workflow.json` as the single source of truth for agents and topology.
 **Pick whichever you prefer — the deployed feature surface is the same.**
 
@@ -251,8 +252,8 @@ terraform apply                                # builds the image + provisions e
 (`bootstrap-state.sh` in step 4 already ran `terraform init`.)
 
 The first apply builds/pushes the container image, provisions the **orchestrator
-runtime plus one dedicated AgentCore runtime per `dedicated` agent** (the two
-research agents), creates both **AgentCore Memory** resources (the checkpointer and
+runtime plus one dedicated AgentCore runtime per `dedicated` agent** (three of the
+four research agents), creates both **AgentCore Memory** resources (the checkpointer and
 the long-term semantic/summary store), the **Bedrock Guardrail**, the telemetry and
 Insights tables, enables **CloudWatch Transaction Search** (idempotent — a no-op if
 already on), and — when `enable_gateway = true` — the Gateway with its **Cedar
@@ -328,6 +329,7 @@ The shipped mapping (edit it in `orchestrator/app/workflow.json`):
 
 | Action | Meaning | Groups |
 |--------|---------|--------|
+| `start`    | start a run (the most expensive action in the app) | *unrestricted in the sample* |
 | `decision` | approve / revise / deny a review gate | `approvers` |
 | `rerun`    | re-run an agent and everything downstream | `approvers` |
 | `cancel`   | stop a running workflow | `approvers`, `operators` |
@@ -338,8 +340,9 @@ The shipped mapping (edit it in `orchestrator/app/workflow.json`):
 An action **not listed** in `authorization.actions` is unrestricted, so deleting the
 block gives you the pre-RBAC behaviour where any logged-in user can do anything. An
 action listed with an **empty** group list is denied to everyone — that is how you
-switch a capability off entirely. See `authorizationNote` in `workflow.json` for the
-full semantics, and check `GET /api/me` if you are unsure what the app thinks you can do:
+switch a capability off entirely. See the `authorization` section of
+[`orchestrator/docs/WORKFLOW_REFERENCE.md`](orchestrator/docs/WORKFLOW_REFERENCE.md)
+for the full semantics, and check `GET /api/me` if you are unsure what the app thinks you can do:
 
 ```bash
 curl -s -H "Authorization: Bearer $ID_TOKEN" "$(terraform output -raw api_endpoint)/api/me"
@@ -461,7 +464,8 @@ apply uploads, re-ingests, and updates the authorization policy.
 
 > **Always verify what a new MCP target actually publishes — and PAGINATE.**
 > `tools/list` returns pages: read only the first and a target looks empty when its
-> tools are simply on page two. This deployment returns 2 tools on page 1 and 5 on
+> tools are simply on page two. This deployment has four targets and the remote MCP
+> server alone publishes five tools, so the catalogue does not fit on one
 > page 2. Follow `nextCursor` until it is absent. The recipe is in
 > [`GETTING_STARTED.md`](GETTING_STARTED.md).
 >
@@ -506,8 +510,9 @@ Everything below is a `orchestrator/app/workflow.json` edit followed by
 | Add an agent | a folder under `app/subagents/<id>/` + an `agents` entry + a place in `steps` (see [`GETTING_STARTED.md`](GETTING_STARTED.md)) |
 | Reduce span-indexing cost | `transaction_search_indexing_percentage` in `terraform.tfvars` (1% is free) |
 
-The shipped **guardrail** (`terraform/guardrail.tf`) is a sample — replace its
-filters and denied topics with your own domain's before real use.
+The shipped **guardrail** is a sample, and like the Cedar policy it is *generated* —
+`terraform/guardrail.tf` carries no domain content. Replace its filters and denied
+topics in the `guardrail` block of `app/workflow.json` before real use.
 
 The **Cedar policy is generated**, so there is nothing to hand-edit: it permits
 exactly the tools declared in the `tools` block, and the `kb` entry's `restrictTo`
@@ -548,7 +553,7 @@ re-apply creates a new `ui_url`; Terraform re-wires the Cognito callback URLs fo
 
 # Deploy with CDK (full — same surface as Terraform)
 
-The CDK path provisions the same resources as Terraform: the orchestrator + two
+The CDK path provisions the same resources as Terraform: the orchestrator + three
 dedicated runtimes, AgentCore Memory ×2, the Guardrail, DynamoDB stores, the
 BFF/API, the S3 + CloudFront UI, Transaction Search, and — with
 `-c enableGateway=true` — the AgentCore Gateway, the Bedrock Knowledge Base on S3

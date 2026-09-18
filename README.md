@@ -35,7 +35,7 @@ for your use case.
 > different 4-agent workflow in another domain — renamed agents, a different topology,
 > its own tool, guardrail and branding — and separately renaming a shipped agent by
 > touching only `workflow.json` and its own folder. Both compile the graph and pass
-> the full suite (214 Python + 127 TypeScript), `terraform validate` and `cdk synth`
+> the full suite (429 Python + 149 TypeScript), `terraform validate` and `cdk synth`
 > with no other change.
 >
 > Four couplings remain, none of which blocks a typical use case: the five tool
@@ -77,7 +77,8 @@ for your use case.
   stage that isn't needed, or end the run early. Rules are a dot path into the
   output plus a comparison (`equals`, `in`, `gte`, `contains`, `exists`, …), so the
   framework holds no opinion about your schema. Bypassed agents are marked
-  **skipped**, and the rule that decided is written to the run's timeline.
+  **skipped**, and the rule that decided is written to the run's timeline. Full rule
+  syntax in [Branching](#branching--letting-an-agents-output-choose-the-next-step).
 - **Rewind & re-run** — after a run settles, re-run **any single agent** (plus
   everything downstream) or a **subset of one parallel stage**, with your note
   injected as that agent's feedback. Downstream gates re-pause, and every run is
@@ -89,7 +90,7 @@ for your use case.
   orchestrator (`runtime: "main"`) or, by flipping one config field, in its **own
   dedicated AgentCore Runtime** (`runtime: "dedicated"`), invoked cross-runtime
   via `InvokeAgentRuntime` with the **trace context propagated** so a run is one
-  distributed trace. In this sample the two research agents run on their own
+  distributed trace. In this sample three of the four research agents run on their own
   dedicated runtimes; the rest run in-process.
 - **Configuration-driven identity** — one variable (`idp`) selects **Cognito**,
   **Auth0**, or **no login** for both auth boundaries: end-user **SPA login** for the
@@ -98,7 +99,7 @@ for your use case.
   `terraform/identity.tf`, one branch in the Gateway client, and one login strategy
   in the SPA.
 - **RBAC on the human actions** — the `authorization` block maps JWT **groups** to the
-  six mutating actions (approve/revise/deny, re-run, cancel, evaluate, insights,
+  seven mutating actions (start a run, approve/revise/deny, re-run, cancel, evaluate, insights,
   delete), so "logged in" and "may approve" are different things. Both IaC paths
   create the Cognito groups the block names, the UI disables what you can't use, and
   the in-app assistant is held to the same rules rather than becoming a way around
@@ -156,13 +157,16 @@ removed as a unit.
 
 ## The workflow
 
-A 4-stage, 6-agent pipeline, defined entirely in
+A 4-stage, 8-agent pipeline, defined entirely in
 [`orchestrator/app/workflow.json`](orchestrator/app/workflow.json). It
 deliberately contrasts a **parallel** group with a **sequential** group:
 
 ```
-1 Intake ─(HITL)─▶ 2 [ knowledge_research ‖ web_search ‖ documentation_search ]
+1 Intake ─(HITL)─▶ 2 [ knowledge_research ‖ web_search ‖ documentation_search ‖ cost_research ]
                      ─(HITL)─▶ 3 [ analysis → recommendation ] ─(HITL)─▶ 4 Report
+     │
+     └──(branch)──▶ 3, skipping research, if the brief has no research questions
+     └──(branch)──▶ END, if the brief has no objective at all
 ```
 
 Agents are keyed by **semantic ids** in `workflow.json` (e.g. `intake`,
@@ -170,14 +174,14 @@ Agents are keyed by **semantic ids** in `workflow.json` (e.g. `intake`,
 
 | # | Stage | Agent id(s) | Pattern | Notes |
 |---|-------|-------------|---------|-------|
-| 1 | Request Intake | `intake` | single | LLM turns the request into a structured brief; HITL gate after |
-| 2 | Research | `knowledge_research`, `web_search`, `documentation_search` | **parallel** (**RAG** ‖ **Web Search** ‖ **MCP**), each on a **dedicated runtime** | run concurrently in their own AgentCore runtimes — one per tool pattern; one HITL group gate after all three |
+| 1 | Request Intake | `intake` | single | LLM turns the request into a structured brief; HITL gate after, then a **`branch`** on that brief (see below) |
+| 2 | Research | `knowledge_research`, `web_search`, `documentation_search`, `cost_research` | **parallel** (**RAG** ‖ **Web Search** ‖ **MCP** ‖ **your own Lambda**), the first three on a **dedicated runtime** | run concurrently — one per tool pattern; one HITL group gate after all four |
 | 3 | Analysis → Recommendation | `analysis`, `recommendation` | **sequential** | run one after another; one HITL gate after both complete (revise re-runs the whole chain) |
 | 4 | Report | `report` | terminal | assembles the final sectioned report (no gate) |
 
 Each agent entry binds to a data source with one field — `tool` (a key in the
 `tools` block) plus `corpus` for a Knowledge Base tool — and carries declarative
-`sources` / `access` / `produces` metadata surfaced as chips in the UI, plus the
+`access` / `produces` metadata surfaced as chips in the UI, plus the
 `agentcore` block that switches its features on. The eight agents deliberately use
 **different** combinations so one deployment exercises the whole surface:
 
@@ -187,10 +191,118 @@ Each agent entry binds to a data source with one field — `tool` (a key in the
 | `knowledge_research` | dedicated | `kb` (corpus `reference`) | — | — | on demand | **enabled** |
 | `web_search` | dedicated | `websearch` | — | output | on demand | **enabled** |
 | `documentation_search` | dedicated | `docs` (MCP) | — | output | on demand | **enabled** |
-| `history_research` | main | `runs` (**your own Lambda**) | — | — | on demand | **enabled** |
+| `cost_research` | main | `pricing` (**your own Lambda**) | — | — | on demand | **enabled** |
 | `analysis` | main | — | semantic | output | auto | — |
 | `recommendation` | main | — | semantic + summary | output | auto | — |
 | `report` | main | — | — | input + output | auto | — |
+
+### Branching — letting an agent's output choose the next step
+
+`steps` is a fixed pipeline and `hitl` lets a **human** redirect it. A `branch` on a
+step is the third case: the step's own output picks what runs next. Route a high-risk
+case to a deeper review, skip a stage that isn't needed, end the run early. No agent
+code — the deciding agent just returns its normal output.
+
+This is the branch the sample actually ships, on the intake step:
+
+```json
+{ "agent": "intake", "hitl": true,
+  "branch": {
+    "when": [
+      { "field": "objective",    "exists": false, "goto": "END" },
+      { "field": "keyQuestions", "lt": 1,         "goto": "analysis_reco" }
+    ]
+  } }
+```
+
+Read it as: *if the brief has no objective there is nothing downstream can work
+with, so end the run rather than spend seven more agents; if it has no research
+questions there is nothing for the research stage to gather, so jump straight to
+analysis over the brief.* Neither fires on a normal request, so the eight-agent
+demo is unchanged — you'll see one timeline line saying no rule matched.
+
+#### `field` is a key in the agent's OUTPUT, not in your prompt
+
+This is the one thing to get straight. The branch node takes the deciding agent's
+output, parses it as JSON, follows `field` as a dot path, and compares:
+
+```
+intake returned:  { "objective": "Design a serverless pipeline", "keyQuestions": ["q1", "q2"] }
+                                                                  ^^^^^^^^^^^^
+rule:             { "field": "keyQuestions", "lt": 1, "goto": "analysis_reco" }
+                              └ dot-path lookup → ["q1","q2"] → length 2 → 2 < 1 is false
+                                                                → no match → next rule
+```
+
+So the field has to be one your agent actually emits — that's your business, in
+`app/subagents/<id>/prompts.py`. The framework ships no opinion about which fields
+exist or what their values mean, because that opinion *is* your use case.
+
+- `findings.0.claim` works — a numeric segment indexes a list.
+- **Omit `field` entirely** and the comparison runs against the raw output text, so
+  `{ "contains": "URGENT", "goto": "escalate" }` works on an agent that returns prose.
+- A field that is absent matches **only** `exists: false`. Every other operator needs
+  a value, so it evaluates to no-match rather than to zero or empty.
+
+#### Operators
+
+One or more per rule; several in the same rule are **ANDed**.
+
+| Operator | Takes | True when |
+|---|---|---|
+| `equals` | a single value | the value matches |
+| `notEquals` | a single value | it does not |
+| `in` | a **list** | the value is one of them |
+| `contains` | a single value | substring of a string value, or membership of a list / of a dict's keys |
+| `exists` | `true` / `false` | `true`: present and not null, `""`, `[]` or `{}`. `false`: the negation |
+| `gt` `gte` `lt` `lte` | a number | numeric comparison. A **list or dict compares by its length**, so `{ "field": "openQuestions", "gt": 0 }` reads as "there is at least one" |
+
+`equals`, `notEquals`, `in` and `contains` compare on **stripped, case-folded** text,
+because the value was written by a model: one told to return `escalate` will
+sometimes return `Escalate` or ` ESCALATE`. A numeric string compares as a number
+too, since a model asked for a score returns `"85"` about as often as `85`. A branch
+that silently took the default because of a capital letter would be an expensive
+thing to debug.
+
+#### Rules, targets, and where a branch may go
+
+- Rules are tried **in order** and the **first match wins** — put the specific case
+  first.
+- No match falls to `default`. **With no `default` the run just continues to the next
+  step**, so adding a `branch` can only ever redirect a run, never strand one.
+- A `default` **with no `when`** is an unconditional jump. That is what makes two
+  paths exclusive rather than merely optional: with steps
+  `[triage, investigator, adjuster, settlement]`, `triage` picks a specialist and
+  `investigator` carries `{ "default": "settlement" }` so the escalated path doesn't
+  fall into the adjuster's step on its way out.
+- A target names a **step**, not an agent inside one: a single-agent step's `agent`
+  id, a group step's `gateId`, or `"END"`. Jumping to a `parallel` stage therefore
+  enters the whole stage instead of stranding its gate on siblings that never ran.
+  Targets must be **later** steps; going backwards is what a gate's `revise` is for.
+- Put it on a single-agent step, or on a `sequence` step (its **last** agent decides).
+  Not on a `parallel` step — a group has no single agent whose output decides — and
+  not on the last step, which has nowhere to route.
+- With a `hitl` gate on the same step the human approves **first**, then the branch
+  reads the output they approved.
+
+A fuller example, and the full key reference, are in
+[`docs/WORKFLOW_REFERENCE.md`](orchestrator/docs/WORKFLOW_REFERENCE.md#branch--the-output-decides-what-runs-next).
+
+#### What you see when it fires
+
+The stage gets a `⑂ Branch` pill in the diagram (hover for the rules), the timeline
+records the rule that matched and where it went, and the agents the run bypassed are
+marked **skipped** rather than left looking queued:
+
+```
+Branch after intake: keyQuestions lt 1 -> analysis_reco
+                     · skipping knowledge_research, web_search, documentation_search, cost_research
+```
+
+Everything above is checked **before anything deploys**, by both IaC paths, because
+each of these mistakes is otherwise silent: a misspelled operator, a rule with no
+comparison, and a target that names nothing all evaluate to "no match", so the run
+quietly takes the default on every request and the branch looks like it is working.
 
 ## Architecture
 
@@ -215,7 +327,7 @@ Browser ─▶ CloudFront ─┬─▶ S3 (static UI)
                              │ InvokeAgentRuntime
                              ▼
                      AgentCore Runtime (orchestrator)  ──▶ AgentCore Memory
-                     LangGraph: 1→[2‖2‖2]→[3→3]→4          ├─ checkpointer (HITL pause/resume)
+                     LangGraph: 1→[2‖2‖2‖2]→[3→3]→4          ├─ checkpointer (HITL pause/resume)
                        │                                   └─ long-term semantic + summary
                        │  └─ InvokeAgentRuntime ─▶ Dedicated runtimes (one per research agent)
                        │       (+ trace context)
@@ -260,17 +372,16 @@ orchestrator/
 │   ├── subagent_runtime.py     # per-agent AgentCore Runtime app (hosts one agent by AGENT_ID)
 │   ├── common/                 # shared framework used by orchestrator + agents
 │   │   ├── base.py             #   Agent base class (author contract)
-│   │   ├── context.py          #   AgentContext: input(), llm(), mcp(), retrieve(), heartbeat(), log(),
+│   │   ├── context.py          #   AgentContext: input(), llm(), call_tool(), retrieve(), heartbeat(), log(),
 │   │   │                       #     + the AgentCore feature helpers (guardrail, memory_*, identity, policy)
 │   │   ├── config.py           #   loads workflow.json + env/infra settings
 │   │   ├── state.py            #   graph state + reducers
 │   │   ├── agentcore_agent.py  #   AgentCoreRuntimeAgent: node body for a dedicated agent (InvokeAgentRuntime)
-│   │   ├── research.py         #   shared runner for agents that gather evidence from a tool
-│   │   ├── synthesis.py        #   shared runner for agents that reason over upstream assets
-│   │   ├── assets.py           #   asset plumbing BOTH runners use (brief, versioning, JSON repair, provenance)
-│   │   ├── contracts/          #   Pydantic asset contracts (brief, research, analysis, recommendation, report)
+│   │   ├── assets.py           #   asset plumbing both agent runners use (brief, versioning, JSON repair, provenance)
+│   │   ├── branching.py        #   the `branch` rule language (schema-agnostic; see "Branching" above)
+│   │   ├── contracts/base.py   #   the asset ENVELOPE every agent's output shares
 │   │   ├── clock.py            #   Eastern-Time helper (all timestamps: YYYY-MM-DD HH:MM:SS ET)
-│   │   └── llm.py, sink.py, bus.py           # infra helpers
+│   │   └── llm.py, sink.py, bus.py, errors.py  # infra helpers
 │   ├── features/               # ONE FOLDER PER AGENTCORE CAPABILITY — config-driven, independently removable
 │   │   ├── gateway/            #   MCP tool access (M2M token per IdP + Streamable HTTP)
 │   │   ├── memory/             #   long-term semantic recall + store
@@ -289,7 +400,10 @@ orchestrator/
 │   │   └── server.py           #   local dev server (same API + UI)
 │   └── subagents/<name>/       # one self-contained package per agent (agent.py + prompts.py + __init__.py):
 │                               #   intake, knowledge_research, web_search, documentation_search,
-│                               #   analysis, recommendation, report
+│                               #   cost_research, analysis, recommendation, report
+│       └── _shared/            # SAMPLE code the agents share, not framework: research.py (gather
+│                               #   evidence from a tool), synthesis.py (reason over upstream assets),
+│                               #   contracts/ (the five asset shapes this sample happens to use)
 ├── web/index.html              # config-driven UI: pluggable login, DAG, HITL gates, outputs, rerun, assistant
 ├── web/observability.js        # self-contained Observability tab (charts, drilldown, Prompts & I/O
 │                               #   inspector, evaluation scores, Insights, export)
@@ -301,14 +415,15 @@ orchestrator/
 │                               #   action tools withheld from callers authz denies)
 ├── kb_lambda/handler.py        # Gateway Lambda target: Bedrock KB retrieve
 ├── tool_lambda/handler.py      # the built-in `type: "lambda"` demo function (source: "tool_lambda"):
-│                               #   answers from this deployment's own DynamoDB run history
+│                               #   publishes `aws_prices` — real AWS on-demand unit rates from the
+│                               #   Price List Query API (rates only, never a total)
 ├── format_workflow.py          # reformat app/workflow.json for reading (--check for CI)
 ├── docs/WORKFLOW_REFERENCE.md  # every workflow.json key, what reads it, what it does
 ├── kb_docs/reference/          # sample Knowledge Base corpus (replace with your own)
 ├── tests/                      # config-plane test suite (pytest; no AWS, no model, ~1s)
 │                               #   topology, graph build, rewind plans, tool call shapes,
 │                               #   citation verification, contracts, RBAC — see tests/README.md
-├── pytest.ini, Dockerfile, requirements.txt, requirements-dev.txt
+├── pyproject.toml (ruff + pytest config), Dockerfile, requirements.txt, requirements-dev.txt
 ├── cdk/                        # CDK / TypeScript IaC (full parity; alternative to terraform/)
 │   ├── bin/orchestrator.ts     #   app entrypoint (context: agentName, modelId, idp, …)
 │   ├── lib/orchestrator-stack.ts  # the stack (runtimes, DynamoDB, BFF/API, S3+CloudFront UI)
@@ -451,9 +566,11 @@ terraform apply                                # builds the image, provisions ev
 | **Auth0** | `idp = "auth0"`, `auth0 = { domain = …, client_id = … }` |
 | **No login** (sandbox only) | `idp = "none"`, `enable_gateway = false` |
 
-Outputs include `ui_url` (CloudFront), `api_endpoint`, `cognito_user_pool_id`, and
-`cognito_client_id`. After deploy, add `ui_url` to the Cognito App Client's Allowed
-Callback/Sign-out URLs. Tear down with `terraform destroy`.
+Outputs include `ui_url` (CloudFront), `api_endpoint`, `cognito_user_pool_id`,
+`cognito_domain_prefix` and `login_client_id`. With `cognito = { create = true }`
+Terraform wires the CloudFront URL into the App Client's allowed callback and
+sign-out URLs for you; only a bring-your-own pool needs that done by hand. Tear down
+with `terraform destroy`.
 
 ### CDK (TypeScript)
 
@@ -558,10 +675,11 @@ own environment before any non-sandbox use.
   prefer **AWS Secrets Manager** with rotation for production.
 - Buckets use `force_destroy = true` (convenient for teardown; enable versioning +
   retention for real data). Set **log retention** and **CloudWatch alarms** as needed.
-- The shipped **guardrail and Cedar policy are samples.** Replace the filters,
-  denied topics and the permitted-corpus list in `terraform/guardrail.tf` /
-  `terraform/policy.tf` with your own domain's rules before real use, and enable
-  guardrails on every agent that handles untrusted text.
+- The shipped **guardrail and Cedar policy are samples.** Both are *generated*, so
+  replace them where they are declared — the `guardrail` block and the `kb` tool's
+  `policy.restrictTo` in `app/workflow.json`, not `terraform/guardrail.tf` or
+  `terraform/policy.tf` — and enable guardrails on every agent that handles
+  untrusted text.
 - **Telemetry captures prompt and output content** (that's what makes the Prompts
   & I/O inspector useful). If your inputs contain sensitive data, shorten
   `OBS_MAX_CAPTURE_CHARS`, enable the table's TTL, and restrict who can read the
@@ -576,7 +694,7 @@ own environment before any non-sandbox use.
   DynamoDB (**PAY_PER_REQUEST**), and **S3 Vectors** (no vector-store floor).
 - **Claude Haiku** is the default model (cheap); per-agent model is configurable.
 - Telemetry rows carry a **TTL**; the in-app Observability tab shows real per-run cost.
-- Cost knobs: CloudFront `PriceClass_All` (narrow it), the two dedicated runtimes add
+- Cost knobs: CloudFront `PriceClass_All` (narrow it), the three dedicated runtimes add
   a little vs. all-in-process, and KB ingestion + embeddings when the Gateway is enabled.
 - **The optional features cost money too.** Evaluations run an LLM judge per
   evaluator per prompt (set `auto: false` to make it on-demand), Insights runs a
@@ -587,7 +705,7 @@ own environment before any non-sandbox use.
 
 **Scalability**
 - LangGraph on AgentCore runs stages **sequentially/parallel** per config, with the
-  two research agents on **independent dedicated runtimes**; the orchestrator runs the
+  three research agents on **independent dedicated runtimes**; the orchestrator runs the
   workflow as a background task and persists across HITL pauses (up to the 8-hour limit).
 - Known limits (documented below): the UI uses **polling** (not push), and the
   cross-runtime call to a dedicated agent is **synchronous** request/response.

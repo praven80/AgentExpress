@@ -38,7 +38,15 @@ keep that promise honest.
 | `test_citations.py` | URL verification against the evidence; downgrading a `sourced-fact` that rested on an invented link |
 | `test_contracts.py` | Open `assetType` / `sectionType`, the strict envelope, report-section ordering |
 | `test_authz.py` | `bff/authz.py` semantics and claim shapes; the assistant's action-tool filtering |
-| `test_bff_routes.py` | Each mutating BFF route actually returns 403 for a caller without the group |
+| `test_bff_routes.py` | Each gated mutating BFF route actually returns 403 for a caller without the group |
+| `test_config_keys.py` | Every key in `workflow.json` is one something reads — a CLOSED allow-list, so an unwired key fails here |
+| `test_foreign_use_case.py` | The framework names no shipped agent id (AST-checked), and a workflow from another domain entirely still builds |
+| `test_cost_research.py` | The deterministic agent: unit rates read as DATA rows via `rowFields`, never paraphrased, and never totalled |
+| `test_tool_lambda.py` | The shipped `type: "lambda"` demo — the Price List query shaping and its unresolved-service reporting |
+| `test_memory_insight.py` | What long-term memory stores and recalls, and the on-topic filter that stops cross-subject bleed |
+| `test_truncation.py` | An answer cut off at `maxTokens` is SURFACED, not silently accepted |
+| `test_runtime_invoke.py` | `InvokeAgentRuntime` is not retried, because it is not idempotent (measured: one blip billed the agent twice) |
+| `test_clock_parity.py` | `app/common/clock.py` and `bff/clock.py` agree, since the BFF ships as its own zip |
 
 ## Why these particular assertions
 
@@ -65,8 +73,9 @@ wrong:
 
 The RBAC files are the other kind: not a past regression, but a guard whose failure
 mode is silent. A rule that is correct but not applied to one route looks exactly
-like a rule that works. `test_bff_routes.py` drives all six routes, and each guard
-was verified by removing it and confirming the suite goes red.
+like a rule that works. `test_bff_routes.py` drives every route in its
+`MUTATING_ROUTES` table, and each guard was verified by removing it and confirming the
+suite goes red.
 
 ## The import harness
 

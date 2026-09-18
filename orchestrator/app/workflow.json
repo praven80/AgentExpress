@@ -1,5 +1,5 @@
 {
-  "$comment": "THIS FILE IS THE WORKFLOW — edit it (plus terraform.tfvars) and you have your own multi-agent system. Blocks: orchestrator (engine settings), ui (branding), guardrail (content safety), authorization (who may approve/re-run/cancel/evaluate/delete), tools (your data sources), agents (one per folder under app/subagents/<id>/), steps (topology + review gates). Both Terraform and CDK read this file, so declaring a tool or agent here provisions its infrastructure — no IaC edits. Every key is documented in orchestrator/docs/WORKFLOW_REFERENCE.md. Reformat after editing: python3 format_workflow.py",
+  "$comment": "THIS FILE IS THE WORKFLOW — edit it (plus terraform.tfvars) and you have your own multi-agent system. Blocks: orchestrator (engine settings), ui (branding), guardrail (content safety), authorization (who may approve/re-run/cancel/evaluate/delete), tools (your data sources), agents (one per folder under app/subagents/<id>/), steps (topology + review gates + branch conditions). Both Terraform and CDK read this file, so declaring a tool or agent here provisions its infrastructure — no IaC edits. Every key is documented in orchestrator/docs/WORKFLOW_REFERENCE.md. Reformat after editing: python3 format_workflow.py",
   "orchestrator": {
     "defaultModel": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
     "runtimeInvoke": { "maxAttempts": 1, "readTimeoutSeconds": 120 },
@@ -265,7 +265,16 @@
     }
   },
   "steps": [
-    { "agent": "intake", "hitl": true },
+    {
+      "agent": "intake",
+      "hitl": true,
+      "branch": {
+        "when": [
+          { "field": "objective", "exists": false, "goto": "END" },
+          { "field": "keyQuestions", "lt": 1, "goto": "analysis_reco" }
+        ]
+      }
+    },
     {
       "parallel": ["knowledge_research", "web_search", "documentation_search", "cost_research"],
       "hitl": true,
