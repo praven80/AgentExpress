@@ -28,7 +28,7 @@ import uuid
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from langgraph.types import Command
 
-from app.common.config import DEFAULT_TOPIC, LAST_AGENT_ID, MEMORY_ID, REGION
+from app.common.config import AGENT_ORDER, DEFAULT_TOPIC, LAST_AGENT_ID, MEMORY_ID, REGION
 from app.common.sink import WorkflowCancelled, emit, ensure_session, is_cancelled
 from app.orchestrator.graph_builder import build_graph, group_rerun_plan, rerun_plan
 
@@ -70,6 +70,16 @@ def _spawn(coro, session_id: str = "") -> None:
     task.add_done_callback(_bg_tasks.discard)
 
 
+def _result(outputs: dict) -> str:
+    """The run's deliverable: the configured last agent's output, or — when a branch
+    ended the run before reaching it — the last agent that actually produced one.
+
+    Without the fallback a branching workflow finishes with an empty result box and
+    no hint that the deliverable is sitting on the agent one step back."""
+    return outputs.get(LAST_AGENT_ID) or next(
+        (outputs[a] for a in reversed(AGENT_ORDER) if outputs.get(a)), "")
+
+
 async def _finalize(session_id: str) -> None:
     state = await graph.aget_state(_config(session_id))
     if state.next:
@@ -79,9 +89,11 @@ async def _finalize(session_id: str) -> None:
     if "deny" in decisions.values():
         overall, result = "denied", "Denied by human. Workflow halted."
     else:
-        overall, result = "done", values.get("outputs", {}).get(LAST_AGENT_ID, "")
+        overall, result = "done", _result(values.get("outputs") or {})
     await emit(session_id, {"type": "session_status", "status": overall,
                             "result": result, "log": f"Workflow finished ({overall})"})
+    if overall == "done":
+        await _reconcile_skipped(session_id)
 
     # Auto-evaluation (AgentCore Evaluations): when the run completed, score every
     # agent with evaluations.auto=true in workflow.json. Runs now because all
@@ -149,6 +161,11 @@ async def _rewind(session_id: str, rerun: dict) -> None:
     if plan["decision_key"]:
         # Force the previous gate's router to forward to this step (not loop/halt).
         values["decisions"] = {plan["decision_key"]: "approve"}
+    if plan["branch_seed"]:
+        # The previous step BRANCHES, so its router decides where flow goes. Point
+        # that recorded decision at this step: the reviewer asked for this agent, and
+        # on a branching workflow that genuinely changes the run's path.
+        values["branch"] = plan["branch_seed"]
     # Reset feedback for the whole downstream slice so a stale note from an
     # earlier revise cannot silently re-apply, then set the target's feedback.
     fb = {a: "" for a in downstream}
@@ -172,10 +189,26 @@ async def _reconcile_incomplete(session_id: str, status: str) -> None:
     the UI never shows agents spinning under a settled run. Best-effort — a
     reconciliation error must not mask the original failure."""
     try:
-        from app.common.sink import incomplete_nodes
-        for nid in incomplete_nodes(session_id):
+        from app.common.sink import nodes_in_status
+        for nid in nodes_in_status(session_id, "running"):
             await emit(session_id, {"type": "node_status", "node": nid, "status": status,
                                     "log": f"{nid}: {status} (run {status} before this agent finished)"})
+    except Exception as e:  # noqa: BLE001
+        print(f"[reconcile] {type(e).__name__}: {e}")
+
+
+async def _reconcile_skipped(session_id: str) -> None:
+    """On a COMPLETED run, flip every node still 'pending' to 'skipped'.
+
+    A branch node marks what it bypasses as it goes, which is what the reviewer sees
+    live. This is the backstop for the paths it cannot know about — chiefly a rewind,
+    where the branch node does not re-run and so re-emits nothing. A finished run
+    must not leave an agent looking like it is still queued. Best-effort."""
+    try:
+        from app.common.sink import nodes_in_status
+        for nid in nodes_in_status(session_id, "pending"):
+            await emit(session_id, {"type": "node_status", "node": nid, "status": "skipped",
+                                    "log": f"{nid}: skipped (the run did not reach it)"})
     except Exception as e:  # noqa: BLE001
         print(f"[reconcile] {type(e).__name__}: {e}")
 

@@ -127,6 +127,12 @@ def step_agents(step: dict) -> list[str]:
     return list(step.get("parallel") or step.get("sequence") or [])
 
 
+# Every agent id in the order the pipeline runs them. Derived from `steps` rather
+# than from NODE_IDS (the `agents` map's key order), which is only conventionally
+# the same — nothing enforces that a customer lists the agents in step order.
+AGENT_ORDER: list[str] = [a for s in STEPS for a in step_agents(s)]
+
+
 def upstream_of(agent_id: str) -> list[str]:
     """Agent ids that run BEFORE `agent_id`, in reverse topology order.
 

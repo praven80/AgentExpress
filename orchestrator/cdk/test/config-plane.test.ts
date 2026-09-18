@@ -14,6 +14,7 @@ import {
   buildBffWorkflow,
   buildGuardrail,
   stripForEnv,
+  validateBranches,
   validateTools,
   validateWorkflow,
 } from "../lib/orchestrator-stack";
@@ -381,6 +382,150 @@ describe("validateWorkflow", () => {
 // ---------------------------------------------------------------------------
 // authzGroups
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// validateBranches — content-based branching
+// ---------------------------------------------------------------------------
+//
+// Every case here FAILS SILENTLY at runtime: a misspelled operator, a rule with no
+// comparison, or a target naming nothing all evaluate to "no match", so the run
+// quietly takes the default on every request and the branch looks like it works.
+// The same checks live in app/common/branching.py and terraform/tools.tf; this is
+// the CDK path's copy, so a customer sees them at synth rather than at container
+// start.
+
+describe("validateBranches", () => {
+  const branchOn = (spec: any, rest: any[] = [{ agent: "b" }, { agent: "c" }]) =>
+    wf([{ agent: "a", branch: spec }, ...rest]);
+  const check = (w: any) => validateBranches(w.steps);
+
+  it("accepts a well-formed branch", () => {
+    expect(() =>
+      check(
+        branchOn({
+          when: [
+            { field: "disposition", equals: "escalate", goto: "b" },
+            { field: "amount", gte: 10000, goto: "c" },
+            { field: "claimId", exists: false, goto: "END" },
+          ],
+          default: "c",
+        })
+      )
+    ).not.toThrow();
+  });
+
+  it("accepts `default` alone as an unconditional jump", () => {
+    expect(() => check(branchOn({ default: "c" }))).not.toThrow();
+  });
+
+  it("rejects a branch on a parallel step", () => {
+    // A group has no single agent whose output decides.
+    expect(() =>
+      check(wf([{ parallel: ["a", "b"], gateId: "g", branch: { default: "c" } }, { agent: "c" }]))
+    ).toThrow(/not supported on a `parallel` step/);
+  });
+
+  it("rejects a branch on the last step", () => {
+    expect(() => check(wf([{ agent: "a" }, { agent: "b", branch: { default: "a" } }]))).toThrow(
+      /nowhere to route/
+    );
+  });
+
+  it("rejects a branch with neither rules nor a default", () => {
+    expect(() => check(branchOn({}))).toThrow(/needs `when`/);
+  });
+
+  it("rejects an empty rule list", () => {
+    expect(() => check(branchOn({ when: [] }))).toThrow(/non-empty list of rules/);
+  });
+
+  it("rejects an unknown key on the branch or on a rule", () => {
+    expect(() => check(branchOn({ whn: [{ equals: 1, goto: "b" }] }))).toThrow(/unknown key/);
+    expect(() => check(branchOn({ when: [{ feild: "x", equals: 1, goto: "b" }] }))).toThrow(
+      /unknown key\(s\) feild/
+    );
+  });
+
+  it("rejects a misspelled operator rather than ignoring it", () => {
+    // `gt3` leaves a rule with no comparison, so it never matches and every run
+    // takes the default — a branch that looks wired and routes nothing.
+    expect(() => check(branchOn({ when: [{ field: "amount", gt3: 10000, goto: "b" }] }))).toThrow(
+      /unknown key\(s\) gt3/
+    );
+  });
+
+  it("rejects a rule with no goto, and a rule with no comparison", () => {
+    expect(() => check(branchOn({ when: [{ field: "x", equals: 1 }] }))).toThrow(/needs a `goto`/);
+    expect(() => check(branchOn({ when: [{ field: "x", goto: "b" }] }))).toThrow(
+      /has no comparison/
+    );
+  });
+
+  it("rejects operator values of the wrong shape", () => {
+    expect(() => check(branchOn({ when: [{ field: "x", in: "y", goto: "b" }] }))).toThrow(
+      /`in` takes a list/
+    );
+    expect(() => check(branchOn({ when: [{ field: "x", exists: "yes", goto: "b" }] }))).toThrow(
+      /`exists` takes true or false/
+    );
+    expect(() => check(branchOn({ when: [{ field: "x", gte: "big", goto: "b" }] }))).toThrow(
+      /`gte` takes a number/
+    );
+    expect(() =>
+      check(branchOn({ when: [{ field: "x", equals: ["p", "q"], goto: "b" }] }))
+    ).toThrow(/takes a single value/);
+  });
+
+  it("rejects a target that names no step", () => {
+    expect(() => check(branchOn({ default: "typo" }))).toThrow(/names no step/);
+  });
+
+  it("rejects a backward target, which would be a cycle", () => {
+    expect(() =>
+      check(wf([{ agent: "a" }, { agent: "b", branch: { default: "a" } }, { agent: "c" }]))
+    ).toThrow(/at or before this one/);
+    // Its own step counts as backward too.
+    expect(() => check(branchOn({ default: "a" }))).toThrow(/at or before this one/);
+  });
+
+  it("names a group step by its gateId", () => {
+    // A target names a STEP, and a group's name is its gateId — so jumping to a
+    // parallel stage enters the whole stage rather than one member.
+    expect(() =>
+      check(
+        wf([
+          { agent: "a", branch: { default: "review" } },
+          { agent: "b" },
+          { parallel: ["p1", "p2"], hitl: true, gateId: "review" },
+        ])
+      )
+    ).not.toThrow();
+  });
+
+  it("rejects duplicate step names once anything branches", () => {
+    const dup = [
+      { agent: "a", branch: { default: "dup" } },
+      { parallel: ["b", "c"], gateId: "dup" },
+      { sequence: ["d", "e"], gateId: "dup" },
+    ];
+    expect(() => check(wf(dup))).toThrow(/duplicate step name/);
+    // Scoped to branching: without a branch nothing looks a step up by name, and
+    // failing an existing workflow would be a gratuitous breaking change.
+    expect(() => check(wf(dup.map(({ branch, ...s }) => s)))).not.toThrow();
+  });
+
+  it("is a no-op for a workflow with no branches", () => {
+    expect(() => check(wf([{ agent: "a" }, { agent: "b" }]))).not.toThrow();
+  });
+
+  it("runs as part of validateWorkflow", () => {
+    // The checks are worthless if the entry point does not call them.
+    const w = wf([{ agent: "a", branch: { default: "typo" } }, { agent: "b" }]);
+    expect(() => validateWorkflow(w, ORCH_ROOT, "multiagent_orchestrator", "none")).toThrow(
+      /names no step/
+    );
+  });
+});
 
 describe("authzGroups", () => {
   it("returns every distinct group, sorted", () => {

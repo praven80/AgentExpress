@@ -72,6 +72,12 @@ for your use case.
   after a single agent, after the **parallel group** (revise re-runs only the
   agents you flag), and after the **sequential group** (revise re-runs the whole
   chain from the start).
+- **Content-based branching** — a step's `branch` block lets the **agent's own
+  output** choose what runs next: route a high-risk case to a deeper review, skip a
+  stage that isn't needed, or end the run early. Rules are a dot path into the
+  output plus a comparison (`equals`, `in`, `gte`, `contains`, `exists`, …), so the
+  framework holds no opinion about your schema. Bypassed agents are marked
+  **skipped**, and the rule that decided is written to the run's timeline.
 - **Rewind & re-run** — after a run settles, re-run **any single agent** (plus
   everything downstream) or a **subset of one parallel stage**, with your note
   injected as that agent's feedback. Downstream gates re-pause, and every run is

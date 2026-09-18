@@ -245,6 +245,84 @@ locals {
     )
   ]))
 
+  # ---- Content-based branching, for validation ---------------------------
+  # A step may carry `branch`, letting its own output choose what runs next (see
+  # app/common/branching.py). Every mistake below FAILS SILENTLY at runtime: a
+  # misspelled operator, a rule with no comparison, or a target that names nothing
+  # all evaluate to "no match", so the run quietly takes the default on every
+  # request and the branch looks like it is working. These mirror
+  # graph_builder.validate_branches and validateBranches in the CDK path.
+  #
+  # Each local below collects human-readable STRINGS rather than objects, because a
+  # list of the branch specs themselves would not type-unify: two steps' rules
+  # legitimately have different key sets.
+
+  # The name a step is addressed by, and what a branch target names.
+  step_names = [
+    for i, s in local.workflow_def.steps : try(s.agent, try(s.gateId, "group${i}"))
+  ]
+  branch_steps = [for i, s in local.workflow_def.steps : i if try(s.branch, null) != null]
+  # Two steps sharing a name make a branch target ambiguous, and the lookups below
+  # would silently resolve it to the later one.
+  branch_duplicate_step_names = length(local.branch_steps) > 0 && length(distinct(local.step_names)) != length(local.step_names) ? local.step_names : []
+
+  branch_ops       = ["equals", "notEquals", "in", "contains", "exists", "gt", "gte", "lt", "lte"]
+  branch_rule_keys = concat(local.branch_ops, ["field", "goto"])
+
+  # A parallel group has no single agent whose output decides.
+  branch_on_parallel = [
+    for i in local.branch_steps : local.step_names[i]
+    if try(local.workflow_def.steps[i].parallel, null) != null
+  ]
+  # A branch on the last step has nowhere to route.
+  branch_on_last = [
+    for i in local.branch_steps : local.step_names[i]
+    if i == length(local.workflow_def.steps) - 1
+  ]
+  # `when` alone, `default` alone (an unconditional jump to a later step), or both —
+  # but not neither, and not an empty `when`.
+  branch_without_rules = [
+    for i in local.branch_steps : local.step_names[i]
+    if length(try(local.workflow_def.steps[i].branch.when, [])) == 0
+    && try(local.workflow_def.steps[i].branch.default, "") == ""
+  ]
+  branch_with_empty_when = [
+    for i in local.branch_steps : local.step_names[i]
+    if try(length(local.workflow_def.steps[i].branch.when) == 0, false)
+  ]
+  branch_bad_rules = flatten([
+    for i in local.branch_steps : [
+      for ri, r in try(local.workflow_def.steps[i].branch.when, []) :
+      "steps[${i}].branch.when[${ri}] has ${join(" and ", compact([
+        length(setsubtract(keys(r), local.branch_rule_keys)) > 0
+        ? "unknown key(s) ${join(",", setsubtract(keys(r), local.branch_rule_keys))}" : "",
+        try(r.goto, "") == "" ? "no `goto`" : "",
+        length(setintersection(keys(r), local.branch_ops)) == 0 ? "no comparison" : "",
+      ]))}"
+      if length(setsubtract(keys(r), local.branch_rule_keys)) > 0
+      || try(r.goto, "") == ""
+      || length(setintersection(keys(r), local.branch_ops)) == 0
+    ]
+  ])
+  # Every step a branch can route to: each rule's `goto`, plus `default`. "END" is
+  # the run itself, so it is not a step name.
+  branch_targets = flatten([
+    for i in local.branch_steps : [
+      for t in concat(
+        [for r in try(local.workflow_def.steps[i].branch.when, []) : try(r.goto, "")],
+        [try(local.workflow_def.steps[i].branch.default, "")],
+      ) : "${i}|${t}" if t != "" && t != "END"
+    ]
+  ])
+  branch_unknown_targets = [
+    for t in local.branch_targets : t if !contains(local.step_names, split("|", t)[1])
+  ]
+  branch_backward_targets = [
+    for t in local.branch_targets : t
+    if contains(local.step_names, split("|", t)[1])
+    && index(local.step_names, split("|", t)[1]) <= tonumber(split("|", t)[0])
+  ]
+
   # The real corpora available to the KB: the TOP-LEVEL folders under kb_docs/,
   # because kb.tf derives each document's doc_type from its first path segment.
   # Files sitting at the root have no folder and would produce a junk doc_type.
@@ -462,6 +540,42 @@ resource "terraform_data" "workflow_validation" {
         for id in keys(local.workflow_def.agents) : contains(local.step_agent_ids, id)
       ])
       error_message = "app/workflow.json declares agent(s) that no `steps` entry runs: ${join(", ", setsubtract(keys(local.workflow_def.agents), local.step_agent_ids))}. Add them to `steps` or remove them."
+    }
+    precondition {
+      condition     = length(local.branch_on_parallel) == 0
+      error_message = "app/workflow.json: `branch` is not supported on a `parallel` step, because a group has no single agent whose output decides. Put the branch on a single-agent step, or on a `sequence` step (its LAST agent decides). Offending step(s): ${join(", ", local.branch_on_parallel)}."
+    }
+    precondition {
+      condition     = length(local.branch_on_last) == 0
+      error_message = "app/workflow.json: `branch` on the LAST step has nowhere to route. Use it on an earlier step, or drop it - \"END\" is already where the last step goes. Offending step(s): ${join(", ", local.branch_on_last)}."
+    }
+    precondition {
+      condition     = length(local.branch_duplicate_step_names) == 0
+      error_message = "app/workflow.json `steps` has duplicate step name(s), which makes a `branch` target ambiguous. Each step is named by its `agent` id or its `gateId`; give every step a distinct one. Names in order: ${join(", ", local.branch_duplicate_step_names)}."
+    }
+    precondition {
+      condition     = length(local.branch_without_rules) == 0
+      error_message = "app/workflow.json: `branch` needs `when` (conditional rules), `default` (an unconditional jump to a later step), or both. Offending step(s): ${join(", ", local.branch_without_rules)}."
+    }
+    precondition {
+      condition     = length(local.branch_with_empty_when) == 0
+      error_message = "app/workflow.json: `branch.when` must be a non-empty list of rules. Omit it entirely for an unconditional jump via `default` alone. Offending step(s): ${join(", ", local.branch_with_empty_when)}."
+    }
+    precondition {
+      # A rule with an unknown key, no `goto`, or no comparison never matches, so the
+      # branch silently takes `default` forever.
+      condition     = length(local.branch_bad_rules) == 0
+      error_message = "app/workflow.json has malformed branch rule(s): ${join("; ", local.branch_bad_rules)}. A rule is `goto`, an optional `field`, and one or more of ${join(", ", local.branch_ops)}."
+    }
+    precondition {
+      condition     = length(local.branch_unknown_targets) == 0
+      error_message = "app/workflow.json has branch target(s) (shown as \"<step index>|<target>\") naming no step: ${join(", ", local.branch_unknown_targets)}. A target is \"END\", a single-agent step's `agent` id, or a group step's `gateId`. Known step names: ${join(", ", local.step_names)}."
+    }
+    precondition {
+      # A backward edge is a cycle the run could not leave; re-running earlier work is
+      # what a review gate's `revise` is for.
+      condition     = length(local.branch_backward_targets) == 0
+      error_message = "app/workflow.json has branch target(s) (shown as \"<step index>|<target>\") at or before their own step: ${join(", ", local.branch_backward_targets)}. Branch targets must be LATER steps."
     }
     precondition {
       # A dedicated agent's id becomes part of its AgentCore Runtime name, which

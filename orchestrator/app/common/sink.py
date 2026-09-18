@@ -140,19 +140,21 @@ def _write_ddb(sid: str, ev: dict) -> None:
             "node": n or "-", "msg": ev["log"]})
 
 
-def incomplete_nodes(sid: str) -> list[str]:
-    """Node ids still 'running' in the live status doc — i.e. in-flight when the
-    run ended. Used to reconcile a failed/cancelled run so the UI never shows an
-    agent spinning under a settled run. Best-effort: returns [] with no table or
-    on any read error (reconciliation must never break the failure path)."""
+def nodes_in_status(sid: str, status: str) -> list[str]:
+    """Node ids sitting at `status` in the live status doc.
+
+    Used to reconcile a SETTLED run so the UI never contradicts it: nodes still
+    'running' under a failed/cancelled run, and nodes still 'pending' under a
+    completed one (a branch bypassed them). Best-effort: returns [] with no table or
+    on any read error, because reconciliation must never break the path it tidies.
+    """
     if not STATUS_TABLE:
         # Local dev mirror: fall back to the in-process snapshot.
-        snap = bus.snapshot(sid) or {}
-        nodes = snap.get("nodes") or {}
-        return [nid for nid, v in nodes.items() if (v or {}).get("status") == "running"]
-    try:
-        item = _table(STATUS_TABLE).get_item(Key=_key(sid)).get("Item") or {}
-    except Exception:  # noqa: BLE001
-        return []
+        item = bus.snapshot(sid) or {}
+    else:
+        try:
+            item = _table(STATUS_TABLE).get_item(Key=_key(sid)).get("Item") or {}
+        except Exception:  # noqa: BLE001
+            return []
     nodes = item.get("nodes") or {}
-    return [nid for nid, v in nodes.items() if (v or {}).get("status") == "running"]
+    return [nid for nid, v in nodes.items() if (v or {}).get("status") == status]

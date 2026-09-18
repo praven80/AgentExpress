@@ -394,6 +394,74 @@ earlier ones.
 Reorder, add or remove steps freely — the graph, the UI diagram and the IaC all
 follow. The parallel stage renders two agents per row.
 
+### `branch` — the output decides what runs next
+
+`steps` is a fixed pipeline and `hitl` lets a *human* redirect it. `branch` is the
+third case: the step's own output picks the next step. A triage agent sends a
+high-risk case to a deep review and a routine one straight to settlement; an intake
+agent ends the run when the request is not actionable. No agent code — the deciding
+agent just returns its normal output.
+
+```json
+{ "agent": "triage",
+  "branch": {
+    "when": [
+      { "field": "disposition", "equals": "escalate", "goto": "investigator" },
+      { "field": "amount",      "gte": 10000,        "goto": "investigator" },
+      { "field": "claimId",     "exists": false,     "goto": "END" }
+    ],
+    "default": "adjuster"
+  } }
+```
+
+| Key | Meaning |
+|---|---|
+| `when` | rules, tried **in order**; the first match wins, so put the specific case first |
+| `when[].field` | dot path into the agent's JSON output (`scope.tier`, `findings.0.claim` — a numeric segment indexes a list). **Omit it** and the comparison runs against the raw output text, so an agent that returns prose is still branchable |
+| `when[].goto` | the step to run on a match, or `"END"` to finish the run |
+| `default` | where to go when no rule matched. Omit it and the run simply continues to the next step |
+
+A `default` **with no `when`** is an unconditional jump. That is what makes two
+paths exclusive rather than merely optional: with steps
+`[triage, investigator, adjuster, settlement]`, `triage` picks a specialist and
+`investigator` carries `{ "default": "settlement" }` so the escalated path does not
+fall into the adjuster's step on its way out.
+
+**Operators.** One or more per rule; several are ANDed.
+
+| | |
+|---|---|
+| `equals`, `notEquals` | single value |
+| `in` | list of alternatives |
+| `contains` | substring of a string, or membership of a list / dict keys |
+| `exists` | `true` = present and not null/`""`/`[]`/`{}`; `false` = the negation |
+| `gt`, `gte`, `lt`, `lte` | numeric. A **list or dict compares by its length**, so `{ "field": "openQuestions", "gt": 0 }` reads as "there is at least one" |
+
+`equals`, `notEquals`, `in` and `contains` compare on stripped, case-folded text,
+because the value was written by a model: one told to return `escalate` will
+sometimes return `Escalate`. A branch that took the default because of a capital
+letter would be an expensive thing to debug.
+
+**Targets name a STEP, not an agent inside one** — a single-agent step's `agent` id,
+or a group step's `gateId`. Jumping to a `parallel` stage therefore enters the whole
+stage rather than stranding its gate on siblings that never ran. Targets must be
+*later* steps; going backwards is what a review gate's `revise` is for.
+
+**Where it may go.** On a single-agent step, or on a `sequence` step (its **last**
+agent decides). Not on a `parallel` step — a group has no single agent whose output
+decides — and not on the last step, which has nowhere to route.
+
+**What you see.** The stage gets a `⑂ Branch` pill in the diagram (hover for the
+rules), the timeline records the rule that matched and where it went, and the agents
+the run bypassed are marked **skipped** rather than left looking queued. With a
+review gate on the same step the human approves first, then the branch reads the
+output they approved.
+
+Everything above is checked before anything deploys, because each of these mistakes
+is otherwise silent — a misspelled operator, a rule with no comparison and a target
+that names nothing all evaluate to "no match", so the run quietly takes the default
+on every request and the branch looks like it is working.
+
 ## What is checked before anything deploys
 
 Both IaC paths validate this file at plan/synth time and name the exact problem.

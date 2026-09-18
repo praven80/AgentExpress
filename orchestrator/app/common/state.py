@@ -20,4 +20,5 @@ class State(TypedDict, total=False):
     decisions: Annotated[dict, merge_dict]   # agent_id / group_id -> approve | deny | revise (HITL gates)
     feedback: Annotated[dict, merge_dict]    # agent_id -> reviewer feedback for a re-run
     group_rerun: Annotated[dict, merge_dict]  # group_id -> [agent ids to re-run this cycle]
+    branch: Annotated[dict, merge_dict]      # branch step name -> step name chosen from the agent's output
     history: Annotated[dict, merge_dict]     # agent_id -> [{version, at, comment, output}] per re-run

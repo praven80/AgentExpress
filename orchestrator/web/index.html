@@ -58,6 +58,9 @@
   .b-denied, .b-failed { background:#fee2e2; color:#b91c1c; }
   .b-cancelling { background:#ffedd5; color:#c2410c; }
   .b-cancelled { background:#e2e8f0; color:#475569; }
+  /* A branch bypassed this agent. Dimmed rather than coloured: nothing went wrong,
+     the run simply took another path, and the eye should skip it. */
+  .b-skipped { background:#f1f5f9; color:#94a3b8; }
   .node.cancelled { --accent:#94a3b8; }
 
   /* --- Pipeline / DAG --- */
@@ -69,6 +72,11 @@
   .stage-gate { position:absolute; top:-12px; right:-8px; display:flex; align-items:center; gap:3px;
                 background:#fef3c7; color:#b45309; border:1px solid #fcd34d; font-size:9px; font-weight:700;
                 padding:2px 8px; border-radius:999px; z-index:4; box-shadow:0 1px 3px #0f172a1a; }
+  /* This step's output chooses what runs next, so the arrow out of it is only the
+     DEFAULT path. Hover for the rules. */
+  .stage-branch { position:absolute; bottom:-11px; right:-8px; display:flex; align-items:center; gap:3px;
+                  background:#ede9fe; color:#6d28d9; border:1px solid #c4b5fd; font-size:9px; font-weight:700;
+                  padding:2px 8px; border-radius:999px; z-index:4; box-shadow:0 1px 3px #0f172a1a; cursor:help; }
   .stage-group { position:relative; border:1.5px dashed var(--border2); border-radius:18px; padding:26px 14px 14px;
                  background:linear-gradient(180deg,#f8fafc,#eef2f7); }
   /* Sequential group gets a distinct tint so it reads differently from parallel. */
@@ -97,6 +105,7 @@
   .node.done { --accent:var(--green); }
   .node.waiting_human { --accent:var(--amber); }
   .node.denied, .node.failed { --accent:var(--red); }
+  .node.skipped { --accent:#cbd5e1; opacity:.55; }
   .node.running, .node.waiting_human { animation:pulse 1.8s ease-in-out infinite; }
   @keyframes pulse { 0%,100%{ box-shadow:0 4px 10px #0f172a0d, 0 0 0 0 color-mix(in srgb, var(--accent) 40%, transparent);} 50%{ box-shadow:0 4px 10px #0f172a0d, 0 0 0 5px color-mix(in srgb, var(--accent) 8%, transparent);} }
   .node .head { display:flex; align-items:center; gap:10px; margin-top:3px; }
@@ -665,14 +674,31 @@ function nodeCard(nodes, agentId) {
   </div>`;
 }
 
+/* The rules of a step's `branch`, as a tooltip. The DAG can only draw the
+   CONFIGURED order of steps; with a branch the real path depends on the output, so
+   the reader has to be able to see what decides it. The taken path is visible in the
+   run itself — bypassed agents go "skipped". */
+const BRANCH_OPS = ["equals","notEquals","in","contains","exists","gt","gte","lt","lte"];
+function branchSummary(b) {
+  const lines = (b.when || []).map(r => {
+    const cmp = BRANCH_OPS.filter(o => o in r).map(o => `${o} ${JSON.stringify(r[o])}`).join(" and ");
+    return `if ${r.field || "output"} ${cmp} → ${r.goto}`;
+  });
+  lines.push(b.default ? `otherwise → ${b.default}` : "otherwise → next step");
+  return lines.join("\n");
+}
+
 // A stage = one workflow step. Single-agent steps render one node; parallel
 // steps render a labeled dashed group with a grid of nodes. A numbered badge
-// marks the stage order and a "Review" pill marks a HITL gate after the stage.
+// marks the stage order, a "Review" pill marks a HITL gate after the stage, and a
+// "Branch" pill marks a stage whose output picks what runs next.
 function stageHtml(step, i, nodes) {
   const numBadge = `<div class="stage-num">${i + 1}</div>`;
   // Named gateBadge, not `gate`: that would shadow the global gate(action) authz
   // helper for the rest of this function.
   const gateBadge = step.hitl ? '<div class="stage-gate" title="Human review gate after this stage">🔒 Review</div>' : "";
+  const branchBadge = step.branch
+    ? `<div class="stage-branch" title="${esc(branchSummary(step.branch))}">⑂ Branch</div>` : "";
 
   // Parallel group: agents in a grid, TWO PER ROW (they run concurrently, so
   // there is no order to show). min(2, count) so a single-agent group renders one
@@ -682,7 +708,7 @@ function stageHtml(step, i, nodes) {
     const title = "⇉ " + esc(step.gateName || "Parallel") + " · " + ids.length + " parallel";
     const cards = ids.map(id => nodeCard(nodes, id)).join("");
     const cols = Math.min(2, ids.length);
-    return `<div class="stage-body">${numBadge}${gateBadge}
+    return `<div class="stage-body">${numBadge}${gateBadge}${branchBadge}
       <div class="stage-group"><div class="stage-group-title">${title}</div>
         <div class="stage-col" style="grid-template-columns:repeat(${cols},200px)">${cards}</div></div></div>`;
   }
@@ -693,13 +719,13 @@ function stageHtml(step, i, nodes) {
     const title = "→ " + esc(step.gateName || "Sequential") + " · " + ids.length + " in sequence";
     const seqArrow = '<div class="seq-arrow"><svg viewBox="0 0 24 18"><line x1="0" y1="9" x2="16" y2="9" stroke="currentColor" stroke-width="2.5"/><path d="M14 3 L23 9 L14 15 Z" fill="currentColor"/></svg></div>';
     const cards = ids.map(id => nodeCard(nodes, id)).join(seqArrow);
-    return `<div class="stage-body">${numBadge}${gateBadge}
+    return `<div class="stage-body">${numBadge}${gateBadge}${branchBadge}
       <div class="stage-group seq"><div class="stage-group-title">${title}</div>
         <div class="stage-row">${cards}</div></div></div>`;
   }
 
   // Single agent.
-  return `<div class="stage-body">${numBadge}${gateBadge}${nodeCard(nodes, step.agent)}</div>`;
+  return `<div class="stage-body">${numBadge}${gateBadge}${branchBadge}${nodeCard(nodes, step.agent)}</div>`;
 }
 
 function dagHtml(nodes) {

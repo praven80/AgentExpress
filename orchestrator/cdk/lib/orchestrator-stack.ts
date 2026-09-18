@@ -219,6 +219,140 @@ export function validateTools(
  * graph-build crash, an opaque deploy-time AgentCore error, or — worst — silently
  * empty retrievals with no error anywhere.
  */
+/** The name a step is addressed by, and what a `branch` target names.
+ *  Mirrors graph_builder._step_name and the same expression in terraform/tools.tf. */
+export const stepName = (s: any, i: number): string => s.agent ?? s.gateId ?? `group${i}`;
+
+const BRANCH_OPS = ["equals", "notEquals", "in", "contains", "exists", "gt", "gte", "lt", "lte"];
+const BRANCH_NUM_OPS = ["gt", "gte", "lt", "lte"];
+const BRANCH_TEXT_OPS = ["equals", "notEquals", "contains"];
+
+/**
+ * Validate every `branch` in `steps`, mirroring app/common/branching.validate_spec
+ * and graph_builder.validate_branches.
+ *
+ * Each of these is a mistake that FAILS SILENTLY at runtime: a misspelled operator,
+ * a rule with no comparison, or a target that names nothing all evaluate to "no
+ * match", so the run quietly takes the default on every request and the branch looks
+ * like it works. Catching them at synth is the difference between a typo and a
+ * misrouted workload nobody notices.
+ */
+export function validateBranches(steps: any[]): void {
+  const names = new Map<string, number>(steps.map((s, i) => [stepName(s, i), i]));
+  if (steps.some((s) => s.branch) && names.size !== steps.length) {
+    // A branch target names a step, so two steps sharing a name make a target
+    // ambiguous — and the lookup above would silently resolve it to the later one.
+    throw new Error(
+      `app/workflow.json \`steps\` has duplicate step name(s), which makes a \`branch\` target ` +
+        `ambiguous. Each step is named by its \`agent\` id or its \`gateId\`; give every step a ` +
+        `distinct one. Names in order: ${steps.map((s, i) => stepName(s, i)).join(", ")}.`
+    );
+  }
+  steps.forEach((step, i) => {
+    const spec = step.branch;
+    if (spec === undefined) return;
+    const where = `app/workflow.json steps[${i}] (${stepName(step, i)})`;
+    if (step.parallel) {
+      throw new Error(
+        `${where}: \`branch\` is not supported on a \`parallel\` step, because a group has no ` +
+          `single agent whose output decides. Put the branch on a single-agent step, or on a ` +
+          `\`sequence\` step (its LAST agent decides).`
+      );
+    }
+    if (i === steps.length - 1) {
+      throw new Error(
+        `${where}: \`branch\` on the LAST step has nowhere to route. Use it on an earlier step, ` +
+          `or drop it — "END" is already where the last step goes.`
+      );
+    }
+    if (typeof spec !== "object" || Array.isArray(spec)) {
+      throw new Error(`${where}: \`branch\` must be an object with \`when\` (and optionally \`default\`).`);
+    }
+    const unknown = Object.keys(spec).filter((k) => k !== "when" && k !== "default");
+    if (unknown.length) {
+      throw new Error(`${where}: \`branch\` has unknown key(s) ${unknown.join(", ")}. Valid keys: default, when.`);
+    }
+    if (spec.when === undefined && !String(spec.default ?? "").trim()) {
+      throw new Error(
+        `${where}: \`branch\` needs \`when\` (conditional rules), \`default\` (an unconditional ` +
+          `jump to a later step), or both.`
+      );
+    }
+    if (spec.when !== undefined && (!Array.isArray(spec.when) || !spec.when.length)) {
+      throw new Error(
+        `${where}: \`branch.when\` must be a non-empty list of rules. Omit it entirely for an ` +
+          `unconditional jump via \`default\` alone.`
+      );
+    }
+    (spec.when ?? []).forEach((rule: any, r: number) => {
+      const at = `${where} branch.when[${r}]`;
+      if (typeof rule !== "object" || rule === null || Array.isArray(rule)) {
+        throw new Error(`${at}: each rule must be an object.`);
+      }
+      const bad = Object.keys(rule).filter((k) => k !== "field" && k !== "goto" && !BRANCH_OPS.includes(k));
+      if (bad.length) {
+        throw new Error(
+          `${at}: unknown key(s) ${bad.join(", ")}. A rule is \`goto\`, an optional \`field\`, and ` +
+            `one or more of ${BRANCH_OPS.join(", ")}.`
+        );
+      }
+      if (!String(rule.goto ?? "").trim()) {
+        throw new Error(`${at}: needs a \`goto\` naming the step to run when it matches (or "END").`);
+      }
+      if (!BRANCH_OPS.some((o) => o in rule)) {
+        throw new Error(
+          `${at}: has no comparison. Add one or more of ${BRANCH_OPS.join(", ")} — a rule with none ` +
+            `would never match, so the branch would always take \`default\`.`
+        );
+      }
+      if ("in" in rule && !Array.isArray(rule.in)) {
+        throw new Error(`${at}: \`in\` takes a list of alternatives.`);
+      }
+      if ("exists" in rule && typeof rule.exists !== "boolean") {
+        throw new Error(`${at}: \`exists\` takes true or false.`);
+      }
+      for (const op of BRANCH_NUM_OPS) {
+        if (op in rule && !Number.isFinite(Number(rule[op]))) {
+          throw new Error(`${at}: \`${op}\` takes a number, got ${JSON.stringify(rule[op])}.`);
+        }
+      }
+      for (const op of BRANCH_TEXT_OPS) {
+        if (op in rule && typeof rule[op] === "object" && rule[op] !== null) {
+          throw new Error(
+            `${at}: \`${op}\` takes a single value, not an object or list. Use \`in\` for a list of ` +
+              `alternatives.`
+          );
+        }
+      }
+    });
+    if ("default" in spec && !String(spec.default ?? "").trim()) {
+      throw new Error(`${where}: \`branch.default\` is empty. Omit it to continue to the next step.`);
+    }
+
+    const targets = [
+      ...(spec.when ?? []).map((r: any) => String(r.goto)),
+      ...(spec.default ? [String(spec.default)] : []),
+    ];
+    for (const t of new Set(targets)) {
+      if (t === "END") continue;
+      const j = names.get(t);
+      if (j === undefined) {
+        throw new Error(
+          `${where}: branch target "${t}" names no step. A target is "END", a single-agent step's ` +
+            `\`agent\` id, or a group step's \`gateId\`. Known step names: ${[...names.keys()].join(", ")}.`
+        );
+      }
+      if (j <= i) {
+        throw new Error(
+          `${where}: branch target "${t}" is step ${j}, at or before this one. Targets must be LATER ` +
+            `steps — a backward edge is a cycle the run could not leave, and re-running earlier work ` +
+            `is what a review gate's \`revise\` is for.`
+        );
+      }
+    }
+  });
+}
+
 export function validateWorkflow(workflow: any, orchRoot: string, agentName: string, idp: string): void {
   const agents: Record<string, any> = workflow.agents ?? {};
   const steps: any[] = workflow.steps ?? [];
@@ -241,6 +375,8 @@ export function validateWorkflow(workflow: any, orchRoot: string, agentName: str
         `Add them to \`steps\` or remove them.`
     );
   }
+
+  validateBranches(steps);
 
   // The id becomes part of the AgentCore Runtime name, which only accepts
   // [a-zA-Z][a-zA-Z0-9_]* — a hyphen fails at DEPLOY time with an opaque error.

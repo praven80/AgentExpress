@@ -1,4 +1,4 @@
-"""Generic wrappers that turn agents and HITL gates into LangGraph nodes.
+"""Generic wrappers that turn agents, HITL gates and branch decisions into LangGraph nodes.
 
 Agent authors never touch this — it handles status emission, output storage, the
 interrupt/resume mechanics, and the config-driven AgentCore features (OTEL agent
@@ -9,7 +9,7 @@ store) uniformly for every agent.
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 
-from app.common import clock
+from app.common import branching, clock
 from app.common.base import Agent
 from app.common.config import AGENTS
 from app.common.context import AgentContext
@@ -167,6 +167,41 @@ def make_agent_node(agent: Agent):
                 "history": {agent.id: history}}
 
     return node
+
+
+def make_branch_node(branch_id: str, spec: dict, decider: str, bypassed):
+    """Resolve a step's `branch` and record which step runs next.
+
+    Placed AFTER the deciding agent (and after its review gate, when the step is
+    gated, so a human still approves the output the decision is read from). It does
+    three things, and deliberately not a fourth:
+
+      * evaluates the rules against the deciding agent's own output and writes the
+        chosen step name to the `branch` state channel — the router that follows is
+        then a pure read, which is what keeps routing testable;
+      * logs the rule that matched, because a branch nobody can explain is worse
+        than no branch;
+      * marks the bypassed agents "skipped", so the UI shows a settled run instead
+        of agents that spin as "pending" forever.
+
+    It never calls a model. The decision is the deciding agent's, already made.
+    """
+
+    async def branch(state: dict, config: RunnableConfig) -> dict:
+        sid = config["configurable"]["thread_id"]
+        if is_cancelled(sid):
+            raise WorkflowCancelled(sid)
+        target, reason = branching.choose(spec, (state.get("outputs") or {}).get(decider, ""))
+        where = target or "the next step"
+        skipped = bypassed(target) if target else []
+        note = f" · skipping {', '.join(skipped)}" if skipped else ""
+        await emit(sid, {"type": "log",
+                         "log": f"Branch after {decider}: {reason} -> {where}{note}"})
+        for a in skipped:
+            await emit(sid, {"type": "node_status", "node": a, "status": "skipped"})
+        return {"branch": {branch_id: target}} if target else {}
+
+    return branch
 
 
 def _decision_of(resumed) -> tuple[str, str]:

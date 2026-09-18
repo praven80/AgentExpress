@@ -422,6 +422,7 @@ around your `run()` — you never write the integration:
 | `policy.enabled` | Cedar authorization on every tool call, server-side at the Gateway |
 | `maxTokens` on an agent | the model output budget for that agent's calls |
 | `hitl: true` on a step | an approve / revise / deny gate, with rewind-and-re-run |
+| `branch` on a step | the agent's own output picks the next step (or ends the run); bypassed agents are marked skipped |
 
 Always on, with no flag to set: LangGraph checkpointing (so a run survives a review
 pause) and full observability (OTEL spans, token counts, cost and latency in the UI).
@@ -521,6 +522,16 @@ the exact problem:
 - an agent id that isn't `^[a-zA-Z][a-zA-Z0-9_]*$` (the id becomes part of the
   AgentCore Runtime name, which rejects hyphens)
 - `<agentName>_<agentId>` longer than the 48-character runtime-name limit
+
+**`branch`** — also all quiet failures: an unmatchable rule or an unresolvable target
+means the run just takes the default on every request, and the branch looks wired
+- a rule with an unknown key (a misspelled operator), no `goto`, or no comparison
+- an operator value of the wrong shape (`in` not a list, `exists` not a boolean,
+  `gte` not a number, `equals` given a list instead of using `in`)
+- `branch` with neither `when` nor `default`, or with an empty `when`
+- a `goto`/`default` naming no step, or naming a step at or before its own (a
+  backward edge would be a cycle the run could not leave)
+- `branch` on a `parallel` step (no single agent decides) or on the last step
 
 **Knowledge Base corpora** — the ones that used to fail *silently*
 - a `corpora` entry with no matching folder under `kb_docs/`

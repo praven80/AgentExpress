@@ -206,6 +206,15 @@ different boundaries, both config-driven.
   gate); a `parallel` step fans out to all its agents and joins at one group gate;
   a `sequence` step chains its agents in order with one gate after the last (revise
   loops back to the first). Each is a distinct, config-only pattern.
+- A step may also carry `branch`, which makes the **agent's own output** choose the
+  next step (`app/common/branching.py` — a schema-agnostic rule language over a dot
+  path into the output JSON). It compiles to one extra node after the step, which
+  evaluates the rules, records the chosen step in the `branch` state channel, logs
+  the rule that matched, and marks the bypassed agents `skipped`. The router itself
+  is a pure read of that channel, so routing is asserted without running an agent.
+  Targets name a *later* step, so the graph stays acyclic and a branch can only
+  redirect a run, never strand one. With a `hitl` gate on the same step, the human
+  approves first and the branch then reads the output they approved.
 - Each agent is a small `Agent` subclass in `app/subagents/<id>/`. The research
   agents share `common/research.py` (RAG/MCP + evidence classification); the
   analysis/recommendation/report agents share `common/synthesis.py` (gather

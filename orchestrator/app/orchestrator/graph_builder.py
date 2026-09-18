@@ -13,17 +13,27 @@ approve -> continue, deny -> END, revise -> loop back and re-run with feedback
     step: {"agent": "intake", "hitl": true}                       -> agent, then a human gate
     step: {"parallel": ["knowledge_research", "web_search"]}     -> both concurrently, join after
     step: {"sequence": ["analysis", "recommendation"]}            -> one after another, one gate after both
+
+A step may also carry "branch", which lets the step's OWN OUTPUT choose what runs
+next (see app/common/branching.py for the rule language). It compiles to one extra
+node after the step — after its gate, when gated — that evaluates the rules, records
+the chosen step, and marks the bypassed agents skipped. The router itself stays a
+pure read of state, so routing is asserted directly in the tests.
+
+    step: {"agent": "triage", "branch": {"when": [...], "default": "fast_track"}}
 """
 
 import itertools
 
 from langgraph.graph import END, START, StateGraph
 
+from app.common import branching
 from app.common.config import STEPS
 from app.common.config import step_agents as agents_in
 from app.common.state import State
 from app.orchestrator.nodes import (
     make_agent_node,
+    make_branch_node,
     make_gate_node,
     make_group_gate_node,
     make_sequence_gate_node,
@@ -42,6 +52,110 @@ def _entries(step: dict) -> list:
 def _gate_id(step: dict, i: int) -> str:
     """Synthetic decision/gate key for a gated group."""
     return step.get("gateId") or f"group{i}"
+
+
+def _step_name(step: dict, i: int) -> str:
+    """The name a step is addressed by: its `agent` id, or a group's `gateId`.
+
+    This is what a `branch` target names, and what the gate/branch node ids are
+    built from, so a group step reachable by a branch wants a readable `gateId`.
+    """
+    return step.get("agent") or _gate_id(step, i)
+
+
+def _step_names() -> dict[str, int]:
+    return {_step_name(s, i): i for i, s in enumerate(STEPS)}
+
+
+def _decider(step: dict) -> str:
+    """The agent whose output a `branch` on this step reads. A sequence decides with
+    its LAST agent; a parallel group has no single decider and is rejected by
+    validate_branches."""
+    return step.get("agent") or (step.get("sequence") or [""])[-1]
+
+
+def _branch_node(step: dict, i: int) -> str:
+    return f"{_step_name(step, i)}_branch"
+
+
+def _target_entries(target: str | None) -> list | None:
+    """The node(s) a branch target routes to, or None when it names no step.
+
+    A target names a STEP, not an agent within one, so jumping to a parallel group
+    enters all of its members rather than stranding the gate waiting on siblings
+    that never ran.
+    """
+    if not target:
+        return None
+    if target == branching.END_TARGET:
+        return [END]
+    j = _step_names().get(target)
+    return None if j is None else _entries(STEPS[j])
+
+
+def _bypassed_agents(i: int, target: str | None) -> list[str]:
+    """Agents skipped when step `i` branches to `target`: everything in the steps
+    jumped over, or everything after step `i` when the branch ends the run."""
+    if not target:
+        return []
+    if target == branching.END_TARGET:
+        stop = len(STEPS)
+    else:
+        j = _step_names().get(target)
+        if j is None:
+            return []
+        stop = j
+    return [a for s in STEPS[i + 1: stop] for a in agents_in(s)]
+
+
+def validate_branches() -> None:
+    """Reject a `branch` that cannot work, at container start, naming the step.
+
+    Called by build_graph, and mirrored by both IaC paths so a customer normally
+    sees these at plan/synth time instead. Every case below would otherwise be
+    silent: a target that names nothing, or a rule that can never match, just makes
+    the run take the default forever.
+    """
+    names = _step_names()
+    if any(step.get("branch") for step in STEPS) and len(names) != len(STEPS):
+        # A branch target names a step, so two steps sharing a name make a target
+        # ambiguous — and _step_names() would silently resolve it to the later one.
+        # (A duplicate also collides the gate/branch NODE ids, but only when both
+        # steps are gated, so it cannot be relied on to surface this.)
+        raise ValueError(
+            f"workflow.json `steps` has duplicate step name(s), which makes a `branch` target "
+            f"ambiguous. Each step is named by its `agent` id or its `gateId`; give every step a "
+            f"distinct one. Names in order: "
+            f"{', '.join(_step_name(s, i) for i, s in enumerate(STEPS))}.")
+    for i, step in enumerate(STEPS):
+        spec = step.get("branch")
+        if spec is None:
+            continue
+        where = f"workflow.json steps[{i}] ({_step_name(step, i)})"
+        if "parallel" in step:
+            raise ValueError(
+                f"{where}: `branch` is not supported on a `parallel` step, because a group has "
+                f"no single agent whose output decides. Put the branch on a single-agent step, "
+                f"or on a `sequence` step (its LAST agent decides).")
+        if i == len(STEPS) - 1:
+            raise ValueError(
+                f"{where}: `branch` on the LAST step has nowhere to route. Use it on an earlier "
+                f'step, or drop it — "END" is already where the last step goes.')
+        branching.validate_spec(spec, where)
+        for t in branching.targets(spec):
+            if t == branching.END_TARGET:
+                continue
+            j = names.get(t)
+            if j is None:
+                raise ValueError(
+                    f"{where}: branch target {t!r} names no step. A target is "
+                    f'"{branching.END_TARGET}", a single-agent step\'s `agent` id, or a group '
+                    f"step's `gateId`. Known step names: {', '.join(names)}.")
+            if j <= i:
+                raise ValueError(
+                    f"{where}: branch target {t!r} is step {j}, at or before this one. Targets "
+                    f"must be LATER steps — a backward edge is a cycle the run could not leave, "
+                    f"and re-running earlier work is what a review gate's `revise` is for.")
 
 
 def _make_router(decision_key: str, next_entries: list, revise_target):
@@ -63,11 +177,26 @@ def _make_router(decision_key: str, next_entries: list, revise_target):
     return router
 
 
+def _make_branch_router(branch_id: str, fallthrough: list):
+    """Route a branch step by the target its branch node recorded in state.
+
+    A pure read on purpose: the decision was made (and logged) by the node, so this
+    stays assertable without running anything. No recorded target — no rule matched
+    and no `default`, or a seeded value that names no step — falls through to the
+    next step, so a branch can only ever redirect a run, never strand it.
+    """
+    def router(state: dict):
+        entries = _target_entries((state.get("branch") or {}).get(branch_id)) or fallthrough
+        return END if entries == [END] else entries
+    return router
+
+
 def build_graph(checkpointer=None):
     if checkpointer is None:
         from langgraph.checkpoint.memory import MemorySaver
         checkpointer = MemorySaver()
 
+    validate_branches()
     registry = load_agents()
     g = StateGraph(State)
 
@@ -98,6 +227,18 @@ def build_graph(checkpointer=None):
                                                       step.get("gateName") or gid))
         gate_of[i] = gname
 
+    # Branch nodes. One per step carrying "branch": it resolves the decision from the
+    # deciding agent's output, records it, and marks the bypassed agents skipped.
+    branch_of: dict[int, str] = {}
+    for i, step in enumerate(STEPS):
+        if not step.get("branch"):
+            continue
+        bname = _branch_node(step, i)
+        g.add_node(bname, make_branch_node(
+            _step_name(step, i), step["branch"], _decider(step),
+            lambda t, i=i: _bypassed_agents(i, t)))
+        branch_of[i] = bname
+
     # Chain the agents inside every sequence group (agent[k] -> agent[k+1]).
     for step in STEPS:
         seq = step.get("sequence")
@@ -112,7 +253,12 @@ def build_graph(checkpointer=None):
     # Wire each step to the next.
     for i, step in enumerate(STEPS):
         is_last = i == len(STEPS) - 1
-        next_entries = [END] if is_last else _entries(STEPS[i + 1])
+        fallthrough = [END] if is_last else _entries(STEPS[i + 1])
+        # A branch step points at its branch node instead of the next step; the
+        # branch node then routes on. This one substitution is the whole of the
+        # branching wiring — the four step shapes below are untouched.
+        bname = branch_of.get(i)
+        next_entries = [bname] if bname else fallthrough
         hitl = step.get("hitl")
 
         if "agent" in step and hitl:
@@ -159,6 +305,14 @@ def build_graph(checkpointer=None):
                 for ne in next_entries:
                     g.add_edge(a, ne)
 
+        if bname:
+            # The branch node's own edges. Every declared target, plus the
+            # fallthrough (no rule matched and no `default`) and END.
+            reachable = {n for t in branching.targets(step["branch"])
+                         for n in (_target_entries(t) or [])}
+            g.add_conditional_edges(bname, _make_branch_router(_step_name(step, i), fallthrough),
+                                    list({*reachable, *fallthrough, END}))
+
     return g.compile(checkpointer=checkpointer)
 
 
@@ -187,31 +341,40 @@ def _step_index_of(agent_id: str) -> int:
     return -1
 
 
-def _predecessor_of_step(si: int) -> tuple[str, str | None]:
-    """(as_node, decision_key) for the node that routes INTO step `si`.
+def _predecessor_of_step(si: int) -> tuple[str, str | None, dict]:
+    """(as_node, decision_key, branch_seed) for the node that routes INTO step `si`.
 
     A gated step is entered from its gate (whose router must be told "approve");
     an ungated one is entered straight from the single node before it.
+
+    When the previous step BRANCHES, the node that routes here is its branch node,
+    and its router reads the target recorded in state. So the plan also carries a
+    `branch_seed` pointing that decision at this step: the reviewer asked for this
+    agent to run, which is a genuine change to the path the run takes, and recording
+    it is more honest than routing around it.
     """
     if si == 0:
-        return START, None
+        return START, None, {}
     prev, pi = STEPS[si - 1], si - 1
+    if prev.get("branch"):
+        return (_branch_node(prev, pi), None,
+                {_step_name(prev, pi): _step_name(STEPS[si], si)})
     if prev.get("hitl"):
         if "agent" in prev:
-            return f"{prev['agent']}_gate", prev["agent"]
+            return f"{prev['agent']}_gate", prev["agent"], {}
         gid = _gate_id(prev, pi)
-        return f"{gid}_gate", gid
+        return f"{gid}_gate", gid, {}
     # Ungated predecessor: a sequence ends at its last agent; a single agent is
     # itself. A non-gated parallel group has no single predecessor node, so a
     # rewind across it would be ambiguous — reject it rather than guess.
     if "sequence" in prev:
-        return prev["sequence"][-1], None
+        return prev["sequence"][-1], None, {}
     prev_agents = agents_in(prev)
     if len(prev_agents) != 1:
         raise ValueError(
             "cannot rewind across the previous step: it is a non-gated parallel "
             "group with no single predecessor node")
-    return prev_agents[0], None
+    return prev_agents[0], None, {}
 
 
 def rerun_plan(agent_id: str) -> dict:
@@ -220,10 +383,12 @@ def rerun_plan(agent_id: str) -> dict:
     Returns:
       as_node          - node to attribute the state write to (its successors
                          become the next tasks): START for the first step, the
-                         previous step's gate, the node before it in a sequence,
-                         or the single ungated predecessor.
+                         previous step's gate or branch node, the node before it in
+                         a sequence, or the single ungated predecessor.
       decision_key     - decision to force to "approve" so the predecessor gate's
                          router forwards here (None when there is no gate).
+      branch_seed      - branch decision(s) to write so a predecessor BRANCH routes
+                         here ({} when the predecessor does not branch).
       step_agents      - the agents that will re-run in the target step. A
                          parallel group re-runs as a unit; a sequence re-runs from
                          the target agent onward.
@@ -248,7 +413,7 @@ def rerun_plan(agent_id: str) -> dict:
         # re-run the tail of the chain from there.
         k = seq.index(agent_id)
         step_agents = seq[k:]
-        return {"as_node": seq[k - 1], "decision_key": None,
+        return {"as_node": seq[k - 1], "decision_key": None, "branch_seed": {},
                 "step_agents": step_agents,
                 "downstream_agents": step_agents + later_agents,
                 "step_index": si}
@@ -256,8 +421,8 @@ def rerun_plan(agent_id: str) -> dict:
     # The target is the step's entry: a single agent, any member of a parallel
     # group (the stage re-runs as a unit), or the first agent of a sequence.
     step_agents = agents_in(step)
-    as_node, decision_key = _predecessor_of_step(si)
-    return {"as_node": as_node, "decision_key": decision_key,
+    as_node, decision_key, branch_seed = _predecessor_of_step(si)
+    return {"as_node": as_node, "decision_key": decision_key, "branch_seed": branch_seed,
             "step_agents": step_agents,
             "downstream_agents": step_agents + later_agents,
             "step_index": si}
