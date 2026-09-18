@@ -15,7 +15,7 @@ import importlib
 
 from app.common.agentcore_agent import AgentCoreRuntimeAgent
 from app.common.base import Agent
-from app.common.config import AGENTS
+from app.common.config import AGENTS, output_rules_for
 
 
 def _configure(agent: Agent, agent_id: str, spec: dict) -> Agent:
@@ -40,6 +40,12 @@ def _configure(agent: Agent, agent_id: str, spec: dict) -> Agent:
     # MID-JSON, which surfaces as "the model returned no parseable research JSON"
     # rather than as an obvious limit problem.
     agent.max_tokens = int(spec.get("maxTokens") or 4000)
+    # Output-rule enforcement for this agent, and whether a failed check may spend
+    # a second model call repairing itself. Engine default + per-agent override;
+    # see config.output_rules_for. It lives on the Agent (and so on ctx) because
+    # `repair` is a COST decision, and cost is per agent: a customer may well want
+    # the report re-asked and not the four research agents.
+    agent.output_rules = output_rules_for(spec)
     # AgentCore feature flags (memory, guardrails, evaluations, policy, …).
     # AgentContext reads these to decide which features apply to this agent.
     agent.agentcore = dict(spec.get("agentcore") or {})

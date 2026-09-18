@@ -54,6 +54,11 @@ does not turn tests red.
 | Key | Read by | Notes |
 |---|---|---|
 | `defaultModel` | `config.py` | Model for any agent that doesn't name its own. `BEDROCK_MODEL_ID` overrides it. |
+| `outputRules.enabled` | `config.py` → `structured.ask_json` | Run the deterministic output checks in `app/common/rules.py` on every agent's payload, and record whatever fails on the asset (`ruleViolations`, rendered in the UI above the summary). Pure functions — no model call, no added cost. Default **on**. |
+| `outputRules.repair` | same | When a check fails, spend **one extra model call** re-asking that agent with the concrete violations quoted. Default **off**, because it is a real cost: on a run where most agents fail a check it roughly doubles the price and the wall-clock. Turn it on per agent (below) for the outputs a reader actually consumes, once you've seen from the recorded violations which agents need it. Bounded at one retry. The retry is kept unless it raises the violation count or brings a **new kind** of violation; on a tie it is kept only when the prose actually got shorter, since a tie can otherwise hide a rewrite that dropped content. |
+| `outputRules.maxWords` | same | A prose budget for one agent's output, checked deterministically as the `over-budget` rule. **0 (off) by default** — the right length is a property of your workflow, not of the framework. Counted over the reader-facing fields, so it follows your schema rather than naming any field. Set it where length is the observed defect: three separate prompt clauses failed to keep the shipped `report` under control (2164 → 1749 → 2600 words) and a number in config succeeded, because wording is negotiable and a number is not. Pair it with `repair` — "cut this to the budget" is a mechanical instruction a re-ask can execute. |
+| `runtimeInvoke.maxAttempts` | `config.py` → `agentcore_agent._agentcore` | **Total** attempts per call to a `dedicated` agent's runtime, not retries-after-the-first. Default **1, i.e. no retrying**, which is deliberate: `InvokeAgentRuntime` is synchronous, slow and **not idempotent**, so a retry does not replace the attempt it followed — the remote container is already working and cannot tell the caller stopped listening. boto3's own default (`legacy` mode, up to 5 attempts) therefore lets one transient blip run a research agent twice, bill both model calls, and return whichever answered last, with nothing in the timeline to show it: the node logs "Invoking dedicated AgentCore Runtime" once, before any retry exists. Observed on a live run — two invocations of the `web_search` runtime with different `requestId`s, 13s apart, for one node execution, $0.0158 spent on a discarded answer. For a call this long the failure that matters is a lost response to work that already succeeded, and retrying that is strictly worse than failing: an error reaches the reviewer, a duplicate just inflates the bill. Raise it only if you have made the call idempotent. |
+| `runtimeInvoke.readTimeoutSeconds` | same | How long to wait for a dedicated agent's response. Default **120**, well above boto3's 60 and the ~15–20s the shipped research agents take. With retrying off this timeout is fatal to the run, so keep it comfortably above your slowest agent — otherwise you trade a duplicate for a truncated run, which is not the trade being made here. |
 | `policy.enabled` | `policy.tf`, `tool-plane.ts` | Creates the Cedar policy engine and attaches it to the Gateway. |
 | `policy.mode` | same | `ENFORCE` obeys a DENY and blocks the call; `LOG_ONLY` evaluates and logs without blocking — the safe way to roll out. |
 | `chatbot.enabled` | `bff/chatbot.py`, UI | Shows the chat icon. |
@@ -101,6 +106,26 @@ AgentCore Runtime name.
 | `corpus` | `registry.py` | For a `type: "kb"` tool: which corpus to retrieve from. Must be one of that tool's declared `corpora`. |
 | `produces` | `nodes.py` | The deliverable name, injected into the agent's task prompt. |
 | `access` | UI chip | A short human label for the data source. **Only read when the agent has no `tool`** — with a tool, the chip is derived from the tool's type. Don't set both. |
+| `outputRules` | `registry.py` → `agent.output_rules` | **Optional.** Overrides `orchestrator.outputRules` for this agent, merged over it — so `{"repair": true}` turns repair on here and leaves `enabled` alone. This is the per-agent cost dial: pay for a second call only where a reader actually consumes the output. The shipped workflow sets it on `analysis` and nowhere else — see below. |
+
+**How to decide which agent gets repair — and it is not "the worst one".** From the
+recorded violations, and from what KIND of defect they are.
+
+A re-ask can execute a mechanical instruction: "you are 600 words over the budget",
+"remove the ordinal markers First, Second, Third", "the count says five and you
+listed four". It cannot execute a semantic one. The shipped config turns repair on
+for `report` alone, whose defects are all of the first kind. It was tried on
+`analysis` first — whose `rationale` kept describing the request instead of the
+subject — and measured: the re-ask rewrote the field and landed in the same defect
+class, one violation before and one after, for the price of a call. That agent's
+prompt was revised four times and the defect is now left **recorded rather than
+repaired**, which is the layer working as designed: a visible note telling a reviewer
+which sentence to distrust, on a field whose other sentences are worth keeping.
+
+So: prompt first. If the prompt loses twice, ask whether the defect is something a
+model can mechanically correct. If it is, turn on `repair` for that agent. If it is
+not, leave the violation recorded — deleting good content to clear a counter is the
+check corrupting the deliverable.
 
 ### `maxTokens` — why it is per agent
 
@@ -172,6 +197,7 @@ Shared keys:
 | `call` | Which tool on the target to invoke. **Required** when the target publishes more than one — the app refuses to guess, because calling the wrong tool returns real-looking data for a question nobody asked. |
 | `arg` | The parameter the agent's query goes into. Default `query`. This is what makes an arbitrary MCP server reachable from config: every server names its parameters differently. |
 | `args` | Fixed extra arguments sent on every call. |
+| `rowFields` | Maps the roles an agent needs to the field names your payload actually uses, so an agent that *computes* from tool output stays config-driven. See [`rowFields`](#rowfields--for-an-agent-that-computes-rather-than-narrates) below. |
 | `auth` | Outbound auth to the endpoint: `none`, `apikey` (vaulted, sent as `X-API-Key`), `sigv4` (the Gateway signs with its own role — no secret). |
 | `policy.tool` | Narrow the Cedar permit to one tool name. Omit for a target-level permit, which is what a remote MCP server needs since its tool names aren't known at deploy time. |
 | `policy.restrictTo` | Argument allow-lists, e.g. `{ "filter": ["reference"] }`. Enforced at the Gateway, so a prompt-injected attempt to widen access is refused by infrastructure rather than by prompt wording. |
@@ -250,16 +276,35 @@ Supply the function **one** of two ways:
   that statement itself.
 - `source` — a function the **framework** ships and deploys, which keeps this file
   account-neutral (a real ARN would pin it to one AWS account). The only accepted
-  value is `tool_lambda`, the run-history demo under `orchestrator/tool_lambda/`.
-  It is not a general "deploy any directory" feature: a framework-deployed function
-  needs an execution role config cannot express, so that role is fixed at logs plus
-  read-only on this deployment's own DynamoDB tables.
-  The demo also shows a trap worth copying: a tool that reads this deployment's own
-  state can see the **caller's own run**, which is always still `running` and has no
-  outcome to learn from. Left in, the agent cited the very run it was part of as prior
-  art. `tool_lambda` filters in-flight runs (`running`, `cancelling`) out of its scan
-  and reports how many it excluded, so the count is honest rather than silently short.
-  `waiting_human` stays — that is a real state and cannot be the caller.
+  value is `tool_lambda`, the pricing demo under `orchestrator/tool_lambda/`. It is
+  not a general "deploy any directory" feature: a framework-deployed function needs
+  an execution role config cannot express, so that role is fixed at logs plus
+  `pricing:GetProducts` / `pricing:DescribeServices` — public list prices, no
+  resource-level permissions available and none needed.
+
+**What the shipped demo does, and why it is that.** `aws_prices(services, region)`
+takes service names and returns their real on-demand unit rates from the AWS Price
+List Query API. It answers the one question every design review asks about a
+workload, for *any* use case, without the workflow needing to know the use case.
+
+Three things in it are worth copying into your own Lambda:
+
+- **It returns rates and never a total.** A total needs usage volumes, and volumes
+  are a property of the workload, not of AWS. A tool that multiplies a real rate by
+  a volume nobody supplied has invented the volume, and the invented half is the
+  half that makes the total wrong. The tool instead names the volumes a total would
+  need, and `app/common/rules.py` catches any downstream agent that invents them
+  (`unsupported-figure`).
+- **It resolves names explicitly, and reports what it cannot.** Pricing ServiceCodes
+  are neither guessable nor consistent (`AmazonStates`, not `AWSStepFunctions`), so
+  the mapping is a table, not a transformation. A name with no match or more than one
+  comes back in `unresolvedServices` — pricing the wrong service is worse than
+  admitting the gap, because the number looks exactly as authoritative as a correct
+  one.
+- **It curates which dimensions come back.** Unfiltered, "price AWS Lambda" returns
+  EC2-shaped hourly instance rates. Instance and provisioned SKUs are excluded and a
+  short per-service list of consumption dimensions is preferred, matched with a
+  region-prefix tolerance so the same patterns work in every region.
 
 `toolSchema` **declares** the tools, because unlike an MCP server there is no
 `tools/list` for the Gateway to call. Each entry is `{ name, description,
@@ -272,6 +317,26 @@ name a property of the called tool. Both are checked at plan/synth time, along w
 the ARN format, an empty schema, a tool with no properties, and an unsupported
 property type. All of those would otherwise be accepted by the API and then publish
 a tool the agent cannot call — which shows up as an empty answer, not an error.
+
+### `rowFields` — for an agent that computes rather than narrates
+
+Optional, and only meaningful on a tool whose results are structured. It maps the
+role an agent needs to the field name **your** payload uses:
+
+```json
+"rowFields": { "service": "service", "dimension": "dimension",
+               "price": "pricePerUnit", "unit": "unit", "currency": "currency" }
+```
+
+An agent then calls `ctx.call_tool_rows(...)` and reads `row[fields["price"]]`
+instead of parsing a rendered sentence. This is what keeps "a Lambda can return
+anything" true: `cost_research` works unchanged against a payload of
+`service/dimension/pricePerUnit` or one of `svc/dim/rate`, because the field names
+live in config and not in the agent. Regex-parsing the tool's prose would have tied
+the agent to one payload shape.
+
+Omit it and nothing changes — agents that hand evidence to a model use the `text`
+each row also carries.
 
 ## `authorization`
 

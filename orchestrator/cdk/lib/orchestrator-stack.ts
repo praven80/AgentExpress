@@ -1591,6 +1591,11 @@ export function toolsEnv(tools: Record<string, ToolSpec>): Record<string, any> {
     if (t.call) spec.call = t.call;
     if (t.arg) spec.arg = t.arg;
     if (t.args && Object.keys(t.args).length) spec.args = t.args;
+    // rowFields: which result-row field carries which role, for an agent that reads
+    // the tool's DATA rather than its prose rendering (ctx.call_tool_rows). Keeps a
+    // deterministic agent config-driven: repoint the tool at another source and set
+    // these to its field names, with no agent code change.
+    if (t.rowFields && Object.keys(t.rowFields).length) spec.rowFields = t.rowFields;
     out[name] = spec;
   }
   return out;

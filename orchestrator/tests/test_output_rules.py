@@ -181,9 +181,43 @@ def test_an_invented_fact_about_the_requester_is_caught():
     assert [v for v in found if v.rule == "about-the-request"]
 
 
+def test_a_label_the_inputs_wrote_closed_up_is_still_grounded():
+    """Live false positive from the first run that priced anything. The AWS Price
+    List returns usage types closed up — `Requests-Tier1`, `Requests-Tier2` — and
+    an analysis quoting them as "Tier 1" and "Tier 2" was reported for inventing a
+    series its own evidence had handed it. The separator carries no meaning, and
+    _SERIES_RE already ignores it when detecting a label; the lookup has to agree."""
+    upstream = ("Amazon Simple Storage Service on-demand rates: Requests-Tier1 at "
+                "0.000005 USD per Requests; Requests-Tier2 at 0.0000004 USD.")
+    payload = {"summary": "Amazon S3 rates are 0.000005 USD per request (Tier 1), "
+                          "and 0.0000004 USD per request (Tier 2)."}
+    assert rules.check(payload, upstream=upstream, rules=rules.SYNTHESIS) == []
+
+
+@pytest.mark.parametrize("upstream", [
+    "Tier-1 and Tier-2 are defined",
+    "Tier 1 and Tier 2 are defined",
+    "Tier1 and Tier2 are defined",
+])
+def test_the_separator_is_ignored_in_both_directions(upstream):
+    """Whichever way round the two sides write it."""
+    assert not [v for v in rules.check({"summary": "Use Tier 1, then Tier 2."},
+                                       upstream=upstream, rules=rules.SYNTHESIS)
+                if v.rule == "invented-numbering"]
+
+
+def test_an_invented_series_still_fires_after_the_tolerance():
+    """The tolerance must not swallow the rule it belongs to."""
+    found = rules.check({"summary": "Deliver in Phase 1, then Phase 2, then Phase 3."},
+                        upstream="no phases anywhere", rules=rules.SYNTHESIS)
+    assert [v for v in found if v.rule == "invented-numbering"]
+
+
 def test_run_history_is_allowed_where_it_is_the_subject():
-    """The history_research agent exists to report prior runs, so the rule is off
-    in its profile. A rule that fired here would break the agent it applies to."""
+    """The rule is off in the RESEARCH profile. A research agent reports whatever
+    its source returned, and if that source is the system's own run table then run
+    history IS the subject. The rule exists to stop SYNTHESIS agents promoting it
+    to a finding about the request; firing it upstream would gag the source."""
     payload = {"findings": [{"statement": "Run 8a4bacc44a8b completed on this topic.",
                              "classification": "sourced-fact"}]}
     assert not rules.check(payload, upstream="Run 8a4bacc44a8b - outcome: done",
@@ -277,6 +311,51 @@ def test_distinct_entries_are_not_merged():
                           "documented failure mode.")]}
     assert not [v for v in rules.check(payload, upstream="", rules=rules.SYNTHESIS)
                 if v.rule == "duplicate-in-list"]
+
+
+
+NINE_BUT_EIGHT = (
+    "Production-grade agentic workflows require nine core best practices: "
+    "tool-first design over Model Context Protocol (MCP), pure-function "
+    "invocation, single-tool and single-responsibility agents, externalized "
+    "prompt management, responsible-AI-aligned model-consortium design, clean "
+    "separation between workflow logic and MCP servers, containerized deployment, "
+    "and adherence to the KISS principle.")
+
+
+# ---------------------------------------------------------------------------
+# finding-about-the-brief, in the summary fields
+# ---------------------------------------------------------------------------
+
+def test_a_summary_about_the_request_is_the_same_defect_as_a_finding():
+    """Guarding only findings/claims left the one line an approver is guaranteed to
+    read unguarded. An analysis and a recommendation both opened with this."""
+    payload = {"executiveSummary": "Agentic AI systems require four components. "
+                                   "However, the request brief lacks critical "
+                                   "specificity on use case and autonomy level."}
+    found = rules.check(payload, upstream="", rules=rules.SYNTHESIS)
+    assert [v for v in found if v.rule == "finding-about-the-brief"]
+
+
+def test_the_brief_as_a_modifier_is_not_the_subject():
+    """Tightening to the subject position, because matching the brief anywhere in a
+    summary flagged this: the sentence is about the evidence and names the brief
+    only to say what the evidence covers. Padding at worst, not this defect."""
+    payload = {"summary": "Web evidence provides current architectural patterns, "
+                          "component frameworks and implementation approaches that "
+                          "address the brief's scope of architecture, agent "
+                          "capabilities, tool integration and deployment."}
+    assert not [v for v in rules.check(payload, upstream="", rules=rules.SYNTHESIS)
+                if v.rule == "finding-about-the-brief"]
+
+
+def test_a_gap_in_the_limitations_list_is_still_the_right_place():
+    """The rule must not chase the substance out of the field that is FOR it."""
+    payload = {"summary": "Serverless suits agentic workloads.",
+               "dataLimitations": ["The request brief does not specify a domain."],
+               "limitations": ["The brief leaves the autonomy level open."]}
+    assert not [v for v in rules.check(payload, upstream="", rules=rules.SYNTHESIS)
+                if v.rule == "finding-about-the-brief"]
 
 
 # ---------------------------------------------------------------------------
@@ -385,13 +464,27 @@ def _run(coro):
 
 
 class _FakeCtx:
-    """Enough of AgentContext for ask_json: llm(), log(), agent_id."""
+    """Enough of AgentContext for ask_json: llm(), log(), agent_id, output_rules.
 
-    def __init__(self, *answers: str):
+    `repair` defaults to True HERE, in the fixture for the repair tests, and to
+    False in the shipped config. That inversion is deliberate: these tests are
+    about what the repair loop does when a customer has asked for it, and the
+    default must not be silently exercised by a test that thinks it is testing
+    something else. The default itself is pinned by
+    test_repair_is_off_unless_the_customer_asks_for_it.
+    """
+
+    def __init__(self, *answers: str, enabled: bool = True, repair: bool = True,
+                 max_words: int = 0):
         self.answers = list(answers)
         self.agent_id = "analysis"
         self.calls: list[str] = []
         self.logs: list[str] = []
+        # `maxWords` arrives the same way every other setting does — through
+        # output_rules, from config.output_rules_for. ask_json takes no budget
+        # argument, so a test cannot set it in a way production could not.
+        self.output_rules = {"enabled": enabled, "repair": repair,
+                             "maxWords": max_words}
 
     async def llm(self, system, user, max_tokens=None, name=None):
         self.calls.append(user)
@@ -476,3 +569,524 @@ def test_an_unparseable_repair_falls_back_to_the_first_answer(structured):
         ctx, "sys", "user", rule_set=rules.SYNTHESIS, upstream=""))
     assert payload["summary"] == "Phase 1 then Phase 2."
     assert unrepaired
+
+
+# ---------------------------------------------------------------------------
+# What enforcement COSTS is the customer's decision, not the framework's
+# ---------------------------------------------------------------------------
+#
+# The repair loop shipped unconditionally in its first version. On its first live
+# run seven of eight agents failed a check and were re-asked, so a run cost very
+# nearly twice what the same run cost before the rules existed — a framework
+# quietly doubling a customer's bill to improve its own output quality. The checks
+# are free; only the re-ask is not. These tests pin that separation.
+
+def test_repair_is_off_unless_the_customer_asks_for_it(structured):
+    """The DEFAULT. A failed check records the violation and stops there: one call,
+    the same cost as no enforcement at all, and the reviewer still sees exactly
+    what was wrong because it lands on the asset (and in the UI above the summary).
+    """
+    ctx = _FakeCtx('{"summary": "Phase 1 then Phase 2, budget $5,000."}',
+                   '{"summary": "a repair that must never be requested"}',
+                   repair=False)
+    payload, unrepaired = _run(structured.ask_json(
+        ctx, "sys", "user", rule_set=rules.SYNTHESIS, upstream=""))
+
+    assert len(ctx.calls) == 1, "check-only must not spend a second model call"
+    assert payload["summary"].startswith("Phase 1")   # untouched
+    assert len(unrepaired) == 2                       # numbering + figure
+    assert any("invented-numbering" in v for v in unrepaired)
+    assert any("unsupported-figure" in v for v in unrepaired)
+
+
+def test_the_shipped_default_does_not_pay_for_repair():
+    """Pinned against workflow.json itself, not against a fixture. If someone flips
+    the shipped default to repair-on, that is a change to what every customer's run
+    costs and it should have to fail a test to happen."""
+    from app.common.config import OUTPUT_RULES
+
+    assert OUTPUT_RULES["enabled"] is True, "checks are free; they should be on"
+    assert OUTPUT_RULES["repair"] is False, (
+        "repair costs a second model call per failing agent. Shipping it on by "
+        "default silently doubles a customer's bill.")
+
+
+def test_disabling_the_rules_entirely_skips_the_checks(structured):
+    """`enabled: false` is a real off switch: no violations recorded, nothing
+    re-asked, output passed through exactly as the model produced it."""
+    ctx = _FakeCtx('{"summary": "Phase 1 then Phase 2, budget $5,000."}',
+                   enabled=False)
+    payload, unrepaired = _run(structured.ask_json(
+        ctx, "sys", "user", rule_set=rules.SYNTHESIS, upstream=""))
+
+    assert len(ctx.calls) == 1
+    assert unrepaired == []
+    assert payload["summary"].startswith("Phase 1")
+
+
+def test_repair_on_costs_a_second_call_only_for_an_agent_that_failed(structured):
+    """The opt-in is proportional: a clean agent still costs one call."""
+    clean = _FakeCtx('{"summary": "Grounded prose, no figures."}', repair=True)
+    _run(structured.ask_json(clean, "sys", "user", rule_set=rules.SYNTHESIS,
+                             upstream=""))
+    assert len(clean.calls) == 1
+
+    failed = _FakeCtx('{"summary": "Phase 1 then Phase 2."}',
+                      '{"summary": "Ordered by dependency."}', repair=True)
+    _run(structured.ask_json(failed, "sys", "user", rule_set=rules.SYNTHESIS,
+                             upstream=""))
+    assert len(failed.calls) == 2
+
+
+def test_a_repair_that_trades_one_defect_for_another_is_rejected(structured):
+    """Counting alone is not enough. This rewrite drops two ungrounded figures and
+    invents a numbered plan instead — a lower count, and not an improvement. The
+    reviewer was told about the figures; nobody asked for a schedule."""
+    ctx = _FakeCtx('{"summary": "Budget $5,000 over 6 months and 30 days."}',
+                   '{"summary": "Phase 1 discovery, then Phase 2 delivery."}',
+                   repair=True)
+    payload, unrepaired = _run(structured.ask_json(
+        ctx, "sys", "user", rule_set=rules.SYNTHESIS, upstream=""))
+
+    assert payload["summary"].startswith("Budget"), "the original must be kept"
+    assert all("invented-numbering" not in v for v in unrepaired)
+    assert any("re-ask introduced invented-numbering" in log for log in ctx.logs)
+
+
+def test_a_per_agent_override_can_turn_repair_on_for_one_agent_only():
+    """A customer should be able to pay for the report and not for the four
+    research agents. The override merges over the engine default, so an agent that
+    only wants repair writes {"repair": true} and nothing else."""
+    from app.common.config import OUTPUT_RULES, output_rules_for
+
+    assert output_rules_for({}) == OUTPUT_RULES
+    assert output_rules_for({"outputRules": {"repair": True}}) == {
+        **OUTPUT_RULES, "repair": True}
+    assert output_rules_for({"outputRules": {"enabled": False}})["enabled"] is False
+
+
+def test_the_setting_reaches_every_agent_object():
+    """Config that does not arrive on the Agent is decoration. Same reason
+    test_config_keys pins maxTokens.
+
+    Checked against the PER-AGENT merge rather than the engine default. No agent
+    overrides it today — one did briefly, and the measurement said not to (see
+    app/subagents/analysis/prompts.py) — but comparing against the default would stop
+    testing the path an override travels on, and would fail the moment somebody adds
+    one correctly. The synthetic case below covers the merge itself.
+    """
+    import json
+
+    from conftest import ORCH_ROOT
+
+    from app.common.config import output_rules_for
+    from app.orchestrator.registry import load_agents
+
+    specs = json.loads((ORCH_ROOT / "app" / "workflow.json").read_text())["agents"]
+    loaded = load_agents()
+    assert set(loaded) == set(specs), "every configured agent must load"
+    for agent_id, agent in loaded.items():
+        assert agent.output_rules == output_rules_for(specs[agent_id]), agent_id
+    # The merge must actually merge, whether or not the shipped config uses it.
+    assert output_rules_for({"outputRules": {"repair": True}})["repair"] is True
+    assert output_rules_for({})["repair"] is False
+
+
+# ---------------------------------------------------------------------------
+# The prompts must give a legal home to what the checks forbid
+# ---------------------------------------------------------------------------
+#
+# `finding-about-the-brief` fired in all four research agents and in the analysis
+# agent on the same run, and the cause was not the model ignoring an instruction.
+# It was two of my own instructions contradicting each other: rule 3 sent a gap in
+# the request to `dataLimitations`, and rule 4 then said `dataLimitations` was for
+# "ONLY genuinely missing evidence". The model had an observation it judged
+# important and no legal place to put it, so it put it in findings.
+#
+# A check that forbids something the prompt gives nowhere else to go is a check
+# that guarantees a repair call on every run. These tests pin the routing.
+
+def test_research_instructions_route_a_request_gap_to_data_limitations():
+    from app.common.research import RESEARCH_INSTRUCTIONS as text
+
+    assert "dataLimitations is the home for BOTH kinds of gap" in text, (
+        "the list that receives request-gaps must say it receives them")
+    assert "ONLY genuinely missing evidence" not in text, (
+        "this is the contradiction: it sent request-gaps to dataLimitations and "
+        "then narrowed dataLimitations to evidence-gaps, leaving the model no "
+        "legal home for the observation")
+
+
+def test_research_instructions_show_the_shape_being_forbidden():
+    """Abstract prohibitions lost five rounds to synonyms. What worked was quoting
+    the offending sentence back, which is what the repair instruction does — so the
+    first-pass prompt should do it too, and save the repair call."""
+    from app.common.research import RESEARCH_INSTRUCTIONS as text
+
+    assert "The request brief identifies" in text
+    assert "NOT" in text and "BUT" in text, "show the rewrite, not just the ban"
+
+
+def test_synthesis_rules_name_limitations_as_the_home_for_a_request_gap():
+    """Same fix on the synthesis side, where four analysis claims were flagged."""
+    import inspect
+
+    from app.common import synthesis
+
+    text = inspect.getsource(synthesis.synthesize)
+    assert "limitations" in text and "never a claim" in text
+    assert "The request brief identifies" in text, (
+        "quote the shape; 'write about the subject' alone did not hold")
+
+
+def test_synthesis_rules_still_forbid_run_history_as_content():
+    """The other dominant true positive: prior-run material carried into a
+    deliverable as a claim or a report section."""
+    import inspect
+
+    from app.common import synthesis
+
+    text = inspect.getsource(synthesis.synthesize)
+    assert "prior runs completed" in text.lower()
+    assert "run history" in text
+
+
+# ---------------------------------------------------------------------------
+# A label's digits are not a quantity; a decomposition counted is not invented
+# ---------------------------------------------------------------------------
+
+def test_a_tier_label_is_not_a_count_of_requests():
+    """Live false positive. "0.000005 USD per Tier-1 Request, 0.0000004 USD per
+    Tier-2 Request" reported "1 Request" and "2 Request" as ungrounded figures: the
+    hyphen in `Tier-1` opens a word boundary and `request` is a unit, so a tier label
+    was read as a count. The upstream said `Requests-Tier1`, so they were grounded
+    too — nothing about them was a quantity."""
+    upstream = ("Amazon Simple Storage Service: Requests-Tier1 at 0.000005 USD per "
+                "Requests; Requests-Tier2 at 0.0000004 USD per Requests; "
+                "TimedStorage-ByteHrs at 0.022 USD per GB-Mo.")
+    payload = {"summary": "S3 charges 0.000005 USD per Tier-1 Request, 0.0000004 USD "
+                          "per Tier-2 Request, and 0.022 USD per GB-Mo."}
+    assert rules.check(payload, upstream=upstream, rules=rules.SYNTHESIS) == []
+
+
+@pytest.mark.parametrize("text,figure", [
+    ("Set alarms on failure rate threshold (e.g., >1% Lambda errors).", "1%"),
+    ("Alert when processing lag exceeds 1 hour behind real-time.", "1 hour"),
+    ("Right-size memory allocation (128 MB to 10 GB) based on workload.", "128 MB"),
+])
+def test_the_label_tolerance_does_not_excuse_an_invented_threshold(text, figure):
+    """The invented thresholds from the same live run, all hedged with "e.g." —
+    which changes nothing, because an approver reads the number and not the hedge.
+    The tolerance is for label digits only."""
+    details = " ".join(v.detail for v in
+                       rules.check({"summary": text}, upstream="nothing here",
+                                   rules=rules.SYNTHESIS)
+                       if v.rule == "unsupported-figure")
+    assert f'"{figure}"' in details, text
+
+
+@pytest.mark.parametrize("text,label", [
+    ("S3 charges 0.000005 USD per Tier 1 Request.", "1 Request"),
+    ("Glue charges 0.308 USD per Gen-2 DPU-Hour.", "2 DPU-Hour"),
+    ("Athena charges 5 USD per Tier-1 Terabyte.", "1 Terabyte"),
+])
+def test_only_the_label_digits_are_excused_not_the_price(text, label):
+    """The USD amount in each of these is genuinely ungrounded here and SHOULD be
+    reported. What must not be reported is the label — the tolerance is narrow, and a
+    test asserting the whole sentence comes back clean would have hidden that."""
+    details = " ".join(v.detail for v in
+                       rules.check({"summary": text}, upstream="nothing here",
+                                   rules=rules.SYNTHESIS)
+                       if v.rule == "unsupported-figure")
+    assert f'"{label}"' not in details, f"label reported as a quantity: {text}"
+    assert "USD" in details, "the price itself is still ungrounded and must be named"
+
+
+def test_a_compound_count_is_grounded_by_a_synonym_decomposition():
+    """Live false positive: the report wrote "layers data flow across four stages"
+    where every upstream asset says "four-layer" and names all four. The count is the
+    evidence's; only the noun is the model's. Same family as the "four stages" case
+    already adjudicated FALSE in the 18:22 corpus."""
+    upstream = ("The evidence converges on a four-layer design: ingestion via "
+                "purpose-built services, processing, storage, and consumption.")
+    payload = {"summary": "The architecture layers data flow across four stages."}
+    assert not [v for v in rules.check(payload, upstream=upstream,
+                                       rules=rules.SYNTHESIS)
+                if v.rule == "invented-numbering"]
+
+
+def test_a_compound_count_is_grounded_by_a_plain_enumeration_upstream():
+    """Live false positive on "build analytics applicaiton on AWS".
+
+    `documentation_search` wrote "a consistent four-stage pipeline: collect, store,
+    process, and analyze/visualize" and was told it invented the structure. Its
+    evidence block contained the list verbatim, from an AWS page. The two existing
+    escapes both miss this shape: there are no `Stage 1 … Stage 4` labels for
+    `_upstream_series_size`, and the words "four stages" never appear anywhere for
+    `_COMPOUND_GROUND_RE` — the source states the count only by enumerating it.
+    """
+    upstream = ("A typical analytics pipeline has the following stages:\n"
+                "1. Collect data\n2. Store the data\n3. Process the data\n"
+                "4. Analyze and visualize the data")
+    payload = {"summary": "AWS analytics follows a consistent four-stage pipeline: "
+                          "collect, store, process, and analyze/visualize."}
+    assert not [v for v in rules.check(payload, upstream=upstream,
+                                       rules=rules.RESEARCH)
+                if v.rule == "invented-numbering"]
+
+
+def test_a_plain_enumeration_grounds_only_the_count_it_actually_lists():
+    """The escape must not become a blanket pass for any number.
+
+    Grounding "four stages" off a four-item list is right; grounding "six stages"
+    off the same list is the failure this whole rule exists to catch.
+    """
+    upstream = ("A typical analytics pipeline has the following stages:\n"
+                "1. Collect data\n2. Store the data\n3. Process the data\n"
+                "4. Analyze and visualize the data")
+    assert [v for v in rules.check({"summary": "It follows a six-stage pipeline."},
+                                   upstream=upstream, rules=rules.RESEARCH)
+            if v.rule == "invented-numbering"]
+
+
+def test_a_separate_numbered_list_does_not_extend_an_earlier_one():
+    """Why the walk stops at the first mismatch instead of skipping it.
+
+    A research prompt's evidence block carries several numbered lists, including the
+    instruction list appended to every research call. A permissive walk read the
+    four-item list above as NINE by hopping into the next list, which would have
+    grounded "nine stages" that nothing defines. Measured on the live upstream.
+    """
+    upstream = ("The following stages apply:\n1. Collect\n2. Store\n3. Process\n"
+                "4. Analyze\n\n=== HOW TO USE THESE INPUTS ===\n"
+                "1. The REQUEST is authoritative.\n2. Label every finding.\n"
+                "3. Findings are about the subject.\n4. Name the gaps.\n"
+                "5. Counts must match their lists.")
+    assert rules._upstream_enumeration_size(upstream, "stage") == 4
+    assert [v for v in rules.check({"summary": "It uses a nine-stage pipeline."},
+                                   upstream=upstream, rules=rules.RESEARCH)
+            if v.rule == "invented-numbering"]
+
+
+def test_a_decimal_rate_is_not_read_as_an_enumerated_item():
+    """AWS rates are full of "0.000005 USD"; none of it is a list.
+
+    `_ENUM_ITEM_RE` requires whitespace after the dot for exactly this reason —
+    cost_research upstream is mostly unit prices.
+    """
+    upstream = ("Pricing stages: S3 Requests-Tier1 at 0.000005 USD per Request; "
+                "Glue USE1-Catalog-Storage at 0.00001 USD per Obj-Month.")
+    assert rules._upstream_enumeration_size(upstream, "stage") == 0
+
+
+def test_an_unrelated_numbered_list_far_from_the_noun_does_not_ground_it():
+    """The list has to be the one the noun introduces, not merely present."""
+    upstream = ("Stages matter for planning. " + "Filler prose. " * 30
+                + "\n1. Collect\n2. Store\n3. Process\n4. Analyze")
+    assert rules._upstream_enumeration_size(upstream, "stage") == 0
+
+
+def test_an_unrelated_count_upstream_does_not_ground_a_plan():
+    """The tolerance is narrow on purpose: `_STRUCTURE_NOUNS` names parts of a
+    decomposition. "Seven services have published pricing" must not license a
+    seven-phase rollout."""
+    found = rules.check({"summary": "We propose a seven-phase rollout."},
+                        upstream="Seven services have published pricing.",
+                        rules=rules.SYNTHESIS)
+    assert [v for v in found if v.rule == "invented-numbering"]
+
+
+# ---------------------------------------------------------------------------
+# action-on-unavailable: an unspecified requirement is not missing evidence
+# ---------------------------------------------------------------------------
+
+def test_asking_for_an_unspecified_requirement_is_a_real_action():
+    """Live false positive, and the one that mattered most: the rule fired on the
+    single most useful recommendation the run produced. "The source type is not
+    provided" beside "Obtain and document: (1) data source type, (2) expected data
+    volume…" is not a dead end — it is a person answering a question. Suppressing it
+    to satisfy the check would have let the check damage the deliverable."""
+    payload = {"items": [{
+        "title": "Capture workload profile to unblock service selection",
+        "detail": "Obtain and document: (1) data source type; (2) expected data "
+                  "volume; (3) latency requirement; (4) budget or cost constraint.",
+        "rationale": "Service selection is documented as purpose-built services "
+                     "matched to data source type, but the source type is not "
+                     "provided."}]}
+    assert not [v for v in rules.check(payload, upstream="", rules=rules.SYNTHESIS)
+                if v.rule == "action-on-unavailable"]
+
+
+@pytest.mark.parametrize("payload", [
+    {"items": [{"title": "Reuse prior work",
+                "detail": "Consult the artifacts from the four prior runs.",
+                "rationale": "Those artifacts are not available."}]},
+    {"sections": [{"sectionType": "recommendations",
+                   "content": "Attempt to retrieve prior run artifacts, which may "
+                              "not be retrievable."}]},
+    # Both kinds of noun present: the artifact wins, because a fetch aimed at one is
+    # the defect and a false negative here is cheaper than re-breaking it.
+    {"items": [{"title": "Get the volumes",
+                "detail": "Retrieve the prior run output files.",
+                "rationale": "The data volume is not provided and those outputs are "
+                             "not available."}]},
+])
+def test_fetching_an_unavailable_artifact_still_fires(payload):
+    """The defect the rule was built for, in both the blunt and hedged forms."""
+    assert [v for v in rules.check(payload, upstream="", rules=rules.SYNTHESIS)
+            if v.rule == "action-on-unavailable"]
+
+
+# ---------------------------------------------------------------------------
+# over-budget: the only threshold that is configuration
+# ---------------------------------------------------------------------------
+
+def test_no_budget_means_no_check():
+    """Off by default. A framework that imposed a word count on a workflow it knows
+    nothing about would be wrong more often than right."""
+    fat = {"summary": "word " * 5000}
+    assert not [v for v in rules.check(fat, upstream="", rules=rules.SYNTHESIS)
+                if v.rule == "over-budget"]
+
+
+def test_a_budget_is_enforced_and_names_the_longest_field():
+    """The message has to be actionable: which fields to cut, and the two things not
+    to do — drop a section, or compress by numbering (both observed live when the
+    report was told to be shorter)."""
+    payload = {"sections": [
+        {"sectionType": "findings", "content": "word " * 100},
+        {"sectionType": "recommendations", "content": "word " * 900},
+    ]}
+    found = [v for v in rules.check(payload, upstream="", rules=rules.SYNTHESIS,
+                                   max_words=400) if v.rule == "over-budget"]
+    assert len(found) == 1
+    assert "1000 words against a budget of 400" in found[0].detail
+    assert "recommendations" in found[0].detail, "name the field to cut"
+    assert "numbering" in found[0].detail, "and the wrong way to get shorter"
+
+
+def test_a_payload_inside_its_budget_is_silent():
+    payload = {"sections": [{"sectionType": "findings", "content": "word " * 50}]}
+    assert not [v for v in rules.check(payload, upstream="", rules=rules.SYNTHESIS,
+                                       max_words=400) if v.rule == "over-budget"]
+
+
+def test_the_budget_travels_from_config_to_the_check():
+    """Config that does not reach the check is decoration. This is the whole path:
+    workflow.json -> output_rules_for -> ask_json -> rules.check."""
+    import inspect
+
+    from app.common import structured
+    from app.common.config import output_rules_for
+
+    assert output_rules_for({"outputRules": {"maxWords": 250}})["maxWords"] == 250
+    src = inspect.getsource(structured)
+    assert 'settings.get("maxWords")' in src, "ask_json must read the config value"
+    assert src.count("max_words=max_words") == 2, (
+        "both the first check and the post-repair check need the budget, or a repair "
+        "that stays over budget would look like an improvement")
+
+
+def test_a_gap_and_a_fetch_a_thousand_words_apart_are_not_one_statement():
+    """Live false positive. A report section is ONE entry and runs to a thousand
+    words, so "private pricing and data transfer between services are not included"
+    was paired with "Obtain from the requester: (1) data type…" from a different
+    paragraph on a different subject."""
+    content = ("Specify the workload profile to resolve service selection. Obtain "
+               "from the requester: (1) data type; (2) expected volume. "
+               + "Filler prose about the architecture. " * 90
+               + "Free-tier allowances, committed-use discounts, private pricing and "
+                 "data transfer between services are not included.")
+    payload = {"sections": [{"sectionType": "recommendations", "content": content}]}
+    assert not [v for v in rules.check(payload, upstream="", rules=rules.SYNTHESIS)
+                if v.rule == "action-on-unavailable"]
+
+
+def test_the_reach_across_one_entry_is_preserved():
+    """The rule deliberately spans an item's `detail` and its `rationale`, two
+    sentences apart — that is the case it was built for, and narrowing the window
+    must not lose it."""
+    payload = {"items": [{"title": "Reuse prior work",
+                          "detail": "Consult the artifacts from the four prior runs.",
+                          "rationale": "Those artifacts are not available."}]}
+    assert [v for v in rules.check(payload, upstream="", rules=rules.SYNTHESIS)
+            if v.rule == "action-on-unavailable"]
+
+
+def test_a_tie_that_is_genuinely_shorter_is_kept(structured):
+    """`over-budget` is a MAGNITUDE, and counting violations cannot see it. Measured
+    on a real report: a re-ask cut it from 2453 words to 1704 against an 1800 budget
+    and was thrown away, because one `over-budget` violation before still meant one
+    after. The extra call is already spent at that point."""
+    fat = '{"summary": "' + ("word " * 300).strip() + '"}'
+    lean = '{"summary": "' + ("word " * 120).strip() + '"}'
+    ctx = _FakeCtx(fat, lean, max_words=100)
+    payload, unrepaired = _run(structured.ask_json(
+        ctx, "sys", "user", rule_set=rules.SYNTHESIS, upstream=""))
+    assert len(ctx.calls) == 2
+    assert len(payload["summary"].split()) == 120, "the shorter answer must win"
+    assert len(unrepaired) == 1, "and it is still over budget, which is recorded"
+
+
+def test_a_tie_that_is_not_shorter_keeps_the_first_answer(structured):
+    """The other half, and the reason a tie is not accepted blindly: a rewrite with
+    the same count can have dropped real content. Here it loses `limitations` and
+    adds another invented label."""
+    ctx = _FakeCtx('{"summary": "Phase 1 then Phase 2.", "limitations": ["real gap"]}',
+                   '{"summary": "Phase 1 then Phase 2 then Phase 3."}')
+    payload, unrepaired = _run(structured.ask_json(
+        ctx, "sys", "user", rule_set=rules.SYNTHESIS, upstream=""))
+    assert payload.get("limitations") == ["real gap"]
+    assert len(unrepaired) == 1
+
+
+# ---------------------------------------------------------------------------
+# A check that was removed, and the evidence for removing it
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text", [
+    # The two real defects it used to catch. Both now go unflagged, which is the
+    # accepted cost — recorded here so the trade is visible rather than forgotten.
+    ("Workflows require nine core best practices: tool-first design, pure-function "
+     "invocation, single-tool agents, externalized prompts, model-consortium design, "
+     "clean separation, containerized deployment, and the KISS principle."),
+    ("Pipelines decompose into five functional layers: ingestion, processing, "
+     "storage/cataloging, and consumption."),
+    # And the eighth false-positive shape, the one that ended it: five layers are
+    # named and the sixth "item" is a trailing participial clause.
+    ("Serverless architectures decompose into five logical layers: event "
+     "trigger/interface, orchestration, service, data, consumption, enabling "
+     "independent scaling and recovery."),
+])
+def test_a_count_against_prose_is_no_longer_checked(text):
+    """The inline-enumeration check was REMOVED. It compared a stated count against
+    the list in the same sentence, which `_check_counts` cannot do because prose is
+    not a schema field.
+
+    It caught two real defects. It also produced eight distinct false-positive shapes
+    on real output inside one day — a conjunction inside a clause, a narrowing word in
+    the noun capture, "Lambda vs. Glue" truncating the sentence, a verb between the
+    count and the colon, a nested sub-list after a dash, long clauses with a subset
+    quoted, compound items over-split, and a trailing participial clause counted as an
+    item. On its final run both firings were false and neither was a defect.
+
+    Deciding what a colon governs is parsing English, and every narrowing moved the
+    rule closer to matching only its own fixtures. A check a reviewer learns to
+    distrust is worse than no check, because they stop reading the panel.
+
+    If this needs covering again: do it in the prompts, or change the schema so the
+    enumeration is a field. Do not re-add a ninth narrowing."""
+    assert not [v for v in rules.check({"summary": text}, upstream="",
+                                       rules=rules.SYNTHESIS)
+                if v.rule == "count-mismatch"], text[:60]
+
+
+def test_the_reliable_half_of_the_count_check_survives():
+    """`_check_counts` compares a stated count against a list the PAYLOAD ACTUALLY
+    HAS, where there is nothing to parse and nothing to get wrong. That is the half
+    worth keeping, and removing its sibling must not have taken it with it."""
+    payload = {"summary": "Nine open questions on the subject remain unresolved."}
+    found = rules.check(payload, upstream="", rules=rules.SYNTHESIS,
+                        extra_counts={"openQuestions": 5, "keyQuestions": 6})
+    assert [v for v in found if v.rule == "count-mismatch"]
+    assert "5 or 6" in found[0].detail

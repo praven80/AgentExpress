@@ -12,15 +12,56 @@ disabled. An agent can therefore call them unconditionally.
 import json as _json
 import re
 
+from app.common.config import OUTPUT_RULES, TOOLS
 from app.common.llm import run_llm
 from app.common.sink import WorkflowCancelled, emit, is_cancelled
-from app.features.gateway.client import query_tool
+from app.features.gateway.client import query_tool, query_tool_rows
 from app.features.gateway.client import retrieve as retrieve_kb
 
 
 def _slug(text: str) -> str:
     """Lowercase, hyphenated, alphanumeric-only slug (safe for a memory actorId)."""
     return re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+
+
+# Words that say nothing about the subject, so sharing one is not evidence that a
+# recalled insight belongs to this run.
+_TOPIC_STOPWORDS = frozenset({
+    "about", "after", "also", "with", "what", "when", "where", "which", "while",
+    "your", "user", "users", "request", "requests", "build", "building", "design",
+    "designing", "create", "creating", "implement", "implementing", "provide",
+    "provides", "using", "used", "from", "into", "that", "this", "they", "them",
+    "then", "than", "have", "has", "should", "would", "could", "will", "must",
+    "need", "needs", "want", "wants", "make", "makes", "more", "most", "some",
+    "such", "only", "other", "another", "over", "under", "both", "each", "many",
+    "much", "very", "help",
+})
+
+
+def _significant(text: str) -> set[str]:
+    """Content words of four characters or more, minus the stopwords above."""
+    return {w for w in re.findall(r"[a-z]{4,}", (text or "").lower())
+            if w not in _TOPIC_STOPWORDS}
+
+
+def _on_topic(recalled: list[str], query: str) -> list[str]:
+    """Recalled insights that share at least one content word with the query.
+
+    A SECOND LINE OF DEFENCE behind namespace scoping (see _memory_actor). An
+    operator who sets one `subject_id` across several topics is asking for one
+    namespace, and semantic search inside it returns its top_k whether or not
+    anything is actually close — which is how a pipeline run was handed insights
+    about an agentic AI application.
+
+    The bar is deliberately one shared word: a near-miss on wording should still
+    recall, and the case this exists to stop shares nothing at all. With no
+    significant words in the query there is nothing to compare, so everything is
+    kept rather than silently discarded.
+    """
+    wanted = _significant(query)
+    if not wanted:
+        return recalled
+    return [item for item in recalled if _significant(item) & wanted]
 
 
 class AgentContext:
@@ -35,6 +76,13 @@ class AgentContext:
         # rather than coded.
         self.tool = getattr(agent, "tool", None)
         self.corpus = getattr(agent, "corpus", None)
+        # Output-rule enforcement for this agent: {"enabled": bool, "repair": bool}.
+        # `repair` costs a second model call, so it is config, not a framework
+        # choice — see config.output_rules_for. Defaulted here as well as in the
+        # registry so a hand-built Agent (a test, a customer's own runner) behaves
+        # like the shipped default instead of raising.
+        self.output_rules = dict(getattr(agent, "output_rules", None)
+                                 or OUTPUT_RULES)
         self.state = state
         self.session_id = config["configurable"]["thread_id"]
         self.topic = state.get("topic", "")
@@ -121,6 +169,40 @@ class AgentContext:
         """
         return await query_tool(tool_key, query)
 
+    async def call_tool_rows(self, tool_key: str, query: str | None = None):
+        """The same tool call as `call_tool`, returning (rows, field_map, mode).
+
+        For an agent that COMPUTES its output rather than asking a model for it. It
+        needs the tool's records, not the prose rendering a model reads, and it must
+        not have to know which field names this particular tool uses — so:
+
+          rows       the tool's results as dicts, exactly as the target returned
+          field_map  the tool's `rowFields` block from workflow.json: the roles this
+                     agent needs ("id", "label", "outcome", "timestamp") mapped onto
+                     whatever THIS target calls them
+
+        That mapping is what keeps a deterministic agent config-driven. Point the
+        tool at a different Lambda, warehouse or API, set `rowFields` to its column
+        names, and the agent is unchanged. Without it the agent would have to know
+        one target's field names, and swapping the target would need a code edit —
+        which would break the promise this framework is built on.
+
+        `query` defaults to the retrieval query derived the same way `call_tool`
+        derives it, so there is no second convention to learn. Pass it explicitly
+        when the tool's argument is not a search phrase — the pricing tool wants a
+        LIST OF SERVICES the agent worked out first, and sending it the run's
+        objective instead would price nothing.
+        """
+        rows, mode = await query_tool_rows(
+            tool_key, query if query is not None else self._retrieval_query())
+        field_map = dict((TOOLS.get(tool_key) or {}).get("rowFields") or {})
+        return rows, field_map, mode
+
+    def _retrieval_query(self) -> str:
+        """The query this agent sends its tool: the brief's objective, else the topic."""
+        from app.common import assets
+        return assets.brief_query(assets.brief(self), self.topic)
+
     async def retrieve(self, query: str, doc_type: str | None = None):
         """Retrieve grounded context from the KB via the Gateway; returns (text, mode).
 
@@ -180,12 +262,32 @@ class AgentContext:
         except Exception:  # noqa: BLE001
             pass
 
+    # How much of a derived subject slug to keep. Long enough that two different
+    # topics do not collide, short enough to stay a legible namespace segment.
+    _SUBJECT_SLUG_CHARS = 48
+
     def _memory_actor(self) -> str:
-        """Long-term memory actor id: the agent, scoped by subject when one is set
-        (e.g. "analysis-acme"). The semantic strategy's namespace template
-        "insights/{actorId}" turns this into the per-agent, per-subject namespace
-        "insights/analysis-acme"."""
-        subject = _slug(self.subject_id)
+        """Long-term memory actor id: the agent, scoped by subject.
+
+        `subject_id` is what an operator sets to group runs deliberately — a
+        customer, an account, a product line — and it wins when present.
+
+        WITHOUT ONE, THE SUBJECT IS DERIVED FROM THE TOPIC, and the fallback that
+        used to be here is why. Returning a bare `agent_id` put every request in
+        the deployment into ONE namespace per agent, so recall reached across
+        unrelated subjects: a run designing a serverless data pipeline was handed
+        "the user is interested in building an agentic AI application" and
+        "an analysis identified nine core architectural components", both from an
+        earlier run on a different topic. The agents were right not to use them —
+        the prompt says recalled material is never a rationale — but the framework
+        should not have offered them, and every synthesis agent paid tokens for it.
+
+        The tradeoff, stated plainly: two runs whose topics are worded differently
+        no longer share memory. That is a MISS, where the old behaviour was a wrong
+        HIT, and a miss is the one a reader can survive. An operator who wants
+        accumulation across topics sets `subject_id` and gets exactly that.
+        """
+        subject = _slug(self.subject_id) or _slug(self.topic)[:self._SUBJECT_SLUG_CHARS]
         return f"{self.agent_id}-{subject}" if subject else self.agent_id
 
     def _record_memory(self, op: str, namespace: str, query: str, result_text: str,
@@ -251,7 +353,7 @@ class AgentContext:
                 "\n---\n".join(str(x) for x in results) if results else "(no matching memories)",
                 int((_t.perf_counter() - start) * 1000))
             combined.extend(results)
-        return combined
+        return _on_topic(combined, query)
 
     async def memory_store(self, content: str) -> None:
         """Store an insight in long-term memory (scoped to this agent + subject)

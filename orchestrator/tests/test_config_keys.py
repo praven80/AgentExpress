@@ -35,6 +35,7 @@ AGENT_KEYS = {
     "corpus": "registry.py -> agent.corpus; validated against tools.<kb>.corpora",
     "produces": "nodes.py, injected into the agent's task prompt",
     "access": "UI data-source chip, ONLY for an agent with no `tool`",
+    "outputRules": "registry.py -> agent.output_rules; overrides orchestrator.outputRules",
     "agentcore": "the feature block, keys below",
 }
 
@@ -57,6 +58,8 @@ TOP_LEVEL = {
 
 ORCHESTRATOR_KEYS = {
     "defaultModel": "config.py:MODEL_ID fallback",
+    "outputRules": "config.py:OUTPUT_RULES -> structured.ask_json (enabled/repair)",
+    "runtimeInvoke": "config.py:RUNTIME_INVOKE -> agentcore_agent._agentcore (SDK retries/timeout)",
     "policy": "policy.tf / tool-plane.ts - Cedar engine on/off + mode",
     "chatbot": "bff/chatbot.py + the UI gate",
 }

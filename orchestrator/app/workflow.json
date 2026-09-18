@@ -2,6 +2,8 @@
   "$comment": "THIS FILE IS THE WORKFLOW — edit it (plus terraform.tfvars) and you have your own multi-agent system. Blocks: orchestrator (engine settings), ui (branding), guardrail (content safety), authorization (who may approve/re-run/cancel/evaluate/delete), tools (your data sources), agents (one per folder under app/subagents/<id>/), steps (topology + review gates). Both Terraform and CDK read this file, so declaring a tool or agent here provisions its infrastructure — no IaC edits. Every key is documented in orchestrator/docs/WORKFLOW_REFERENCE.md. Reformat after editing: python3 format_workflow.py",
   "orchestrator": {
     "defaultModel": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "outputRules": { "enabled": true, "repair": false },
+    "runtimeInvoke": { "maxAttempts": 1, "readTimeoutSeconds": 120 },
     "policy": { "enabled": true, "mode": "ENFORCE" },
     "chatbot": {
       "enabled": true,
@@ -97,35 +99,36 @@
       "listingMode": "DYNAMIC",
       "description": "AWS Knowledge MCP Server - managed by AWS, fronted by the Gateway over Streamable HTTP. Nothing to deploy, no credentials. Publishes five tools over live AWS content."
     },
-    "runs": {
+    "pricing": {
       "type": "lambda",
       "source": "tool_lambda",
-      "call": "prior_runs",
-      "arg": "topic",
-      "args": { "limit": 8 },
-      "description": "This deployment's own run history, via an AWS Lambda target. The type=\"lambda\" demonstration: a Lambda reaches what the Gateway cannot - a warehouse, an RDBMS, a VPC.",
+      "call": "aws_prices",
+      "arg": "services",
+      "description": "Real AWS on-demand unit prices, via an AWS Lambda target. The type=\"lambda\" demonstration: a Lambda reaches what the Gateway cannot - a warehouse, an RDBMS, a VPC, or here a control-plane API with no MCP server in front of it. Returns RATES, never a total: a total needs usage volumes, which are a property of the workload and not of AWS.",
+      "rowFields": {
+        "service": "service",
+        "dimension": "dimension",
+        "unit": "unit",
+        "price": "pricePerUnit",
+        "currency": "currency",
+        "region": "region",
+        "requested": "requestedAs"
+      },
       "toolSchema": [
         {
-          "name": "prior_runs",
-          "description": "Past workflow runs whose topic matches a phrase, newest first, with the outcome of each.",
+          "name": "aws_prices",
+          "description": "On-demand unit prices for the named AWS services in one region, from the AWS Price List Query API. Unit rates only, never a total.",
           "properties": {
-            "topic": {
+            "services": {
               "type": "string",
               "required": true,
-              "description": "Phrase to match against past run topics."
+              "description": "Comma-separated AWS service names, e.g. \"Amazon Bedrock, AWS Lambda, DynamoDB\"."
             },
-            "limit": {
-              "type": "integer",
+            "region": {
+              "type": "string",
               "required": false,
-              "description": "Maximum runs to return (1-25, default 5)."
+              "description": "Region code to price for, e.g. \"us-east-1\". Defaults to the deployment's own region."
             }
-          }
-        },
-        {
-          "name": "run_costs",
-          "description": "Per-agent cost, latency and token totals for one run, from the telemetry table.",
-          "properties": {
-            "session_id": { "type": "string", "required": true, "description": "The run's session id." }
           }
         }
       ]
@@ -195,11 +198,11 @@
         "policy": { "enabled": true }
       }
     },
-    "history_research": {
-      "name": "Prior Run Research",
+    "cost_research": {
+      "name": "Cost Research",
       "runtime": "main",
-      "tool": "runs",
-      "maxTokens": 4000,
+      "tool": "pricing",
+      "maxTokens": 1500,
       "produces": "research-finding",
       "agentcore": {
         "evaluations": {
@@ -244,7 +247,8 @@
           "auto": true,
           "evaluators": ["Builtin.Helpfulness", "Builtin.InstructionFollowing"]
         }
-      }
+      },
+      "outputRules": { "repair": true }
     },
     "report": {
       "name": "Report",
@@ -259,13 +263,14 @@
           "auto": true,
           "evaluators": ["Builtin.Faithfulness", "Builtin.Coherence", "Builtin.Conciseness"]
         }
-      }
+      },
+      "outputRules": { "maxWords": 1800, "repair": true }
     }
   },
   "steps": [
     { "agent": "intake", "hitl": true },
     {
-      "parallel": ["knowledge_research", "web_search", "documentation_search", "history_research"],
+      "parallel": ["knowledge_research", "web_search", "documentation_search", "cost_research"],
       "hitl": true,
       "gateId": "research",
       "gateName": "Research"

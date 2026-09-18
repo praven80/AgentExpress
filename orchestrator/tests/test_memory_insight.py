@@ -104,3 +104,72 @@ def test_an_ordinary_sentence_mentioning_a_user_survives(ctx):
     kept = ctx._drop_meta_sentences(
         "Each user session needs an isolated memory namespace.")
     assert kept == "Each user session needs an isolated memory namespace."
+
+
+# ---------------------------------------------------------------------------
+# Recall must not reach across unrelated subjects
+# ---------------------------------------------------------------------------
+
+TOPIC = "Design a serverless data pipeline on AWS"
+# Verbatim from a live run's recall panel, on the pipeline request above. Both were
+# stored by an EARLIER run about an agentic AI application.
+BLED_THROUGH = [
+    "The user is interested in building an agentic AI application.",
+    ("The user is working on building an agentic AI application. An analysis "
+     "identified nine core architectural components and five orchestration "
+     "patterns required for the system."),
+]
+
+
+def test_an_insight_from_an_unrelated_subject_is_dropped():
+    """Every request in the deployment shared one namespace per agent, so semantic
+    search returned its top_k whether or not anything was close. The agents
+    correctly refused to use these as rationale — the prompt forbids it — but the
+    framework should not have offered them, and every synthesis agent paid tokens
+    to read them."""
+    from app.common.context import _on_topic
+    assert _on_topic(BLED_THROUGH, TOPIC) == []
+
+
+def test_an_insight_about_this_subject_survives():
+    """The bar is one shared content word, so a near-miss on wording still recalls.
+    A filter that dropped these would be worse than the leak it replaced."""
+    from app.common.context import _on_topic
+    on_topic = [
+        ("Serverless data pipelines on AWS organise work into ingestion, storage, "
+         "processing and consumption layers."),
+        "A prior pipeline run found Glue ETL DPU-hours dominate the bill.",
+    ]
+    assert _on_topic(on_topic, TOPIC) == on_topic
+
+
+def test_a_query_with_nothing_to_compare_keeps_everything():
+    """No significant words means no evidence either way, and silently discarding
+    a recall is the failure this rule is supposed to prevent."""
+    from app.common.context import _on_topic
+    assert _on_topic(BLED_THROUGH, "") == BLED_THROUGH
+    assert _on_topic(BLED_THROUGH, "the it a") == BLED_THROUGH
+
+
+def test_sharing_only_a_filler_word_is_not_sharing_a_subject():
+    """"building", "request" and "user" appear in almost every insight this system
+    stores, so matching on them would readmit everything the rule just excluded."""
+    from app.common.context import _on_topic
+    assert _on_topic(["The user is building something for a request."],
+                     "Design a serverless data pipeline") == []
+
+
+def test_the_namespace_is_scoped_by_topic_when_no_subject_is_set():
+    """The defect was the FALLBACK: no subject_id meant a bare agent id, which is
+    one shared bucket for every topic in the deployment."""
+    from app.common.context import _slug
+    a = _slug(TOPIC)[:48]
+    b = _slug("Build a agentic ai application4")[:48]
+    assert a and b and a != b, "two topics must not share one namespace"
+
+
+def test_an_explicit_subject_still_wins():
+    """`subject_id` is how an operator groups runs deliberately — a customer, an
+    account — and deriving from the topic must not take that away."""
+    from app.common.context import _slug
+    assert _slug("ACME Corp") == "acme-corp"

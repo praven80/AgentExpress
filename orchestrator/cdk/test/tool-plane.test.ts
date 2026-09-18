@@ -186,10 +186,10 @@ describe("the built-in demo function (source: tool_lambda)", () => {
   const BUILTIN: ToolSpec = {
     type: "lambda",
     source: "tool_lambda",
-    call: "prior_runs",
-    arg: "topic",
+    call: "aws_prices",
+    arg: "services",
     toolSchema: [
-      { name: "prior_runs", properties: { topic: { type: "string", required: true } } },
+      { name: "aws_prices", properties: { services: { type: "string", required: true } } },
     ],
   };
 
@@ -205,7 +205,7 @@ describe("the built-in demo function (source: tool_lambda)", () => {
     });
     new ToolPlane(stack, "ToolPlane", {
       agentName: "test_orch",
-      tools: { runs: BUILTIN },
+      tools: { pricing: BUILTIN },
       toolApiKeys: {},
       gatewayDiscoveryUrl: "https://example.test/.well-known/openid-configuration",
       gatewayClientId: "client-abc",
@@ -227,43 +227,44 @@ describe("the built-in demo function (source: tool_lambda)", () => {
     // Name prefixed with ToolLambda- so a scoped deploy policy can express it
     // without granting lambda:* on every function in the account.
     template.hasResourceProperties("AWS::Lambda::Function", {
-      FunctionName: "ToolLambda-test_orch-runs",
+      FunctionName: "ToolLambda-test_orch-pricing",
       Handler: "handler.lambda_handler",
       Runtime: "python3.12",
     });
   });
 
-  it("wires the run-data table names into its environment", () => {
+  it("pins the Price List API endpoint region, and passes nothing else", () => {
+    // The Price List Query API is published in only two regions and describes prices
+    // for all of them, so this is where the ENDPOINT lives — not the region being
+    // priced. Pinned so the tool works on a deployment anywhere.
     const fn = Object.values<any>(template.findResources("AWS::Lambda::Function")).find(
-      (f) => f.Properties.FunctionName === "ToolLambda-test_orch-runs"
+      (f) => f.Properties.FunctionName === "ToolLambda-test_orch-pricing"
     );
     const vars = fn.Properties.Environment.Variables;
-    expect(Object.keys(vars).sort()).toEqual(["STATUS_TABLE", "TELEMETRY_TABLE"]);
+    expect(Object.keys(vars).sort()).toEqual(["PRICING_API_REGION"]);
+    expect(vars.PRICING_API_REGION).toBe("us-east-1");
   });
 
-  it("gives it READ-ONLY access to those tables and nothing else", () => {
-    // It reports on run history; it has no reason to write anything. A demo function
-    // with write access to the framework's own state would be a poor example to ship.
-    const actions = statements(template)
-      .flatMap((s) => asList(s.Action))
-      .filter((a: string) => String(a).startsWith("dynamodb:"));
-    expect(actions.length).toBeGreaterThan(0);
-    // The exact read verbs are CDK's `grantReadData` set and may change between
-    // versions; what must hold is that NOTHING here can mutate the table.
-    for (const a of actions) {
-      expect(a).not.toMatch(/Put|Update|Delete|Write|Create|Restore|Tag/i);
-    }
-    expect(actions).toContain("dynamodb:Query");
-    expect(actions).toContain("dynamodb:Scan");
-    // And no wildcard smuggling a write in.
-    expect(actions).not.toContain("dynamodb:*");
+  it("reads the PUBLIC price list and touches no customer data", () => {
+    // This is what lets `source` deploy a framework-owned function at all: its
+    // execution role is fixed and reads nothing belonging to the customer. A demo
+    // function with access to the framework's own state would be a poor example.
+    const actions = statements(template).flatMap((s) => asList(s.Action)).map(String);
+    expect(actions).toContain("pricing:GetProducts");
+    expect(actions).toContain("pricing:DescribeServices");
+    expect(actions).not.toContain("pricing:*");
+    // And NOTHING anywhere in this template touches the framework's own datastore.
+    // The demo function used to hold a DynamoDB read grant on the run tables; it
+    // reads the public price list now, so a `dynamodb:` action reappearing here
+    // means a data-plane grant crept back into a framework-deployed function.
+    expect(actions.filter((a) => /^dynamodb:/i.test(a))).toEqual([]);
   });
 
   it("registers the target against the function it just deployed", () => {
     // Not a literal ARN from config — a Fn::GetAtt on the function in this stack,
     // which is what keeps the committed workflow.json account-neutral.
     const arn = lambdaTarget(template).LambdaArn;
-    expect(arn["Fn::GetAtt"][0]).toMatch(/ToolLambdaruns/);
+    expect(arn["Fn::GetAtt"][0]).toMatch(/ToolLambdapricing/);
     expect(arn["Fn::GetAtt"][1]).toBe("Arn");
   });
 
@@ -276,10 +277,11 @@ describe("the built-in demo function (source: tool_lambda)", () => {
     });
   });
 
-  it("fails loudly when the run-data tables were not passed in", () => {
-    // Better than deploying a function whose environment is missing the table it
-    // reads, which would only fail on the first real invocation.
-    expect(() => plane({ runs: BUILTIN })).toThrow(/needs this deployment's run-data tables/);
+  it("needs no deployment tables at all", () => {
+    // It reads only the public price list, so it deploys without being handed any
+    // of this deployment's state. That is what makes the fixed execution role
+    // behind `source` defensible: there is nothing of the customer's in it.
+    expect(() => plane({ pricing: BUILTIN })).not.toThrow();
   });
 });
 

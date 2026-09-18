@@ -390,8 +390,14 @@ def _select_tool(tools, tool_key: str):
 
 
 async def _query_tool_impl(tool_key: str, query: str,
-                           extra_args: dict | None = None) -> Tuple[str, str]:
+                           extra_args: dict | None = None,
+                           *, raw: bool = False) -> Tuple[str, str]:
     """Call a Gateway tool by its workflow.json label. Returns (text, "gateway").
+
+    `raw=True` returns the UNFLATTENED tool result instead of rendered text, for
+    `query_tool_rows`. One call path either way — the auth, tool resolution, Cedar
+    permit, timeout and error handling below must not be duplicated for the sake of
+    a different return shape.
 
     Raises rather than returning placeholder text — see app/common/errors.py:
       ToolUnavailable — no Gateway configured, the tool isn't published, the call
@@ -447,7 +453,70 @@ async def _query_tool_impl(tool_key: str, query: str,
         raise ToolUnavailable(
             f"Tool '{tool.name}' call failed: {type(e).__name__}: {e}") from e
 
+    if raw:
+        return result
     return (_extract_chunks(result), "gateway")
+
+
+def extract_rows(result) -> list[dict]:
+    """A tool result as its LIST OF RECORDS, before it is flattened to prose.
+
+    `_extract_chunks` renders a result for a model to read. This returns the same
+    result as data, for an agent that COMPUTES its output instead of generating it
+    (see app/subagents/cost_research/agent.py). A model handed a table of numbers
+    will eventually do arithmetic nobody asked for — multiplying a real price by an
+    assumed volume, or subtracting two timestamps — and report the result as though
+    it had been measured. Where the output is a transformation of the rows, doing
+    the transformation in code removes the opportunity instead of forbidding it.
+
+    Such an agent needs the tool's fields, not its rendering. Reading them back out
+    of the prose would couple the agent to one tool's exact sentence shape, which is
+    the opposite of this framework's premise: a tool is a config entry, so pointing
+    it at a different Lambda, warehouse or API must not require an agent code
+    change. The FIELD NAMES are config too — see the tool's `rowFields` block in
+    workflow.json.
+
+    Returns [] when the tool returned no recognisable list, which the caller must
+    treat as "nothing to report", never as "there is nothing".
+    """
+    data = _unwrap_mcp(result)
+    if (isinstance(data, list)
+            and any(isinstance(d, dict) and _result_list(d) is not None for d in data)):
+        rows: list = []
+        for part in data:
+            rows.extend(_result_list(part) or [])
+    else:
+        rows = _result_list(data) or []
+    return [r for r in rows if isinstance(r, dict)]
+
+
+async def query_tool_rows(tool_key: str, query: str) -> tuple[list[dict], str]:
+    """Call a tool and return (rows, mode) instead of (text, mode).
+
+    Same call, same Cedar permit, same telemetry as `query_tool` — only the shape
+    handed back differs. Raises ToolUnavailable / ToolDenied identically, so a
+    deterministic agent still fails loudly rather than reporting an empty result
+    as though the source were empty.
+    """
+    from app.features.observability import otel
+    kind = str((TOOLS.get(tool_key) or {}).get("type", "mcp")).lower()
+    start = time.perf_counter()
+    # No `gen_ai.tool.mode` attribute here: this path only ever reaches the Gateway
+    # (it raises otherwise), so the value would be a constant. `query_tool` sets it
+    # because its result carries a real mode.
+    with otel.span(f"tool.{tool_key}",
+                   **{"gen_ai.tool.name": tool_key,
+                      "gen_ai.operation.name": kind,
+                      "gen_ai.tool.mode": "gateway"}):
+        result = await _query_tool_impl(tool_key, query, raw=True)
+    latency_ms = int((time.perf_counter() - start) * 1000)
+    rows = extract_rows(result)
+    # Record the rendered text so the timeline/observability view of this call looks
+    # the same as any other tool call — a reviewer should not have to know which
+    # agents compute and which generate to read the trace.
+    _record_tool(tool_key, query, latency_ms, (_extract_chunks(result), "gateway"))
+    _record_policy(tool_key, "gateway", latency_ms)
+    return rows, "gateway"
 
 
 def _kb_tool_key() -> str:

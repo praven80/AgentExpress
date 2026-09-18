@@ -40,6 +40,21 @@ export interface ToolSpec {
   description?: string;
   /** type=kb: top-level folders under kb_docs/, each a filterable doc_type. */
   corpora?: string[];
+  /**
+   * Which field of this target's result ROWS carries which role, for an agent that
+   * consumes the tool's data rather than its prose rendering (ctx.call_tool_rows).
+   *
+   * Optional, and only a DETERMINISTIC agent needs it — one whose output is a
+   * transformation of the rows (counting them, quoting their fields) rather than a
+   * model's reading of them. It is what keeps such an agent config-driven: repoint
+   * the tool at another Lambda, warehouse or API and set these to its field names,
+   * with no agent code change. Without it the agent would have to know one target's
+   * field names and swapping the target would need an edit.
+   *
+   * Keys are the roles the agent asks for; values are this target's field names:
+   *   { "id": "sessionId", "label": "topic", "outcome": "overall", "timestamp": "created" }
+   */
+  rowFields?: Record<string, string>;
   /** type=mcp: the MCP server's Streamable HTTP URL. Change this, nothing else. */
   endpoint?: string;
   /** type=openapi: s3:// URI of the OpenAPI schema. */
@@ -549,15 +564,11 @@ export class ToolPlane extends Construct {
     const lambdaTools = entries.filter(([, s]) => s.type === "lambda");
     if (lambdaTools.length) {
       // The framework-deployed built-in. Its execution role is FIXED — logs plus
-      // READ-ONLY on this deployment's own run-data tables — which is exactly why
-      // `source` accepts no value other than "tool_lambda".
+      // READ-ONLY on the PUBLIC AWS price list — which is exactly why `source`
+      // accepts no value other than "tool_lambda": a framework-deployed function
+      // needs an execution role that config cannot express, so the one role that
+      // exists reads nothing belonging to the customer.
       for (const [name, spec] of lambdaTools.filter(([, s]) => s.source)) {
-        if (!props.statusTable) {
-          throw new Error(
-            `tools.${name} has source="${spec.source}", which needs this deployment's run-data ` +
-              `tables. Pass statusTable/telemetryTable to ToolPlane.`
-          );
-        }
         const fn = new lambda.Function(this, `ToolLambda-${name}`, {
           logGroup: new logs.LogGroup(this, `ToolLambdaLogGroup-${name}`, {
             logGroupName: `/aws/lambda/ToolLambda-${agentName}-${name}`,
@@ -576,14 +587,24 @@ export class ToolPlane extends Construct {
           timeout: cdk.Duration.seconds(30),
           memorySize: 256,
           environment: {
-            STATUS_TABLE: props.statusTable.tableName,
-            ...(props.telemetryTable ? { TELEMETRY_TABLE: props.telemetryTable.tableName } : {}),
+            // Where the Price List Query API endpoint lives, which is NOT where
+            // prices are being asked about: the API is published in only two
+            // regions and describes prices for all of them. Pinned so the tool
+            // works on a deployment in any region. Mirrors terraform/tools.tf.
+            PRICING_API_REGION: "us-east-1",
           },
         });
-        // Read only: the demo function reports on run history and has no reason to
-        // write anything.
-        props.statusTable.grantReadData(fn);
-        props.telemetryTable?.grantReadData(fn);
+        // Read only, and the only thing it reads is the PUBLIC price list — no
+        // customer data, no account spend. The Price List Query API has no
+        // resource-level permissions, so "*" is the only grant it accepts.
+        // Mirrors aws_iam_role_policy.tool_lambda in terraform/tools.tf.
+        fn.addToRolePolicy(
+          new iam.PolicyStatement({
+            sid: "ReadPublicPriceList",
+            actions: ["pricing:GetProducts", "pricing:DescribeServices"],
+            resources: ["*"],
+          })
+        );
         this.builtinLambdaArns[name] = fn.functionArn;
       }
 

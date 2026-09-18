@@ -87,6 +87,10 @@ locals {
       call = try(t.call, "")
       arg  = try(t.arg, "")
       args = try(t.args, {})
+      # Which result-row field carries which role, for an agent that consumes the
+      # tool's DATA instead of its prose rendering (ctx.call_tool_rows). Optional:
+      # only a deterministic agent needs it.
+      row_fields = try(t.rowFields, {})
 
       # How the Gateway discovers the server's tools:
       #   DEFAULT — the Gateway synchronises the catalog when the target is
@@ -266,6 +270,11 @@ locals {
       t.call != "" ? { call = t.call } : {},
       t.arg != "" ? { arg = t.arg } : {},
       length(keys(t.args)) > 0 ? { args = t.args } : {},
+      # rowFields: which field of this target's result rows carries which role, for
+      # an agent that reads the tool's DATA rather than its prose (see
+      # ctx.call_tool_rows). Repointing the tool at another source is then a config
+      # edit — set these to its field names — instead of an agent code change.
+      length(keys(t.row_fields)) > 0 ? { rowFields = t.row_fields } : {},
     )
   })
 }
@@ -728,7 +737,7 @@ resource "aws_iam_role" "tool_lambda" {
 
 resource "aws_iam_role_policy" "tool_lambda" {
   for_each = local.builtin_lambda_tools
-  name     = "ToolLambdaRead"
+  name     = "ToolLambdaPricingRead"
   role     = aws_iam_role.tool_lambda[each.key].id
   policy = jsonencode({
     Version = "2012-10-17"
@@ -740,16 +749,18 @@ resource "aws_iam_role_policy" "tool_lambda" {
         Resource = "arn:aws:logs:${var.region}:${local.account_id}:*"
       },
       {
-        # READ ONLY, and only this deployment's own tables. The demo function
-        # reports on run history; it has no reason to write anything.
-        Sid    = "ReadRunData"
-        Effect = "Allow"
-        Action = ["dynamodb:Query", "dynamodb:Scan", "dynamodb:GetItem"]
-        Resource = [
-          aws_dynamodb_table.status.arn,
-          aws_dynamodb_table.telemetry.arn,
-          "${aws_dynamodb_table.telemetry.arn}/index/*",
-        ]
+        # READ ONLY, and the ONLY thing this function reads: the public AWS price
+        # list. It touches no data of yours, which is why `source` can accept a
+        # framework-deployed function at all — the execution role is fixed and
+        # contains nothing a customer would need to review.
+        #
+        # The Price List Query API has no resource-level permissions, so "*" is the
+        # only grant it accepts. It exposes public list prices, not this account's
+        # spend, so there is nothing here to scope down to.
+        Sid      = "ReadPublicPriceList"
+        Effect   = "Allow"
+        Action   = ["pricing:GetProducts", "pricing:DescribeServices"]
+        Resource = "*"
       },
     ]
   })
@@ -779,8 +790,12 @@ resource "aws_lambda_function" "tool" {
 
   environment {
     variables = {
-      STATUS_TABLE    = aws_dynamodb_table.status.name
-      TELEMETRY_TABLE = aws_dynamodb_table.telemetry.name
+      # Where the Price List Query API endpoint lives, which is NOT where prices
+      # are being asked about: the API is published in only two regions and
+      # describes prices for all of them. Pinned so the tool works on a deployment
+      # in any region. The region to price FOR is the tool's own `region` argument,
+      # defaulting to this deployment's AWS_REGION.
+      PRICING_API_REGION = "us-east-1"
     }
   }
 }

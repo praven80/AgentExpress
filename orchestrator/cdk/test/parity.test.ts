@@ -476,6 +476,14 @@ describe("constants duplicated across languages", () => {
         publishedFrom: "2026-01-01", publishedTo: "2026-02-01",
       },
       mcp: { type: "mcp", endpoint: "https://e", call: "c", arg: "q", args: { r: 1 } },
+      // rowFields is what keeps a DETERMINISTIC agent config-driven: it maps the
+      // roles such an agent needs onto whatever the target calls its fields, so
+      // repointing the tool at another Lambda/warehouse needs no agent code change.
+      // Dropped on one deploy path, that agent silently finds nothing on that path.
+      lam: {
+        type: "lambda", source: "tool_lambda", call: "aws_prices", arg: "services",
+        rowFields: { service: "service", dimension: "dimension", unit: "unit", price: "pricePerUnit" },
+      },
     });
     expect(Object.keys(projected.ws).sort()).toEqual([
       "excludeDomains", "includeDomains", "maxResults", "publishedFrom",
@@ -483,12 +491,22 @@ describe("constants duplicated across languages", () => {
     ]);
     expect(Object.keys(projected.mcp).sort()).toEqual(["arg", "args", "call", "type"]);
     expect(projected.kb).toEqual({ type: "kb", corpora: ["a"] });
+    expect(Object.keys(projected.lam).sort()).toEqual([
+      "arg", "call", "rowFields", "type",
+    ]);
+    expect(projected.lam.rowFields.price).toBe("pricePerUnit");
+
+    // Terraform must project it too, or it works under CDK and not under Terraform.
+    expect(read(path.join(TF, "tools.tf"))).toContain("rowFields = t.row_fields");
+    expect(read(path.join(TF, "tools.tf"))).toContain("row_fields = try(t.rowFields");
 
     const keep = read(path.join(ORCH_ROOT, "app", "common", "config.py"))
       .match(/keep = \(([\s\S]*?)\)/)![1]
       .match(/"(\w+)"/g)!
       .map((x) => x.replace(/"/g, ""));
-    for (const f of Object.keys(projected.ws).concat(Object.keys(projected.mcp))) {
+    for (const f of Object.keys(projected.ws)
+      .concat(Object.keys(projected.mcp))
+      .concat(Object.keys(projected.lam))) {
       expect(keep).toContain(f);
     }
   });

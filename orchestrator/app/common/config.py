@@ -50,6 +50,88 @@ FIRST_AGENT_ID = _FIRST_STEP.get("agent") or (
 # guardrail). Environment variables still take precedence at deploy time.
 ORCHESTRATOR: dict = WORKFLOW.get("orchestrator", {})
 
+# Output-rule enforcement (app/common/rules.py + app/common/structured.py), and
+# specifically WHETHER A FAILED CHECK COSTS A SECOND MODEL CALL.
+#
+# The checks themselves are pure functions — no model, no IO, no measurable cost.
+# The repair is a whole extra call per affected agent, which on an eight-agent
+# workflow can double the price of a run. That is the customer's decision to make,
+# not the framework's, so it is config with a per-agent override:
+#
+#   orchestrator.outputRules   { "enabled": true, "repair": false }   engine default
+#   agents.<id>.outputRules    { "repair": true }                     per agent
+#
+# Three meaningful settings:
+#   enabled false            no checks. One call. Nothing recorded.
+#   enabled, repair false    check, record what failed on the asset, DO NOT re-ask.
+#                            One call. The reviewer still sees every violation in
+#                            the UI; they just fix it by revising the gate rather
+#                            than paying the model to try again.
+#   enabled, repair true     check, re-ask once with the violations quoted. Up to
+#                            two calls for an agent that failed, one for an agent
+#                            that passed.
+#
+# The default is repair OFF. Enforcement should not silently change what a run
+# costs: a customer who deploys this sample gets the same bill as before the rules
+# existed, plus visibility, and opts in to paying for repair per agent once they
+# have seen which agents actually need it.
+#   maxWords  a prose budget for one agent's payload, checked deterministically.
+#             0 disables it, which is the engine default: a framework must not
+#             impose a house style on a workflow it knows nothing about. Set it per
+#             agent for the outputs where length is the defect — three separate
+#             prompt clauses failed to keep one report under control, and a number
+#             in config succeeds where wording did not because it is not
+#             negotiable.
+_OUTPUT_RULES_DEFAULTS = {"enabled": True, "repair": False, "maxWords": 0}
+OUTPUT_RULES: dict = {**_OUTPUT_RULES_DEFAULTS,
+                      **(ORCHESTRATOR.get("outputRules") or {})}
+
+# How the orchestrator calls a DEDICATED agent runtime (app/common/agentcore_agent.py),
+# and specifically WHETHER THE SDK MAY SILENTLY RUN AN AGENT TWICE.
+#
+# InvokeAgentRuntime is synchronous, slow (a research agent takes ~15-20s) and NOT
+# idempotent: the remote container starts working the moment the request lands, and
+# it has no idea whether the caller is still listening. boto3's default client
+# enables retries — `retries={'mode': 'legacy'}`, up to 5 attempts — so one
+# transient connection blip mid-call makes the SDK re-issue the request, the remote
+# agent runs the WHOLE thing again, and the orchestrator returns whichever attempt
+# answered last. The first attempt's model call is still billed, and nothing logs it:
+# the node logs "Invoking dedicated AgentCore Runtime" once, before the retry exists.
+#
+# That is not hypothetical. On a live run the web_search runtime logged two
+# invocations with different requestIds, 13s apart, for one node execution:
+#   13:55:29  Invocation completed successfully (17.792s)  req 95297bd8...
+#   13:55:41  Invocation completed successfully (16.669s)  req 26ad54ce...
+# Two identical model calls, 6579 input tokens each, one result discarded, $0.0158
+# of the run's $0.2448 spent on an answer nobody read.
+#
+# So retries are OFF by default here (maxAttempts 1 = one attempt, no retry) and the
+# read timeout is generous instead. For a call this long the failure that matters is
+# a LOST RESPONSE to work that already succeeded, and retrying that is strictly
+# worse than failing: a raised error surfaces to the reviewer, whereas a duplicate
+# silently double-bills. The framework already prefers a visible failure over a
+# quiet degradation everywhere else (see app/common/errors.py).
+#
+#   maxAttempts         total attempts per invoke, not retries-after-the-first.
+#                       1 disables retrying. Raise it only if you have made the
+#                       call idempotent.
+#   readTimeoutSeconds  how long to wait for the agent's response. Must exceed the
+#                       slowest agent's wall-clock or you will time out mid-answer
+#                       and, with maxAttempts 1, lose the run.
+_RUNTIME_INVOKE_DEFAULTS = {"maxAttempts": 1, "readTimeoutSeconds": 120}
+RUNTIME_INVOKE: dict = {**_RUNTIME_INVOKE_DEFAULTS,
+                        **(ORCHESTRATOR.get("runtimeInvoke") or {})}
+
+
+def output_rules_for(spec: dict) -> dict:
+    """The engine default overlaid with one agent's `outputRules` block.
+
+    Merged rather than replaced, so an agent that only wants to turn repair on
+    writes `{"repair": true}` and does not have to restate `enabled`.
+    """
+    return {**OUTPUT_RULES, **(spec.get("outputRules") or {})}
+
+
 # Presentation strings (title, the default topic, placeholders). Config rather
 # than literals so re-branding for a different use case is a workflow.json edit.
 UI: dict = WORKFLOW.get("ui", {})
@@ -153,7 +235,7 @@ def _load_tools() -> dict:
     # is silently dropped on the fallback path, which is how `publishedFrom` /
     # `publishedTo` came to work under one deployment and not the other.
     keep = ("type", "corpora", "maxResults", "includeDomains", "excludeDomains",
-            "publishedFrom", "publishedTo", "call", "arg", "args")
+            "publishedFrom", "publishedTo", "call", "arg", "args", "rowFields")
     return {
         name: {k: v for k, v in (spec or {}).items() if k in keep}
         for name, spec in (WORKFLOW.get("tools") or {}).items()

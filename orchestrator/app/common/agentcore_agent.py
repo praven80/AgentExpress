@@ -19,8 +19,10 @@ import json
 import os
 
 import boto3
+from botocore.config import Config
 
 from app.common.base import Agent
+from app.common.config import RUNTIME_INVOKE
 
 _RUNTIME_ARNS: dict = json.loads(os.getenv("AGENT_RUNTIME_ARNS", "{}"))
 _REGION = os.getenv("AWS_REGION", "us-east-1")
@@ -28,9 +30,28 @@ _client = None
 
 
 def _agentcore():
+    """The bedrock-agentcore client, with RETRIES OFF by default.
+
+    boto3's default is `retries={'mode': 'legacy'}` (up to 5 attempts), which is
+    wrong for this call: InvokeAgentRuntime is not idempotent, so a retry re-runs
+    the whole remote agent and bills a second model call whose answer is thrown
+    away. Measured on a live run — see config.RUNTIME_INVOKE for the log excerpt.
+    Both numbers are `orchestrator.runtimeInvoke` in workflow.json.
+    """
     global _client
     if _client is None:
-        _client = boto3.client("bedrock-agentcore", region_name=_REGION)
+        _client = boto3.client(
+            "bedrock-agentcore", region_name=_REGION,
+            config=Config(
+                # `total_max_attempts`, NOT `max_attempts`: botocore reads the
+                # latter as retries-AFTER-the-first, so `max_attempts: 1` still
+                # allows two executions of the agent — precisely the bug. This key
+                # counts total attempts and rejects 0, so the config number means
+                # what `maxAttempts` says it means.
+                retries={"total_max_attempts": int(RUNTIME_INVOKE["maxAttempts"]),
+                         "mode": "standard"},
+                read_timeout=float(RUNTIME_INVOKE["readTimeoutSeconds"]),
+            ))
     return _client
 
 

@@ -121,15 +121,24 @@ def _upstream_for(agent: str) -> str:
 # The adjudicated truth: agent -> the violations its real output SHOULD produce.
 # Every entry here is a defect a reviewer would want flagged. Every asset absent
 # from this mapping must produce nothing at all.
+#
+# The three `summary` entries were added when finding-about-the-brief grew past
+# findings/claims to cover the reader-facing prose fields. All three assets open
+# their summary with "The request brief seeks design and build guidance for an
+# agentic AI application but lacks domain and use-case specificity" — the same
+# defect the rule already caught inside findings, sitting in the field with the
+# widest audience. They are new catches on old output, not new output.
 EXPECTED: dict[str, list[tuple[str, str]]] = {
     "history_research": [("finding-about-the-brief", "findings[2]")],
     "knowledge_research": [("finding-about-the-brief", "findings[4]"),
-                           ("finding-about-the-brief", "findings[5]")],
-    "documentation_search": [("finding-about-the-brief", "findings[5]")],
+                           ("finding-about-the-brief", "findings[5]"),
+                           ("finding-about-the-brief", "summary")],
+    "documentation_search": [("finding-about-the-brief", "findings[5]"),
+                             ("finding-about-the-brief", "summary")],
     "analysis": [("about-the-request", "claims[3]")],
+    "web_search": [("finding-about-the-brief", "summary")],
     # Correct output, and the reason this file exists.
     "intake": [],
-    "web_search": [],
     "recommendation": [],
     "report": [],
 }
@@ -463,3 +472,83 @@ def test_a_synthesis_agents_upstream_is_the_rendered_upstream_assets():
     # Whole assets, not an abridgement: the hand-typed version was 326 characters.
     assert len(upstream) > 10_000
     assert "ruleViolations" not in upstream
+
+
+# ---------------------------------------------------------------------------
+# The 19:24 run: two more false positives
+# ---------------------------------------------------------------------------
+
+def test_a_count_matching_a_sibling_list_is_not_a_mismatch():
+    """Root cause I. English does not draw the distinction the schema does.
+
+    The brief held six `keyQuestions` and five `openQuestions`. An agent wrote
+    "the six open questions identified in the request brief" and then enumerated
+    the six keyQuestions verbatim — the count was right about a real six-item
+    list, and the rule called it a mismatch because the noun it happened to use
+    resolved to the other list. The check cannot know which list the prose meant,
+    so a number matching either one is not a contradiction.
+    """
+    payload = {"summary": "Six open questions on this subject (use case, "
+                          "autonomous scope, constraints, tool access, tech stack, "
+                          "success metrics) are prerequisites.",
+               "items": [{"title": str(i)} for i in range(9)]}
+    brief = {"openQuestions": 5, "keyQuestions": 6, "constraints": 0,
+             "assumptions": 3}
+    assert rules.check(payload, upstream="", rules=rules.SYNTHESIS,
+                       extra_counts=brief) == []
+
+
+def test_a_count_matching_no_list_at_all_is_still_a_mismatch():
+    """The other half of root cause I: accepting either sibling must not accept a
+    number that matches neither, which is the case the rule was built for."""
+    payload = {"summary": "Nine open questions on the subject remain unresolved."}
+    brief = {"openQuestions": 5, "keyQuestions": 6}
+    found = rules.check(payload, upstream="", rules=rules.SYNTHESIS,
+                        extra_counts=brief)
+    assert [v.rule for v in found] == ["count-mismatch"]
+    assert "5 or 6" in found[0].detail, "name both candidates so the fix is obvious"
+
+
+def test_naming_what_a_missing_input_would_unblock_is_not_an_action():
+    """Root cause J, and the rule punishing its own remedy.
+
+    `action-on-unavailable` tells the model to "state what is missing and what
+    having it would unblock". The report did exactly that — and was flagged again,
+    because a conditional ("obtaining this would enable X") contains a fetch verb
+    and the section also named the gap. A description of what an absent thing would
+    make possible is disclosure, not a step the reader is being handed.
+    """
+    payload = {"sections": [{
+        "sectionType": "next-steps",
+        "content": "Six critical information gaps prevent proceeding to "
+                   "architecture design. The intended use case and domain are not "
+                   "specified; obtaining this would enable grounding the "
+                   "recommendations. Success metrics are not specified; obtaining "
+                   "this would enable objectively assessing progress."}]}
+    assert rules.check(payload, upstream="", rules=rules.SYNTHESIS) == []
+
+
+def test_a_gap_and_a_conditional_in_separate_sentences_are_not_a_contradiction():
+    """The same false positive in its original, longer shape: the gap named in one
+    sentence and the conditional three sentences later."""
+    payload = {"sections": [{
+        "sectionType": "next-steps",
+        "content": "The six gaps are not independent. Their artifacts and outputs "
+                   "are not available. If prior runs produced reusable code, "
+                   "retrieving those assets would accelerate the current effort."}]}
+    assert [v.rule for v in rules.check(payload, upstream="",
+                                        rules=rules.SYNTHESIS)
+            if v.rule == "action-on-unavailable"] == []
+
+
+def test_an_action_and_its_own_impossibility_still_pair_across_an_entry():
+    """The other half of root cause J, and a regression I introduced while fixing
+    it. Scoping the pairing to a single sentence looked tidy and lost the ORIGINAL
+    defect: the step lives in `detail` and the gap in `rationale`, two fields of
+    one item, which a reader takes as one statement."""
+    payload = {"items": [{"title": "Reuse prior work",
+                          "detail": "Consult the artifacts from the four prior runs.",
+                          "rationale": "Those artifacts are not available."}]}
+    found = rules.check(payload, upstream="", rules=rules.SYNTHESIS)
+    assert [v.rule for v in found if v.rule == "action-on-unavailable"], (
+        "the pairing must reach across an entry's fields, not just one sentence")
