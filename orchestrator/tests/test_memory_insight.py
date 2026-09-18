@@ -196,17 +196,195 @@ def test_sharing_only_a_filler_word_is_not_sharing_a_subject():
                      "Design a serverless data pipeline") == []
 
 
-def test_the_namespace_is_scoped_by_topic_when_no_subject_is_set():
-    """The defect was the FALLBACK: no subject_id meant a bare agent id, which is
-    one shared bucket for every topic in the deployment."""
-    from app.common.context import _slug
-    a = _slug(TOPIC)[:48]
-    b = _slug("Build a agentic ai application4")[:48]
-    assert a and b and a != b, "two topics must not share one namespace"
+def _actor(agent_id: str, *, subject: str = "", topic: str = "") -> str:
+    """`_memory_actor` on a bare context — the real function, not a reimplementation.
+
+    The two tests this replaced only exercised `_slug`, so they passed whatever
+    `_memory_actor` actually did, and went on passing after its behaviour changed.
+    """
+    from app.common.context import AgentContext
+    c = AgentContext.__new__(AgentContext)
+    c.agent_id, c.subject_id, c.topic = agent_id, subject, topic
+    return c._memory_actor()
 
 
-def test_an_explicit_subject_still_wins():
+def test_runs_on_different_topics_share_one_namespace_per_agent():
+    """Long-term memory needs a corpus, and topic scoping left it write-only.
+
+    Measured on the deployment before this changed: 66 writes had produced 88
+    distinct namespaces — about one per run, each with a single record — and of 101
+    recalls the only 23 that ever hit predate the scoping. Relevance is handled by
+    the semantic query and `_on_topic`, not by partitioning.
+    """
+    a = _actor("analysis", topic="Build a data lake application")
+    b = _actor("analysis", topic="Build a data lake in AWS")
+    assert a == b == "analysis", "two topics must reach the same per-agent namespace"
+
+
+def test_two_agents_never_share_a_namespace():
+    """An agent recalls its OWN past insights; the report's are not the intake's."""
+    assert _actor("analysis", topic="X") != _actor("report", topic="X")
+
+
+def test_an_explicit_subject_partitions_and_still_wins():
     """`subject_id` is how an operator groups runs deliberately — a customer, an
-    account — and deriving from the topic must not take that away."""
-    from app.common.context import _slug
-    assert _slug("ACME Corp") == "acme-corp"
+    account, a product line — and it must override the per-agent default."""
+    assert _actor("analysis", subject="ACME Corp") == "analysis-acme-corp"
+    # The subject, not the topic, is what separates them.
+    assert (_actor("analysis", subject="ACME Corp", topic="anything")
+            != _actor("analysis", subject="Globex", topic="anything"))
+
+
+def test_a_long_subject_id_stays_a_legible_namespace_segment():
+    from app.common.context import AgentContext
+    actor = _actor("analysis", subject="x" * 400)
+    assert len(actor) <= len("analysis-") + AgentContext._SUBJECT_SLUG_CHARS
+
+
+# ---------------------------------------------------------------------------
+# _on_topic — the filter the widened namespace now depends on
+# ---------------------------------------------------------------------------
+
+def test_a_plural_still_matches_its_singular():
+    """`_on_topic` compares word sets, so an exact match made a near-miss a miss.
+
+    Measured live: a run on "Build a data lake application" could not match a
+    recalled insight about "data lakes", because `lake` and `lakes` were different
+    words. Widening the namespace made this filter load-bearing, so its weakest
+    point had to go.
+    """
+    from app.common.context import _on_topic, _significant
+
+    assert "lake" in _significant("data lakes on AWS")
+    assert _significant("data lake") & _significant("data lakes")
+    item = "Data lakes separate storage from compute across four zones."
+    assert _on_topic([item], "Build a data lake application") == [item]
+
+
+def test_an_irregular_plural_folds_too():
+    from app.common.context import _significant
+
+    assert _significant("policies") == _significant("policy")
+
+
+def test_a_double_s_word_is_not_mangled():
+    """`-ss` is excluded, or `access` becomes `acces` and `process` `proces`."""
+    from app.common.context import _significant
+
+    assert _significant("access control") >= {"access"}
+    assert _significant("processing") >= {"processing"}
+    assert "acces" not in _significant("access")
+
+
+def test_an_unrelated_subject_is_still_dropped():
+    """Stemming must not turn the filter off — this is the case it exists for.
+
+    Observed live: a data-lake run recalled "agentic AI applications on AWS using
+    Amazon Bedrock AgentCore …" and correctly kept none of it.
+    """
+    from app.common.context import _on_topic
+
+    item = ("The user is interested in building agentic AI applications on AWS using "
+            "Amazon Bedrock AgentCore, LangGraph, CrewAI and Strands.")
+    assert _on_topic([item], "Build a data lake application") == []
+
+
+def test_a_query_with_no_content_words_keeps_everything():
+    """Nothing to compare against is not evidence of irrelevance."""
+    from app.common.context import _on_topic
+
+    assert _on_topic(["anything at all"], "the and of") == ["anything at all"]
+
+
+def test_a_generic_container_noun_is_not_a_shared_subject():
+    """The tension plural folding created, pinned so it cannot silently reopen.
+
+    Stemming is needed so "data lakes" reaches "data lake". But it also folded
+    "applications" onto "application", and THAT made a data-lake run match an
+    agentic-AI insight on the one word both topics happen to contain. Both topics
+    are "build an application"; what distinguishes them is `lake` and `agentic`.
+
+    So the generic nouns for "the thing being built" are stopwords, and the two
+    behaviours have to hold at once: a real near-miss matches, a shared container
+    noun does not.
+    """
+    from app.common.context import _on_topic, _significant
+
+    # The container noun carries no subject.
+    assert not (_significant("data lake application")
+                & _significant("agentic AI application"))
+    # But the real subject word still does.
+    assert _significant("data lake application") & _significant("data lakes on AWS")
+    # Both directions, end to end.
+    assert _on_topic(["Agentic AI applications need a tool loop."],
+                     "Build a data lake application") == []
+    assert _on_topic(["Data lakes use zone separation."],
+                     "Build a data lake application")
+
+
+# ---------------------------------------------------------------------------
+# Observability: what the agent GOT, not what the store returned
+# ---------------------------------------------------------------------------
+
+def _recall_ctx(returns, *, topic, recorded):
+    """A context wired for memory_recall with the store and the meter stubbed."""
+    from app.common.context import AgentContext
+
+    c = AgentContext.__new__(AgentContext)
+    c.agent_id, c.subject_id, c.topic = "analysis", "", topic
+    c.session_id = "s"
+    c._agentcore = {"memory": {"longTerm": ["semantic"]}}
+    c._record_memory = lambda op, ns, q, res, ms: recorded.append((op, ns, res))
+    return c
+
+
+def test_a_recall_whose_every_record_is_dropped_is_not_reported_as_a_hit(monkeypatch):
+    """The panel said memory was working while the agent received nothing.
+
+    `_record_memory` logs the RAW result per namespace and `_on_topic` runs after,
+    so a recall that found five off-topic records and kept none looked like a hit.
+    Observed while verifying a live run: a data-lake run recalled agentic-AI
+    insights, correctly discarded all of them, and the row said HIT.
+    """
+    import asyncio
+
+    from app.features import memory as memory_pkg
+
+    off_topic = "Agentic AI applications need a tool loop and a state machine."
+
+    async def fake_recall(query, namespace=""):
+        return [off_topic]
+
+    monkeypatch.setattr(memory_pkg, "recall", fake_recall)
+
+    recorded: list = []
+    ctx = _recall_ctx([off_topic], topic="Build a data lake", recorded=recorded)
+    got = asyncio.run(ctx.memory_recall("Build a data lake"))
+
+    assert got == [], "an off-topic recall must not reach the agent"
+    ops = [r[0] for r in recorded]
+    assert "recall" in ops, "the raw per-namespace result is still recorded"
+    assert "recall-filtered" in ops, "and so is what survived the filter"
+    note = next(r[2] for r in recorded if r[0] == "recall-filtered")
+    assert "0 of 1" in note, note
+
+
+def test_a_recall_that_survives_the_filter_records_no_extra_row(monkeypatch):
+    """The happy path stays one row per namespace — no noise when nothing is lost."""
+    import asyncio
+
+    from app.features import memory as memory_pkg
+
+    on_topic = "Data lakes separate storage from compute across zones."
+
+    async def fake_recall(query, namespace=""):
+        return [on_topic]
+
+    monkeypatch.setattr(memory_pkg, "recall", fake_recall)
+
+    recorded: list = []
+    ctx = _recall_ctx([on_topic], topic="Build a data lake", recorded=recorded)
+    got = asyncio.run(ctx.memory_recall("Build a data lake"))
+
+    assert got == [on_topic]
+    assert [r[0] for r in recorded] == ["recall"]

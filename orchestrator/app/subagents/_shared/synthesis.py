@@ -38,6 +38,16 @@ def envelope(ctx, meta: dict, asset_type_slug: str) -> dict[str, Any]:
         "status": AssetStatus.IN_REVIEW,
         "createdAt": clock.now_et(),  # Eastern wall-clock
         "createdByAgent": ctx.agent_id,
+        # WHICH UPSTREAM ASSETS THIS ONE WAS BUILT FROM. `synthesize` already
+        # collects these while assembling the prompt, and for three releases it
+        # handed them back in `meta` and no agent passed them on — so every
+        # synthesized asset shipped with an empty `sourceAssetIds` while the answer
+        # sat one call away. Set here rather than in each agent so it cannot be
+        # forgotten again, and so a customer's own agent gets it by using this
+        # helper. Asset-level provenance, distinct from the per-claim tracing in
+        # `Analysis.claims[].tracedToAssetIds` and the per-section
+        # `Report.sections[].sourceAssetIds`.
+        "sourceAssetIds": list(meta.get("upstream_asset_ids") or []),
     }
 
 
@@ -101,6 +111,14 @@ async def synthesize(ctx, *, upstream_ids: list[str], system_prompt: str,
         "4. Name assumptions and limitations explicitly; do not restate the inputs "
         "verbatim \u2014 synthesize. What the request leaves unsettled goes in "
         "`limitations`, which is FOR that; it is never a claim.\n"
+        "4a. AN UNSETTLED INPUT IS NAMED ONCE. Put it in `limitations` and then "
+        "write as if the reader has read it \u2014 do not append \"which the request "
+        "does not specify\" to every item, rationale and section that touches it. "
+        "Measured across single deliverables: the same gap restated 21, 13 and 7 "
+        "times. Each sentence was true and correctly placed; together they spent a "
+        "third of the reader's attention on one fact. If a specific item genuinely "
+        "turns on that gap, say what it would unblock rather than repeating that it "
+        "is missing.\n"
         "5. No figure that is not in an upstream asset above — costs, thresholds, "
         "percentages, durations, cadences, timelines. Not even as an illustration. "
         "Say plainly when none was supplied.\n"

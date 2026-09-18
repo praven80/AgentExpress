@@ -224,3 +224,60 @@ def test_synthesis_keeps_a_customers_own_source_type_too(research):
         {"sourceType": "redshift", "sourceName": "analytics.claims"}]})
     assert out[0].source_type == "redshift"
     assert out[0].source_name == "analytics.claims"
+
+
+# ---------------------------------------------------------------------------
+# Asset-level provenance: which upstream assets was this one built from?
+# ---------------------------------------------------------------------------
+
+def test_the_envelope_records_the_upstream_assets_it_was_built_from():
+    """`sourceAssetIds` shipped empty on every synthesized asset for three releases.
+
+    `synthesize` collects the ids while assembling the prompt and hands them back in
+    `meta["upstream_asset_ids"]`; no agent ever passed them to the contract, so the
+    envelope field that exists for exactly this was always `[]` — with the answer one
+    call away. Setting it in the shared `envelope()` helper means all three synthesis
+    agents get it, and so does a customer agent that uses the helper.
+    """
+    from app.subagents._shared import synthesis
+
+    class Ctx:
+        agent_id = "analysis"
+
+    meta = {"title": "A Title", "version": 2,
+            "upstream_asset_ids": ["asset-request-brief-a-title-v1",
+                                   "asset-research-web_search-a-title-v1"]}
+    env = synthesis.envelope(Ctx(), meta, "analysis")
+    assert env["sourceAssetIds"] == ["asset-request-brief-a-title-v1",
+                                     "asset-research-web_search-a-title-v1"]
+    # It must be a copy, not the caller's list, so a later mutation of meta cannot
+    # rewrite an asset that has already been built.
+    meta["upstream_asset_ids"].append("asset-late-v9")
+    assert "asset-late-v9" not in env["sourceAssetIds"]
+
+
+def test_the_envelope_survives_a_run_with_no_approved_upstream():
+    """The first agent, or a degraded run, has nothing upstream. Empty is correct
+    there — what was wrong was empty when there WAS something."""
+    from app.subagents._shared import synthesis
+
+    class Ctx:
+        agent_id = "intake"
+
+    env = synthesis.envelope(Ctx(), {"title": "T", "version": 1}, "request-brief")
+    assert env["sourceAssetIds"] == []
+
+
+def test_the_shared_envelope_reaches_a_real_synthesis_contract():
+    """End to end: the helper's output has to be accepted by the contract, by alias."""
+    from app.subagents._shared import synthesis
+    from app.subagents._shared.contracts import Analysis
+
+    class Ctx:
+        agent_id = "analysis"
+
+    ids = ["asset-research-web_search-t-v1"]
+    asset = Analysis(**synthesis.envelope(
+        Ctx(), {"title": "T", "version": 1, "upstream_asset_ids": ids}, "analysis"))
+    assert asset.source_asset_ids == ids
+    assert asset.model_dump(by_alias=True)["sourceAssetIds"] == ids

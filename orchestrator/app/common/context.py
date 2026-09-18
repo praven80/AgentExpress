@@ -37,7 +37,8 @@ _UNCERTAIN_KEY_RE = re.compile(
     re.IGNORECASE)
 
 # Words that say nothing about the subject, so sharing one is not evidence that a
-# recalled insight belongs to this run.
+# recalled insight belongs to this run. Compared AFTER stemming, so singular forms
+# are enough — the plural pairs below are harmless but no longer necessary.
 _TOPIC_STOPWORDS = frozenset({
     "about", "after", "also", "with", "what", "when", "where", "which", "while",
     "your", "user", "users", "request", "requests", "build", "building", "design",
@@ -47,13 +48,48 @@ _TOPIC_STOPWORDS = frozenset({
     "need", "needs", "want", "wants", "make", "makes", "more", "most", "some",
     "such", "only", "other", "another", "over", "under", "both", "each", "many",
     "much", "very", "help",
+    # GENERIC CONTAINER NOUNS — the thing being built, named in the vaguest
+    # possible way. These are the words nearly every topic shares, so matching on
+    # one is not evidence of a shared subject. `application` is here because of a
+    # measured false match: with plurals folded, "Build a data lake application"
+    # matched a recalled insight about "agentic AI applications" on that word
+    # alone, which is precisely the cross-topic bleed this filter exists to stop.
+    # The discriminating words in those two topics are `lake` and `agentic`.
+    "application", "app", "system", "solution", "platform", "project", "software",
+    "product", "tool", "thing", "stuff", "work", "task", "case",
 })
 
 
+def _stem(word: str) -> str:
+    """Crudest useful stem: fold a regular plural onto its singular.
+
+    Deliberately only plurals, and only the two endings that matter. `_on_topic`
+    compares word SETS, so an exact-match comparison made "data lake" and "data
+    lakes" share only "data" — measured live, where a recalled insight about data
+    lakes failed to match a run about a data lake application. Any near-miss on
+    wording is supposed to still recall; a plural was the commonest near-miss.
+
+    Not a real stemmer on purpose. Porter-style suffix stripping would conflate
+    words a reader would not ("policies" -> "polici", "analysis" -> "analysi") and
+    the comparison here does not need that much: it needs "lakes" to reach "lake".
+    `-ss` is excluded so "access" and "process" survive intact.
+    """
+    if word.endswith("ies") and len(word) > 4:
+        return word[:-3] + "y"          # policies -> policy
+    if word.endswith("s") and not word.endswith("ss") and len(word) > 3:
+        return word[:-1]                # lakes -> lake, pipelines -> pipeline
+    return word
+
+
 def _significant(text: str) -> set[str]:
-    """Content words of four characters or more, minus the stopwords above."""
-    return {w for w in re.findall(r"[a-z]{4,}", (text or "").lower())
-            if w not in _TOPIC_STOPWORDS}
+    """Content words of four characters or more, minus the stopwords above, with
+    regular plurals folded so a near-miss on wording still counts as a match.
+
+    Stemmed BEFORE the stopword test, so a stopword only has to be listed in its
+    singular form and "applications" is excluded by listing "application".
+    """
+    words = (_stem(w) for w in re.findall(r"[a-z]{4,}", (text or "").lower()))
+    return {w for w in words if w not in _TOPIC_STOPWORDS}
 
 
 def _on_topic(recalled: list[str], query: str) -> list[str]:
@@ -264,32 +300,46 @@ class AgentContext:
         except Exception:  # noqa: BLE001
             pass
 
-    # How much of a derived subject slug to keep. Long enough that two different
-    # topics do not collide, short enough to stay a legible namespace segment.
+    # How much of a caller-supplied `subject_id` to keep in the namespace. Long
+    # enough that two subjects do not collide, short enough to stay legible.
     _SUBJECT_SLUG_CHARS = 48
 
     def _memory_actor(self) -> str:
-        """Long-term memory actor id: the agent, scoped by subject.
+        """Long-term memory actor id: the agent, scoped by subject when given.
 
         `subject_id` is what an operator sets to group runs deliberately — a
         customer, an account, a product line — and it wins when present.
 
-        WITHOUT ONE, THE SUBJECT IS DERIVED FROM THE TOPIC, and the fallback that
-        used to be here is why. Returning a bare `agent_id` put every request in
-        the deployment into ONE namespace per agent, so recall reached across
-        unrelated subjects: a run designing a serverless data pipeline was handed
-        "the user is interested in building an agentic AI application" and
-        "an analysis identified nine core architectural components", both from an
-        earlier run on a different topic. The agents were right not to use them —
-        the prompt says recalled material is never a rationale — but the framework
-        should not have offered them, and every synthesis agent paid tokens for it.
+        WITHOUT ONE THE NAMESPACE IS PER AGENT, so recall has a corpus to search.
+        This was derived from the TOPIC for a while, and the measurement is why it
+        is not any more: across 66 writes the deployment accumulated 88 distinct
+        namespaces — roughly one per run, each holding a single record — and of 101
+        recalls, the only 23 that ever returned anything predate the change.
+        Long-term memory had become write-only, which is worse than the problem it
+        was fixing, and silently so.
 
-        The tradeoff, stated plainly: two runs whose topics are worded differently
-        no longer share memory. That is a MISS, where the old behaviour was a wrong
-        HIT, and a miss is the one a reader can survive. An operator who wants
-        accumulation across topics sets `subject_id` and gets exactly that.
+        What it was fixing was real: a bare per-agent namespace once handed a
+        serverless-pipeline run "the user is interested in building an agentic AI
+        application" and "an analysis identified nine core architectural
+        components" from an unrelated earlier topic. Partitioning was the wrong
+        remedy, because two other defences now cover it and neither existed then:
+
+          * ON WRITE, `_drop_meta_sentences` removes sentences asserting facts about
+            the requester — which is what made those recalls harmful rather than
+            merely irrelevant.
+          * ON READ, `_on_topic` drops a recalled item sharing no significant word
+            with this run's topic, which is exactly the second example above.
+
+        And the recall itself is a SEMANTIC search keyed on the run's topic
+        (`search_long_term_memories(query=topic, top_k=5)`), so relevance ranking
+        by the topic is already happening — for free, and better than a word filter.
+        Scoping the namespace by topic as well meant asking the same question twice
+        and taking the harsher answer.
+
+        So the default accumulates per agent and is filtered on the way out, and an
+        operator who wants a harder partition sets `subject_id`.
         """
-        subject = _slug(self.subject_id) or _slug(self.topic)[:self._SUBJECT_SLUG_CHARS]
+        subject = _slug(self.subject_id)[:self._SUBJECT_SLUG_CHARS]
         return f"{self.agent_id}-{subject}" if subject else self.agent_id
 
     def _record_memory(self, op: str, namespace: str, query: str, result_text: str,
@@ -355,7 +405,23 @@ class AgentContext:
                 "\n---\n".join(str(x) for x in results) if results else "(no matching memories)",
                 int((_t.perf_counter() - start) * 1000))
             combined.extend(results)
-        return _on_topic(combined, query)
+
+        kept = _on_topic(combined, query)
+        # WHAT THE AGENT ACTUALLY GOT, not what the store returned. The rows above
+        # record the RAW result per namespace, and `_on_topic` runs after them — so
+        # a recall that found five records and discarded all five was reported as a
+        # hit, and the observability panel showed memory "working" while the agent
+        # received nothing. Observed while verifying a live run: a data-lake run
+        # recalled agentic-AI insights, all correctly dropped, and the panel said
+        # HIT. Only recorded when the filter actually removed something, so the
+        # happy path stays one row per namespace.
+        if len(kept) != len(combined):
+            self._record_memory(
+                "recall-filtered", "", query,
+                f"{len(kept)} of {len(combined)} recalled insight(s) shared a "
+                f"subject word with this run; the rest were dropped as off-topic.",
+                0)
+        return kept
 
     async def memory_store(self, content: str) -> None:
         """Store an insight in long-term memory (scoped to this agent + subject)

@@ -275,9 +275,35 @@ class CostResearchAgent(Agent):
                 + (f"; the rows carry [{', '.join(sorted(raw[0]))}]." if raw
                    else " and the tool returned no rows.")))
 
+        # HOW MANY OF THE NAMES WE ASKED FOR CAME BACK PRICED — not how many AWS
+        # servicenames the rows carry. Those are different populations, and the
+        # summary used to divide one by the other: asking for 5 services where one
+        # was "Amazon Bedrock" returned 10 distinct servicenames, because Bedrock
+        # prices per model ("Claude Opus 4.7 (Amazon Bedrock Edition)" and five
+        # siblings), and the asset reported "Priced 10 of 5 service(s)". Observed
+        # live. A name that fans out is normal and the rates are all real; only the
+        # arithmetic was wrong.
+        #
+        # `unpriced` is only knowable when the rows carry the caller's own wording
+        # (the optional `requested` field in `rowFields`). Without it we cannot say
+        # which of our names resolved, so we count what we can defend: the
+        # servicenames actually priced, described as such.
+        if answered:
+            resolved = len(services) - len(unpriced)
+            counted = (f"Priced {resolved} of {len(services)} service(s) this use "
+                       f"case would run on")
+            # A fan-out is worth one clause, so a reader is not left wondering why
+            # five services list ten names.
+            fanned = (f" ({len(priced)} priced dimensions, as some services price "
+                      f"per model or per tier)" if len(priced) > resolved else "")
+        else:
+            counted = (f"Priced {len(priced)} service(s) for the {len(services)} this "
+                       f"use case would run on")
+            fanned = ""
+
         summary = (
-            f"Priced {len(priced)} of {len(services)} service(s) this use case "
-            f"would run on, from the AWS Price List Query API"
+            counted + fanned
+            + ", from the AWS Price List Query API"
             + (f" in {region}" if rows else "")
             + f": {', '.join(sorted(priced)) if priced else 'none'}. "
             + (f"No rate was returned for {', '.join(unpriced)}. " if unpriced else "")

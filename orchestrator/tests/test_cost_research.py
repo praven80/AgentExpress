@@ -335,3 +335,95 @@ def test_a_tool_that_omits_the_requested_field_claims_nothing(_=None):
     assert not [x for x in asset["dataLimitations"]
                 if "No published unit price was returned for" in x]
     assert asset["findings"], "and the rates themselves still come through"
+
+
+# ---------------------------------------------------------------------------
+# "Priced N of M" — the two numbers must count the same population
+# ---------------------------------------------------------------------------
+
+# The live shape that exposed the bug, on "Build agentic ai app": the model asked
+# for five services, and ONE of them (Amazon Bedrock) prices per model, so the rows
+# came back carrying ten distinct `service` values. Every rate is real; only the
+# fraction was wrong. `requestedAs` carries the caller's own wording back, which is
+# what makes the two populations reconcilable at all.
+_BEDROCK_MODELS = ("Claude Fable 5", "Claude Fable 5.1", "Claude Mythos 5",
+                   "Claude Mythos 5.1", "Claude Mythos Preview", "Claude Opus 4.7")
+FANNED_ROWS = [
+    {"service": f"{m} (Amazon Bedrock Edition)", "requestedAs": "Amazon Bedrock",
+     "dimension": "USE1-MP:USE1_input_tokens_standard-Units", "unit": "1M tokens",
+     "pricePerUnit": "2.2000000000", "currency": "USD", "region": "us-east-1",
+     "text": "..."} for m in _BEDROCK_MODELS
+] + [
+    {"service": "AWS Lambda", "requestedAs": "AWS Lambda",
+     "dimension": "Lambda-GB-Second", "unit": "Lambda-GB-Second",
+     "pricePerUnit": "0.0000150000", "currency": "USD", "region": "us-east-1",
+     "text": "..."},
+    {"service": "Amazon DynamoDB", "requestedAs": "DynamoDB",
+     "dimension": "USE1-TimedStorage-ByteHrs", "unit": "GB-Mo",
+     "pricePerUnit": "0.2500000000", "currency": "USD", "region": "us-east-1",
+     "text": "..."},
+    {"service": "Amazon API Gateway", "requestedAs": "API Gateway",
+     "dimension": "USE1-ApiGatewayHttpRequest", "unit": "Requests",
+     "pricePerUnit": "0.0000010000", "currency": "USD", "region": "us-east-1",
+     "text": "..."},
+    {"service": "Amazon Simple Storage Service", "requestedAs": "Amazon S3",
+     "dimension": "USE1-TimedStorage-ByteHrs", "unit": "GB-Mo",
+     "pricePerUnit": "0.0230000000", "currency": "USD", "region": "us-east-1",
+     "text": "..."},
+]
+FIVE = ('["Amazon Bedrock", "AWS Lambda", "DynamoDB", "API Gateway", "Amazon S3"]')
+
+
+def test_a_service_that_prices_per_model_does_not_inflate_the_count():
+    """Observed live: "Priced 10 of 5 service(s)" — impossible, and it shipped.
+
+    The numerator counted AWS `servicename` values in the rows; the denominator
+    counted the names the model asked for. Bedrock returning six model SKUs made the
+    numerator exceed the denominator.
+    """
+    asset, _p, _q = _run(FANNED_ROWS, services=FIVE)
+    summary = asset["summary"]
+    assert "Priced 5 of 5 service(s)" in summary, summary
+    assert "10 of 5" not in summary
+    # The ten real servicenames are still reported — they are the useful detail.
+    assert "Claude Opus 4.7 (Amazon Bedrock Edition)" in summary
+    assert "Amazon Simple Storage Service" in summary
+    # And the fan-out is explained, so 5-of-5 listing ten names is not a puzzle.
+    assert "10 priced dimensions" in summary
+
+
+def test_a_name_that_resolves_to_nothing_is_still_subtracted():
+    """The count has to track `unpriced`, not just the row contents."""
+    asset, _p, _q = _run(
+        FANNED_ROWS,
+        services='["Amazon Bedrock", "AWS Lambda", "DynamoDB", "API Gateway", '
+                 '"Amazon S3", "Amazon Quantum Ledger Database"]')
+    summary = asset["summary"]
+    assert "Priced 5 of 6 service(s)" in summary, summary
+    assert "No rate was returned for Amazon Quantum Ledger Database" in summary
+
+
+def test_without_the_requested_field_the_summary_claims_no_fraction():
+    """`requested` is optional in `rowFields`. Absent it, we cannot say which of OUR
+    names resolved — so the summary must not invent a fraction over them.
+
+    The shipped ROWS fixture has no `requestedAs`, which is exactly this case.
+    """
+    asset, _p, _q = _run(ROWS)
+    summary = asset["summary"]
+    assert "Priced 3 service(s) for the 3 this use case would run on" in summary, summary
+    assert " of 3 service(s) this use case" not in summary
+
+
+def test_the_count_never_exceeds_the_number_of_services_asked_for():
+    """The invariant, stated directly: whatever the rows do, the numerator is a
+    count of REQUESTED names and cannot be larger than how many were requested."""
+    import re
+
+    for services, rows in ((FIVE, FANNED_ROWS),
+                           (FIVE, FANNED_ROWS[:6]),          # only Bedrock priced
+                           ('["Amazon Bedrock"]', FANNED_ROWS[:6])):
+        asset, _p, _q = _run(rows, services=services)
+        m = re.search(r"Priced (\d+) of (\d+) service", asset["summary"])
+        if m:
+            assert int(m.group(1)) <= int(m.group(2)), asset["summary"]
