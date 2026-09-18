@@ -12,6 +12,8 @@ name is carried onto the telemetry row and the captured prompt so observability
 and AgentCore Evaluations can scope to ONE prompt at a time.
 """
 
+import contextlib
+
 from app.common.config import MODEL_ID, REGION
 from app.common.errors import ModelUnavailable
 
@@ -29,10 +31,10 @@ def _text_of(content) -> str:
         for block in content:
             if isinstance(block, str):
                 parts.append(block)
-            elif isinstance(block, dict) and isinstance(block.get("text"), str):
-                # only real text blocks (skip reasoning/tool_use/etc.)
-                if block.get("type", "text") == "text":
-                    parts.append(block["text"])
+            # only real text blocks (skip reasoning/tool_use/etc.)
+            elif (isinstance(block, dict) and isinstance(block.get("text"), str)
+                  and block.get("type", "text") == "text"):
+                parts.append(block["text"])
         if parts:
             return "".join(parts)
     return content if isinstance(content, str) else str(content)
@@ -45,11 +47,9 @@ async def run_llm(name: str, system: str, user: str,
     # Capture this call's prompt (system + the real source inputs) so the agent's
     # AGENT span carries it as gen_ai.task.input for AgentCore Evaluations, and so
     # per-prompt evaluation can find it. No-op outside an agent run.
-    try:
+    with contextlib.suppress(Exception):
         from app.features.observability import otel as _otel
         _otel.capture_prompt(name, system, user)
-    except Exception:  # noqa: BLE001
-        pass
     try:
         from langchain_aws import ChatBedrockConverse
 
@@ -62,13 +62,13 @@ async def run_llm(name: str, system: str, user: str,
         out_text = _text_of(msg.content)
         _meter_llm(model, msg, system, user, out_text, _latency_ms, mode="bedrock",
                    temperature=temperature, max_tokens=max_tokens, name=name)
-        try:
+        with contextlib.suppress(Exception):
             from app.features.observability import otel as _otel
             _otel.capture_output(out_text)  # pair this call's response with its prompt
-        except Exception:  # noqa: BLE001
-            pass
         return out_text
-    except Exception as e:  # noqa: BLE001 - record the failure, then fail the run
+    except Exception as e:
+        # Record the failure, then fail the run — see the module docstring: a model
+        # call that did not happen must never look like one that returned nothing.
         _meter_llm(model, None, system, user, "", 0, mode="error",
                    temperature=temperature, max_tokens=max_tokens, name=name)
         raise ModelUnavailable(
@@ -89,7 +89,7 @@ def _finish_reason_of(msg) -> str:
 def _meter_llm(model, msg, system, user, output_text, latency_ms, mode,
                temperature: float = 0.0, max_tokens: int = 0, name: str = "") -> None:
     """Best-effort observability hook (isolated in app/features/observability)."""
-    try:
+    with contextlib.suppress(Exception):  # metering must never break a call
         usage = getattr(msg, "usage_metadata", None) or {} if msg is not None else {}
         input_tokens = int(usage.get("input_tokens", 0) or 0)
         output_tokens = int(usage.get("output_tokens", 0) or 0)
@@ -108,5 +108,3 @@ def _meter_llm(model, msg, system, user, output_text, latency_ms, mode,
             temperature=temperature, max_tokens=max_tokens,
             finish_reason=_finish_reason_of(msg), prompt=name,
         )
-    except Exception:  # noqa: BLE001 - metering must never break a call
-        pass

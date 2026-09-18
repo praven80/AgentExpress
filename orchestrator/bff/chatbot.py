@@ -233,7 +233,8 @@ _SID_PROP = {"session_id": {"type": "string",
 
 _REGISTRY = {
     "status": {"name": "get_status", "fn": _t_status,
-               "description": "Get a run's overall status, which gate it's waiting at (if any), and each agent's status.",
+               "description": "Get a run's overall status, which gate it's waiting at "
+                              "(if any), and each agent's status.",
                "schema": {"type": "object", "properties": _SID_PROP}},
     "sessions": {"name": "find_runs", "fn": _t_sessions,
                  "description": "List/search past workflow runs (most recent first). Use 'query' to match a topic.",
@@ -243,7 +244,9 @@ _REGISTRY = {
     "outputs": {"name": "get_agent_output", "fn": _t_output,
                 "description": "Get the latest output an agent produced in a run.",
                 "schema": {"type": "object", "properties": {**_SID_PROP,
-                           "agent_id": {"type": "string", "description": "Agent id (see the agent list in the system prompt)."}},
+                           "agent_id": {"type": "string",
+                                        "description": "Agent id (see the agent list "
+                                                       "in the system prompt)."}},
                            "required": ["agent_id"]}},
     "costs": {"name": "get_costs", "fn": _t_costs,
               "description": "Get the cost (USD) of a run, total and per agent.",
@@ -257,7 +260,8 @@ _REGISTRY = {
                    "schema": {"type": "object", "properties": {**_SID_PROP,
                               "agent_id": {"type": "string", "description": "Optional single agent id."}}}},
     "evals": {"name": "get_evals", "fn": _t_evals,
-              "description": "Get AgentCore evaluation results (evaluator scores + explanations) for a run, optionally by agent/prompt.",
+              "description": "Get AgentCore evaluation results (evaluator scores + "
+                             "explanations) for a run, optionally by agent/prompt.",
               "schema": {"type": "object", "properties": {**_SID_PROP,
                          "agent_id": {"type": "string", "description": "Optional single agent id."},
                          "prompt": {"type": "string", "description": "Optional named prompt id."}}}},
@@ -270,20 +274,29 @@ _REGISTRY = {
                            "required": ["agent_id"]}},
     "review": {"name": "submit_review", "fn": _t_review, "action": True,
                "authz": "decision",
-               "description": "Approve, revise, or deny the human-review gate a run is currently paused at. approve = continue the workflow; revise (needs a comment) = re-run the gated agent with that feedback; deny = halt the run.",
+               "description": "Approve, revise, or deny the human-review gate a run is "
+                              "currently paused at. approve = continue the workflow; "
+                              "revise (needs a comment) = re-run the gated agent with "
+                              "that feedback; deny = halt the run.",
                "schema": {"type": "object", "properties": {**_SID_PROP,
                           "decision": {"type": "string", "enum": ["approve", "deny", "revise"],
                                        "description": "approve | revise | deny"},
-                          "comment": {"type": "string", "description": "Feedback — required when decision is 'revise'."}},
+                          "comment": {"type": "string",
+                                      "description": "Feedback — required when the "
+                                                     "decision is 'revise'."}},
                           "required": ["decision"]}},
     "rerun": {"name": "rerun_agents", "fn": _t_rerun, "action": True,
               "authz": "rerun",
-              "description": "Re-run one or more agents of a run with optional feedback; downstream stages regenerate. Several agents can only be re-run together when they belong to the same parallel stage.",
+              "description": "Re-run one or more agents of a run with optional feedback; "
+                             "downstream stages regenerate. Several agents can only be "
+                             "re-run together when they belong to the same parallel stage.",
               "schema": {"type": "object", "properties": {**_SID_PROP,
                          "agents": {"type": "array", "description": "Agents to re-run.",
                                     "items": {"type": "object", "properties": {
                                         "agent_id": {"type": "string"},
-                                        "comment": {"type": "string", "description": "Optional feedback for that agent."}},
+                                        "comment": {"type": "string",
+                                                    "description": "Optional feedback "
+                                                                   "for that agent."}},
                                         "required": ["agent_id"]}}},
                          "required": ["agents"]}},
 }
@@ -427,7 +440,7 @@ def _converse(model, system, messages, tool_config):
                 modelId=model, system=system, messages=messages, **extra,
                 inferenceConfig={"maxTokens": 1500, "temperature": 0},
             )
-        except ClientError as e:  # noqa: PERF203
+        except ClientError as e:
             last = e
             if e.response.get("Error", {}).get("Code", "") in transient:
                 time.sleep(0.6 * (attempt + 1))

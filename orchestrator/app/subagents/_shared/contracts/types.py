@@ -10,10 +10,10 @@ each can pin itself strictly with `Literal[AssetType.X]`. Your own contract does
 need an entry here — a plain `Literal["claim-decision"]` is enough.
 """
 
-from enum import Enum
+from enum import StrEnum
 
 
-class AssetType(str, Enum):
+class AssetType(StrEnum):
     REQUEST_BRIEF = "request-brief"
     RESEARCH_FINDING = "research-finding"
     ANALYSIS = "analysis"

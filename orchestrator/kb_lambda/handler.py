@@ -6,6 +6,7 @@ and the tool name in `context.client_context.custom['bedrockAgentCoreToolName']`
 (format: "<target>___<tool>"). We return a JSON object the agent can use.
 """
 
+import contextlib
 import os
 
 import boto3
@@ -19,10 +20,8 @@ _rt = boto3.client("bedrock-agent-runtime", region_name=REGION)
 
 def lambda_handler(event, context):
     tool = ""
-    try:
+    with contextlib.suppress(Exception):
         tool = context.client_context.custom.get("bedrockAgentCoreToolName", "")
-    except Exception:  # noqa: BLE001
-        pass
 
     query = (event or {}).get("query", "").strip()
     if not query:
@@ -41,11 +40,12 @@ def lambda_handler(event, context):
         retrievalQuery={"text": query},
         retrievalConfiguration={"vectorSearchConfiguration": vector_cfg},
     )
-    results = []
-    for r in resp.get("retrievalResults", []):
-        results.append({
+    results = [
+        {
             "text": r.get("content", {}).get("text", ""),
             "score": r.get("score"),
             "source": r.get("location", {}).get("s3Location", {}).get("uri"),
-        })
+        }
+        for r in resp.get("retrievalResults", [])
+    ]
     return {"query": query, "count": len(results), "results": results}

@@ -18,16 +18,14 @@ reached.
 
 import asyncio
 import base64
+import contextlib
 import json
 import os
 import time
 import urllib.parse
 import urllib.request
-from typing import Tuple
 
-from app.common.errors import ToolDenied, ToolUnavailable
 from app.common.config import (
-    TOOLS,
     GATEWAY_AUDIENCE,
     GATEWAY_AUTH_FLOW,
     GATEWAY_CLIENT_ID,
@@ -35,7 +33,9 @@ from app.common.config import (
     GATEWAY_TOKEN_URL,
     GATEWAY_URL,
     MCP_TIMEOUT,
+    TOOLS,
 )
+from app.common.errors import ToolDenied, ToolUnavailable
 
 _token_cache = {"value": "", "exp": 0.0}
 
@@ -55,7 +55,18 @@ def _token_request() -> urllib.request.Request:
 
     The Gateway's authorizer is configured to match (see terraform/gateway.tf).
     To add another OIDC provider, add a branch here and one in identity.tf.
+
+    HTTPS is REQUIRED, and checked rather than assumed. This request carries the
+    Gateway client secret — in the Authorization header for Cognito, in the form
+    body for Auth0 — so a token URL that arrived misconfigured as `http://` would
+    put those credentials on the wire in plaintext, and a `file://` one would make
+    this read a local path instead. The URL comes from the IaC, so this should never
+    fire; it raises rather than warns because there is no safe way to continue.
     """
+    if not GATEWAY_TOKEN_URL.lower().startswith("https://"):
+        raise ToolUnavailable(
+            "GATEWAY_TOKEN_URL must be an https:// URL — this request carries the "
+            f"Gateway client secret. Got: {GATEWAY_TOKEN_URL.split('://')[0]!r}://…")
     if GATEWAY_AUTH_FLOW == "auth0":
         body = urllib.parse.urlencode({
             "grant_type": "client_credentials",
@@ -63,7 +74,7 @@ def _token_request() -> urllib.request.Request:
             "client_secret": GATEWAY_CLIENT_SECRET,
             "audience": GATEWAY_AUDIENCE,
         }).encode()
-        return urllib.request.Request(
+        return urllib.request.Request(  # noqa: S310 - https enforced above
             GATEWAY_TOKEN_URL, data=body,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
@@ -75,7 +86,7 @@ def _token_request() -> urllib.request.Request:
     }).encode()
     credentials = base64.b64encode(
         f"{GATEWAY_CLIENT_ID}:{GATEWAY_CLIENT_SECRET}".encode()).decode()
-    return urllib.request.Request(
+    return urllib.request.Request(  # noqa: S310 - https enforced above
         GATEWAY_TOKEN_URL, data=body,
         headers={
             "Content-Type": "application/x-www-form-urlencoded",
@@ -149,7 +160,7 @@ def _unwrap_mcp(result):
     # A JSON string at any level: parse and recurse.
     if isinstance(result, str):
         s = result.strip()
-        if s.startswith("{") or s.startswith("["):
+        if s.startswith(("{", "[")):
             try:
                 return _unwrap_mcp(json.loads(s))
             except ValueError:
@@ -391,7 +402,7 @@ def _select_tool(tools, tool_key: str):
 
 async def _query_tool_impl(tool_key: str, query: str,
                            extra_args: dict | None = None,
-                           *, raw: bool = False) -> Tuple[str, str]:
+                           *, raw: bool = False) -> tuple[str, str]:
     """Call a Gateway tool by its workflow.json label. Returns (text, "gateway").
 
     `raw=True` returns the UNFLATTENED tool result instead of rendered text, for
@@ -413,7 +424,7 @@ async def _query_tool_impl(tool_key: str, query: str,
 
     try:
         tools = await asyncio.wait_for(_gateway_tools(), timeout=MCP_TIMEOUT)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         raise ToolUnavailable(
             f"Could not list tools on the Gateway while calling '{tool_key}': "
             f"{type(e).__name__}: {e}") from e
@@ -441,7 +452,7 @@ async def _query_tool_impl(tool_key: str, query: str,
         args.update(extra_args)
     try:
         result = await asyncio.wait_for(tool.ainvoke(args), timeout=MCP_TIMEOUT)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         # A Cedar DENY (ENFORCE mode) surfaces as an authorization error from the
         # Gateway — distinguish it from an outage so the operator knows the policy
         # is working as configured rather than something being broken.
@@ -529,15 +540,13 @@ def _kb_tool_key() -> str:
 # row (both best-effort), then return exactly what the impl returned. Metering
 # never alters behaviour.
 
-def _record_tool(provider: str, query: str, latency_ms: int, result: Tuple[str, str]) -> None:
-    try:
+def _record_tool(provider: str, query: str, latency_ms: int, result: tuple[str, str]) -> None:
+    with contextlib.suppress(Exception):  # metering must never break a call
         from app.features.observability import meter
         text = result[0] if isinstance(result, tuple) and result else ""
         meter.record_tool(provider=provider, query=query, latency_ms=latency_ms,
                           mode=(result[1] if isinstance(result, tuple) and len(result) > 1 else "gateway"),
                           result_text=text)
-    except Exception:  # noqa: BLE001 - metering must never break a call
-        pass
 
 
 def _record_policy(tool: str, result_mode: str, latency_ms: int,
@@ -553,16 +562,14 @@ def _record_policy(tool: str, result_mode: str, latency_ms: int,
         decision = "log-only" if pmode.upper() == "LOG_ONLY" else "allowed"
     else:
         return  # gateway not used -> no policy evaluation happened
-    try:
+    with contextlib.suppress(Exception):
         from app.features.observability import meter
         meter.record_policy(tool=tool, decision=decision,
                             filter_value=filter_value or "", mode=pmode,
                             latency_ms=latency_ms)
-    except Exception:  # noqa: BLE001
-        pass
 
 
-async def query_tool(tool_key: str, query: str) -> Tuple[str, str]:
+async def query_tool(tool_key: str, query: str) -> tuple[str, str]:
     """Call the tool an agent is bound to (its `tool` label in workflow.json)."""
     from app.features.observability import otel
     kind = str((TOOLS.get(tool_key) or {}).get("type", "mcp")).lower()
@@ -571,10 +578,8 @@ async def query_tool(tool_key: str, query: str) -> Tuple[str, str]:
                    **{"gen_ai.tool.name": tool_key, "gen_ai.operation.name": kind}) as sp:
         result = await _query_tool_impl(tool_key, query)
         if sp is not None:
-            try:
+            with contextlib.suppress(Exception):
                 sp.set_attribute("gen_ai.tool.mode", result[1])
-            except Exception:  # noqa: BLE001
-                pass
     latency_ms = int((time.perf_counter() - start) * 1000)
     _record_tool(tool_key, query, latency_ms, result)
     # Cedar action id for a target-level permit is the target name itself; for a
@@ -584,7 +589,7 @@ async def query_tool(tool_key: str, query: str) -> Tuple[str, str]:
     return result
 
 
-async def retrieve(query: str, doc_type: str | None = None) -> Tuple[str, str]:
+async def retrieve(query: str, doc_type: str | None = None) -> tuple[str, str]:
     """Retrieve grounded context from the Knowledge Base tool via the Gateway.
 
     `doc_type` scopes retrieval to one corpus (a top-level folder under kb_docs/).
@@ -600,10 +605,8 @@ async def retrieve(query: str, doc_type: str | None = None) -> Tuple[str, str]:
                       "kb.doc_type": doc_type}) as sp:
         result = await _query_tool_impl(tool_key, query, extra_args=extra)
         if sp is not None:
-            try:
+            with contextlib.suppress(Exception):
                 sp.set_attribute("gen_ai.tool.mode", result[1])
-            except Exception:  # noqa: BLE001
-                pass
     latency_ms = int((time.perf_counter() - start) * 1000)
     _record_tool(tool_key, query, latency_ms, result)
     _record_policy(f"{tool_key}___retrieve", result[1], latency_ms, filter_value=doc_type)

@@ -39,12 +39,12 @@ class CallRecord:
     system_tokens_exact: bool = True   # False when CountTokens was unavailable and we estimated
     embed_tokens_est: int = 0      # estimate: KB query embedding tokens (tool rows)
     latency_ms: int = 0
-    cost_usd: Decimal = Decimal("0")
+    cost_usd: Decimal = Decimal(0)
     # Per-1M-token rates that priced this row (llm only), for UI display.
-    in_rate: Decimal = Decimal("0")
-    out_rate: Decimal = Decimal("0")
+    in_rate: Decimal = Decimal(0)
+    out_rate: Decimal = Decimal(0)
     # Request parameters + outcome, surfaced in the "Prompts & I/O" inspector.
-    temperature: Decimal = Decimal("0")
+    temperature: Decimal = Decimal(0)
     max_tokens: int = 0
     finish_reason: str = ""          # e.g. end_turn | max_tokens (llm rows)
     status: str = "ok"               # ok | error | passed | blocked | allowed | denied
@@ -69,7 +69,7 @@ class CallRecord:
     version: int = 0
     # For kind="eval" rows: the evaluator's numeric score (0.0-1.0). `label`
     # holds the evaluator name and `output_text` the judge's explanation.
-    value: Decimal = Decimal("0")
+    value: Decimal = Decimal(0)
     # For kind="eval" rows: the judge's OWN qualitative band, verbatim from
     # AgentCore (e.g. "Very Helpful"). Kept because it is authoritative — without
     # it the UI has to re-derive a band from `value`, inventing thresholds the

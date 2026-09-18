@@ -224,7 +224,6 @@ def test_report_is_complete_only_when_every_expected_section_is_present(SECTIONS
             for t in SECTIONS]
     assert all(t in {s.section_type for s in full} for t in SECTIONS)
 
-    partial = full[:-1] + [ReportSection(sectionId="section-extra",
-                                         sectionType="extra", title="Extra")]
+    partial = [*full[:-1], ReportSection(sectionId="section-extra", sectionType="extra", title="Extra")]
     present = {s.section_type for s in partial}
     assert not all(t in present for t in SECTIONS)

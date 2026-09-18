@@ -12,7 +12,6 @@ at compile time.
 """
 
 import pytest
-
 from conftest import all_ids, expected_gate_nodes, wf, workflow
 
 # Each entry: (name, steps). All of these must compile.

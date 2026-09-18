@@ -43,12 +43,11 @@ import json
 import os
 import uuid
 
-import boto3
-from boto3.dynamodb.conditions import Key
-
 import authz
+import boto3
 import chatbot
 import clock
+from boto3.dynamodb.conditions import Key
 
 STATUS_TABLE = os.environ["STATUS_TABLE"]
 EVENTS_TABLE = os.environ["EVENTS_TABLE"]
@@ -353,7 +352,7 @@ def _api(event: dict, context) -> dict:
     if event.get("body"):
         try:
             body = json.loads(event["body"])
-        except Exception:
+        except (TypeError, ValueError):     # not JSON, or not a string
             body = {}
 
     if method == "GET" and path == "/api/workflow":

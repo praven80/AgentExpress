@@ -8,7 +8,6 @@ derivation so that cannot come back.
 
 from conftest import all_ids, expected_first, expected_last, expected_upstream, wf, workflow
 
-
 # --- step_agents: one function, three step shapes --------------------------
 
 def test_step_agents_handles_every_step_shape():
@@ -58,9 +57,9 @@ def test_shipped_workflow_topology(shipped):
     workflow.json must not turn this red. See conftest for why."""
     with workflow(shipped) as imp:
         cfg = imp("app.common.config")
-        assert cfg.FIRST_AGENT_ID == expected_first(shipped)
-        assert cfg.LAST_AGENT_ID == expected_last(shipped)
-        assert cfg.NODE_IDS == list(shipped["agents"].keys())
+        assert expected_first(shipped) == cfg.FIRST_AGENT_ID
+        assert expected_last(shipped) == cfg.LAST_AGENT_ID
+        assert list(shipped["agents"].keys()) == cfg.NODE_IDS
 
 
 # --- upstream_of: the rule that makes "add an agent" a config-only change ---

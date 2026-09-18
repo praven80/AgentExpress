@@ -220,7 +220,7 @@ def enabled_names(chatbot, permitted):
 
 def test_the_assistant_keeps_every_tool_when_there_is_no_authz_context(monkeypatch):
     chatbot = load_chatbot(monkeypatch)
-    assert ACTION_TOOLS <= enabled_names(chatbot, None)
+    assert enabled_names(chatbot, None) >= ACTION_TOOLS
 
 
 def test_an_action_tool_is_withheld_when_the_caller_lacks_the_group(monkeypatch):

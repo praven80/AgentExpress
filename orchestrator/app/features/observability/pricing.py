@@ -47,7 +47,7 @@ _GATEWAY_INVOCATIONS_PER_TOOL_CALL = 2
 RUNTIME_ASSUMED_VCPU = Decimal("1.0")
 RUNTIME_ASSUMED_GB = Decimal("2.0")
 
-_MTOK = Decimal("1000000")
+_MTOK = Decimal(1000000)
 
 
 def _model_rates(model_id: str) -> tuple[Decimal, Decimal]:
@@ -87,7 +87,7 @@ def runtime_compute_cost(vcpu_hours: Decimal | float, gb_hours: Decimal | float)
             + Decimal(str(gb_hours)) * RUNTIME_GB_HOUR)
 
 
-def compute_cost_for_seconds(active_seconds: float | int) -> Decimal:
+def compute_cost_for_seconds(active_seconds: float) -> Decimal:
     """Estimated AgentCore Runtime compute cost for a burst of active seconds,
     using the assumed microVM footprint above."""
     hours = Decimal(str(max(0, active_seconds))) / Decimal(3600)

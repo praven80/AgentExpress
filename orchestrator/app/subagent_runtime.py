@@ -51,13 +51,12 @@ async def invoke(payload, context=None):
                        **{"gen_ai.agent.id": AGENT_ID,
                           "gen_ai.operation.name": "invoke_agent",
                           "aws.genai.span_kind": "AGENT",
-                          "session.id": otel.normalize_session_id(session_id)}) as sp:
-            with otel.accumulate_tokens_on(sp):
-                # Long-term memory works here exactly as in-process (same
-                # config-driven no-ops when disabled for this agent).
-                ctx.recalled_memory = await ctx.memory_recall(ctx.topic or AGENT_ID)
-                out = await _agent.run(ctx)
-                await ctx.memory_store(out)
+                          "session.id": otel.normalize_session_id(session_id)}) as sp, otel.accumulate_tokens_on(sp):
+            # Long-term memory works here exactly as in-process (same
+            # config-driven no-ops when disabled for this agent).
+            ctx.recalled_memory = await ctx.memory_recall(ctx.topic or AGENT_ID)
+            out = await _agent.run(ctx)
+            await ctx.memory_store(out)
         return {"agent_id": AGENT_ID, "output": out}
     except Exception as e:  # noqa: BLE001
         return {"agent_id": AGENT_ID, "error": f"{type(e).__name__}: {e}"}

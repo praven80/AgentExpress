@@ -23,6 +23,7 @@ Fallback path (legacy runs with no per-prompt rows):
 Everything is best-effort: evaluation never fails a run.
 """
 
+import contextlib
 import json
 import os
 import time
@@ -123,8 +124,7 @@ def _service_name_for(log_group_name: str) -> str:
     service:    <agentRuntimeName>.DEFAULT          (e.g. multiagent_orchestrator.DEFAULT)
     """
     name = log_group_name.rsplit("/", 1)[-1]           # <runtimeId>-DEFAULT
-    if name.endswith("-DEFAULT"):
-        name = name[: -len("-DEFAULT")]                # <runtimeId>
+    name = name.removesuffix("-DEFAULT")                # <runtimeId>
     runtime_name = name.rsplit("-", 1)[0] if "-" in name else name  # drop random suffix
     return f"{runtime_name}.DEFAULT"
 
@@ -210,10 +210,8 @@ def _run_query(client, log_group: str, query: str, now: int, lookback_hours: int
     for row in result.get("results", []):
         for field in row:
             if field["field"] == "@message" and field["value"].strip().startswith("{"):
-                try:
+                with contextlib.suppress(Exception):
                     spans.append(json.loads(field["value"]))
-                except Exception:  # noqa: BLE001
-                    pass
     return spans
 
 

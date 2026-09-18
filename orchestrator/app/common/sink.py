@@ -5,6 +5,7 @@ Granular nested-map updates mean parallel agents never conflict; timeline log
 lines go to a separate append-only events table.
 """
 
+import contextlib
 import uuid
 
 from app.common import clock
@@ -59,11 +60,9 @@ async def ensure_session(session_id: str, topic: str) -> None:
         "history": {}, "hitl": None, "result": None,
         "created": clock.now_str(), "updated_at": clock.now_str(),
     }
-    try:
+    with contextlib.suppress(Exception):
         _table(STATUS_TABLE).put_item(
             Item=item, ConditionExpression="attribute_not_exists(session_id)")
-    except Exception:
-        pass
 
 
 async def emit(session_id: str, event: dict) -> None:
@@ -114,14 +113,12 @@ def _write_ddb(sid: str, ev: dict) -> None:
                                        ":h": {"node": n, "question": ev.get("question", "")},
                                        ":u": now})
         if n:
-            try:
+            with contextlib.suppress(Exception):  # synthetic gate id, no per-node entry
                 tbl.update_item(
                     Key=_key(sid),
                     UpdateExpression="SET #nodes.#n.#s = :w, updated_at = :u",
                     ExpressionAttributeNames={"#nodes": "nodes", "#n": n, "#s": "status"},
                     ExpressionAttributeValues={":w": "waiting_human", ":u": now})
-            except Exception:  # noqa: BLE001 - synthetic gate id, no per-node entry
-                pass
     elif t == "hitl_resolved":
         tbl.update_item(Key=_key(sid),
                         UpdateExpression="SET hitl = :z, overall = :ov, updated_at = :u",

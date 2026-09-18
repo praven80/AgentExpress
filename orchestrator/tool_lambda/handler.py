@@ -548,7 +548,9 @@ def aws_prices(args: dict) -> dict:
         if not curated:
             unfiltered.append(name)
         for r in rows:
-            results.append({
+            # A comprehension here would have to shed the comments below, which carry
+            # why each field exists. The list is at most a few dozen rows.
+            results.append({  # noqa: PERF401 - kept a loop so the fields stay annotated
                 # Both shapes on every row, and both load-bearing: `text` for an
                 # agent that hands evidence to a model, the fields for one that
                 # computes. See ctx.call_tool_rows and the tool's `rowFields`.

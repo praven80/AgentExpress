@@ -15,9 +15,13 @@ approve -> continue, deny -> END, revise -> loop back and re-run with feedback
     step: {"sequence": ["analysis", "recommendation"]}            -> one after another, one gate after both
 """
 
+import itertools
+
 from langgraph.graph import END, START, StateGraph
 
-from app.common.config import STEPS, step_agents as agents_in
+from app.common.config import STEPS
+from app.common.config import step_agents as agents_in
+from app.common.state import State
 from app.orchestrator.nodes import (
     make_agent_node,
     make_gate_node,
@@ -25,7 +29,6 @@ from app.orchestrator.nodes import (
     make_sequence_gate_node,
 )
 from app.orchestrator.registry import load_agents
-from app.common.state import State
 
 
 def _entries(step: dict) -> list:
@@ -99,7 +102,7 @@ def build_graph(checkpointer=None):
     for step in STEPS:
         seq = step.get("sequence")
         if seq:
-            for a, b in zip(seq, seq[1:]):
+            for a, b in itertools.pairwise(seq):
                 g.add_edge(a, b)
 
     # START -> first step's entry node(s).

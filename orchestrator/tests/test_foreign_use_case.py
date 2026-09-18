@@ -242,11 +242,11 @@ def test_no_framework_module_names_a_shipped_agent_in_executable_code():
     offenders = []
     for area in ("common", "orchestrator"):
         for path in (ORCH_ROOT / "app" / area).rglob("*.py"):
-            tree = ast.parse(path.read_text())
-            for node in ast.walk(tree):
-                if (isinstance(node, ast.Constant) and isinstance(node.value, str)
-                        and node.value in sample_ids):
-                    offenders.append(
-                        f"{path.relative_to(ORCH_ROOT)}:{node.lineno}: {node.value!r}")
+            offenders += [
+                f"{path.relative_to(ORCH_ROOT)}:{n.lineno}: {n.value!r}"
+                for n in ast.walk(ast.parse(path.read_text()))
+                if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                and n.value in sample_ids
+            ]
     assert not offenders, ("framework code hardcodes a sample agent id:\n"
                            + "\n".join(offenders))

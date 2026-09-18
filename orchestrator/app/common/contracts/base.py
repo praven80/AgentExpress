@@ -18,7 +18,7 @@ Two conventions worth knowing before editing:
 from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -45,7 +45,7 @@ class Base(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class AssetStatus(str, Enum):
+class AssetStatus(StrEnum):
     """The asset's own `status` field.
 
     Distinct from any workflow state the orchestrator tracks separately.
@@ -114,7 +114,7 @@ class Source(Base):
     description: str | None = None
 
     @model_validator(mode="after")
-    def _not_both_targets(self) -> "Source":
+    def _not_both_targets(self) -> Source:
         if self.source_asset_id and self.artifact_id:
             raise ValueError(
                 f"source {self.source_id!r} points at both an asset and an artifact; "

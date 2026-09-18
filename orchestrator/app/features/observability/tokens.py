@@ -72,7 +72,10 @@ def exact_system_tokens(model_id: str, system_text: str) -> int | None:
     Cached per (model, system prompt); the per-model baseline is cached too."""
     if not system_text:
         return 0
-    key = (model_id, hashlib.sha1(system_text.encode("utf-8")).hexdigest())
+    # sha256 as a cache key, not for security. It was sha1, which flags in any
+    # security lint and buys nothing here — the cost difference is irrelevant next
+    # to the CountTokens call this cache exists to avoid.
+    key = (model_id, hashlib.sha256(system_text.encode("utf-8")).hexdigest())
     with _lock:
         if key in _system_cache:
             return _system_cache[key]

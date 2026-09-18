@@ -9,8 +9,10 @@ agent's `agentcore` block from workflow.json and is a no-op when the feature is
 disabled. An agent can therefore call them unconditionally.
 """
 
+import contextlib
 import json as _json
 import re
+from typing import ClassVar
 
 from app.common.config import TOOLS
 from app.common.llm import run_llm
@@ -146,11 +148,9 @@ class AgentContext:
         # numbering the node writes to `history`), so the observability UI can
         # group and label telemetry by version across re-runs.
         self.version = len((state.get("history") or {}).get(agent.id) or []) + 1
-        try:
+        with contextlib.suppress(Exception):  # observability is best-effort
             from app.features.observability.scope import set_scope
             set_scope(self.session_id, self.agent_id, self.user, self.version)
-        except Exception:  # noqa: BLE001 - observability is best-effort
-            pass
         # Reviewer feedback for this agent, set when a HITL gate chose "revise"
         # and the graph looped back to re-run this agent. Empty on a first run.
         self.feedback = (state.get("feedback") or {}).get(agent.id, "")
@@ -293,12 +293,10 @@ class AgentContext:
 
     def _record_guardrail(self, source: str, action: str, detail: str, latency_ms: int) -> None:
         """Best-effort: record a guardrail check for the observability UI."""
-        try:
+        with contextlib.suppress(Exception):
             from app.features.observability import meter
             meter.record_guardrail(source=source, action=action, detail=detail,
                                    latency_ms=latency_ms)
-        except Exception:  # noqa: BLE001
-            pass
 
     # How much of a caller-supplied `subject_id` to keep in the namespace. Long
     # enough that two subjects do not collide, short enough to stay legible.
@@ -345,12 +343,10 @@ class AgentContext:
     def _record_memory(self, op: str, namespace: str, query: str, result_text: str,
                        latency_ms: int) -> None:
         """Best-effort: record a memory read/write for the observability UI."""
-        try:
+        with contextlib.suppress(Exception):
             from app.features.observability import meter
             meter.record_memory(op=op, namespace=namespace, query=query,
                                 result_text=result_text, latency_ms=latency_ms)
-        except Exception:  # noqa: BLE001
-            pass
 
     # Long-term strategy -> namespace prefix. Matches the strategy namespace
     # templates provisioned on the semantic memory (terraform/main.tf):
@@ -359,7 +355,7 @@ class AgentContext:
     # semantic_memory_strategy + summary_memory_strategy, and the CDK equivalents).
     # `user_preference` was listed here without a provisioned strategy, so enabling
     # it recalled from a namespace nothing ever writes — and reported success.
-    _NS_PREFIX = {"semantic": "insights", "summary": "summary"}
+    _NS_PREFIX: ClassVar[dict[str, str]] = {"semantic": "insights", "summary": "summary"}
 
     def _longterm_strategies(self) -> list[str]:
         """The long-term strategies enabled for this agent in workflow.json.

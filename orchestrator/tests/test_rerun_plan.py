@@ -7,9 +7,8 @@ asserted exactly.
 """
 
 import pytest
-from langgraph.graph import START
-
 from conftest import ids_of, wf, workflow
+from langgraph.graph import START
 
 
 def plan(steps, agent):

@@ -97,9 +97,7 @@ def _balance_close(s: str) -> dict | None:
             in_str = True
         elif ch in "{[":
             stack.append(ch)
-        elif ch == "}" and stack and stack[-1] == "{":
-            stack.pop()
-        elif ch == "]" and stack and stack[-1] == "[":
+        elif (ch == "}" and stack and stack[-1] == "{") or (ch == "]" and stack and stack[-1] == "["):
             stack.pop()
     fixed = s
     if in_str:

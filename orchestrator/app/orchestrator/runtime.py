@@ -20,9 +20,9 @@ Invoke contract:
   {"action": "get_insights"}   -> synchronous read of the latest findings
 All except get_insights return immediately; clients poll the status store.
 """
-# ruff: noqa: E402
 
 import asyncio
+import contextlib
 import uuid
 
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
@@ -35,7 +35,7 @@ from app.orchestrator.graph_builder import build_graph, group_rerun_plan, rerun_
 if not MEMORY_ID:
     raise RuntimeError("MEMORY_ID environment variable is required")
 
-from langgraph_checkpoint_aws import AgentCoreMemorySaver  # noqa: E402
+from langgraph_checkpoint_aws import AgentCoreMemorySaver
 
 graph = build_graph(AgentCoreMemorySaver(MEMORY_ID, region_name=REGION))
 app = BedrockAgentCoreApp()
@@ -222,14 +222,12 @@ async def _run(session_id: str, initial=None, resume=None, rerun=None, user: str
     finally:
         # Record the AgentCore Runtime compute consumed by this active burst
         # (best-effort; isolated in app/features/observability).
-        try:
+        with contextlib.suppress(Exception):
             from app.features.observability import meter
             meter.record_session_compute(
                 session_id=session_id, user=user,
                 active_seconds=_t.perf_counter() - _burst_start,
             )
-        except Exception:  # noqa: BLE001
-            pass
         otel.detach(_sess_token)
         # Push buffered spans to the exporter BEFORE marking the task complete —
         # once complete, AgentCore may freeze/reclaim the idle container and the

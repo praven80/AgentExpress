@@ -13,7 +13,7 @@ from decimal import Decimal
 from app.features.observability import pricing
 
 
-def session_compute_cost(active_seconds: float | int) -> Decimal:
+def session_compute_cost(active_seconds: float) -> Decimal:
     """Estimated AgentCore Runtime compute cost for one active burst of a session
     (start or resume invocation). Summing these across a session's bursts gives
     total compute, excluding time paused at HITL gates (which isn't billed)."""

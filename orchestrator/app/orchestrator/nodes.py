@@ -32,8 +32,8 @@ def _eval_task_input(agent: Agent, ctx: AgentContext) -> str:
     request = ctx.topic or agent.name
     parts = [
         f"You are the \"{agent.name}\" agent in a multi-agent workflow.",
-        f"Your task: produce the {produces} for this request, grounded in the "
-        f"provided inputs and appropriate to your specialist role.",
+        (f"Your task: produce the {produces} for this request, grounded in the "
+        f"provided inputs and appropriate to your specialist role."),
         f"Request: {request}",
     ]
     if ctx.feedback:
@@ -125,7 +125,7 @@ def make_agent_node(agent: Agent):
                         "type": "node_status", "node": agent.id, "status": "failed",
                         "log": f"{agent.name} blocked by guardrail: {_blocked.message}"})
                     raise
-                except Exception as _agent_err:  # noqa: BLE001
+                except Exception as _agent_err:
                     # Surface WHICH agent failed (and why) as this node's terminal
                     # status + a timeline line, so a failed run points straight at
                     # the culprit instead of a generic top-level error. Re-raise so
@@ -158,7 +158,7 @@ def make_agent_node(agent: Agent):
         comment = (state.get("feedback") or {}).get(agent.id, "") or ""
         record = {"version": version, "at": clock.now_str(),
                   "comment": comment, "output": out}
-        history = prior + [record]
+        history = [*prior, record]
 
         await emit(ctx.session_id, {"type": "node_status", "node": agent.id,
                                     "status": "done", "output": out, "history": history,

@@ -20,6 +20,7 @@ and trace-context propagation across the InvokeAgentRuntime boundary.
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 from contextlib import contextmanager
 
@@ -128,10 +129,8 @@ def set_session(session_id: str):
 def detach(token) -> None:
     """Detach a context token previously returned by set_session/attach_carrier."""
     if _OTEL and token is not None:
-        try:
+        with contextlib.suppress(Exception):
             context.detach(token)
-        except Exception:  # noqa: BLE001
-            pass
 
 
 @contextmanager
@@ -150,10 +149,8 @@ def span(name: str, scope: str | None = None, **attributes):
         for key, value in attributes.items():
             if value is None:
                 continue
-            try:
+            with contextlib.suppress(Exception):
                 sp.set_attribute(key, value)
-            except Exception:  # noqa: BLE001
-                pass
         yield sp
 
 
@@ -165,10 +162,8 @@ def set_attrs(sp, **attributes) -> None:
     for key, value in attributes.items():
         if value is None:
             continue
-        try:
+        with contextlib.suppress(Exception):
             sp.set_attribute(key, value)
-        except Exception:  # noqa: BLE001
-            pass
 
 
 @contextmanager
@@ -188,16 +183,12 @@ def accumulate_tokens_on(sp):
         yield
     finally:
         totals = _token_accum.get() or {"in": 0, "out": 0}
-        try:
+        with contextlib.suppress(Exception):
             _token_accum.reset(token)
-        except Exception:  # noqa: BLE001
-            pass
         if sp is not None and (totals["in"] or totals["out"]):
-            try:
+            with contextlib.suppress(Exception):
                 sp.set_attribute("gen_ai.usage.input_tokens", int(totals["in"]))
                 sp.set_attribute("gen_ai.usage.output_tokens", int(totals["out"]))
-            except Exception:  # noqa: BLE001
-                pass
 
 
 # Capture the agent's primary prompt (system + user of its first model call) so
@@ -217,10 +208,8 @@ def begin_prompt_capture(holder: dict):
 
 
 def end_prompt_capture(token) -> None:
-    try:
+    with contextlib.suppress(Exception):
         _prompt_capture.reset(token)
-    except Exception:  # noqa: BLE001
-        pass
 
 
 def capture_prompt(name: str, system: str, user: str) -> None:
@@ -285,12 +274,10 @@ def add_tokens(input_tokens: int, output_tokens: int) -> None:
         acc["in"] += it
         acc["out"] += ot
         return
-    try:
+    with contextlib.suppress(Exception):
         sp = trace.get_current_span()
         sp.set_attribute("gen_ai.usage.input_tokens", it)
         sp.set_attribute("gen_ai.usage.output_tokens", ot)
-    except Exception:  # noqa: BLE001
-        pass
 
 
 def force_flush(timeout_millis: int = 8000) -> None:
@@ -306,12 +293,10 @@ def force_flush(timeout_millis: int = 8000) -> None:
     """
     if not _OTEL:
         return
-    try:
+    with contextlib.suppress(Exception):
         tp = trace.get_tracer_provider()
         if hasattr(tp, "force_flush"):
             tp.force_flush(timeout_millis)
-    except Exception:  # noqa: BLE001
-        pass
 
 
 def carrier() -> dict:

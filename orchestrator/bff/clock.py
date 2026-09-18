@@ -9,7 +9,7 @@ the 2nd Sunday of March 02:00 to the 1st Sunday of November 02:00, else EST (UTC
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 FMT = "%Y-%m-%d %H:%M:%S"
 DATE_FMT = "%Y-%m-%d"
@@ -17,21 +17,21 @@ DATE_FMT = "%Y-%m-%d"
 
 def _et_offset_hours(dt_utc: datetime) -> int:
     y = dt_utc.year
-    mar = datetime(y, 3, 8, 7, tzinfo=timezone.utc)
+    mar = datetime(y, 3, 8, 7, tzinfo=UTC)
     mar += timedelta(days=(6 - mar.weekday()) % 7)
-    nov = datetime(y, 11, 1, 6, tzinfo=timezone.utc)
+    nov = datetime(y, 11, 1, 6, tzinfo=UTC)
     nov += timedelta(days=(6 - nov.weekday()) % 7)
     return -4 if mar <= dt_utc < nov else -5
 
 
 def _to_et(dt_utc: datetime) -> datetime:
     if dt_utc.tzinfo is None:
-        dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+        dt_utc = dt_utc.replace(tzinfo=UTC)
     return dt_utc + timedelta(hours=_et_offset_hours(dt_utc))
 
 
 def now_et() -> datetime:
-    return _to_et(datetime.now(timezone.utc)).replace(tzinfo=None)
+    return _to_et(datetime.now(UTC)).replace(tzinfo=None)
 
 
 def now_str() -> str:

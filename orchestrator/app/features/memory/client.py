@@ -84,7 +84,7 @@ async def store(session_id: str, actor_id: str, content: str) -> None:
     await asyncio.to_thread(
         lambda: _data_plane().create_event(
             memoryId=_MEMORY_ID, actorId=actor_id, sessionId=session_id,
-            eventTimestamp=datetime.datetime.now(datetime.timezone.utc),
+            eventTimestamp=datetime.datetime.now(datetime.UTC),
             payload=[
                 {"conversational": {"role": "USER",
                                     "content": {"text": f"Reusable insight for {actor_id}:"}}},

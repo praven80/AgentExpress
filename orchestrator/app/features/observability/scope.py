@@ -24,7 +24,12 @@ class Scope:
     version: int = 0
 
 
-_current: contextvars.ContextVar[Scope] = contextvars.ContextVar("obs_scope", default=Scope())
+# A shared default instance is safe here BECAUSE `Scope` is frozen: nothing can
+# mutate it, so the usual hazard behind B039 (one context's writes leaking into
+# every other) cannot arise. The alternative, `default=None`, would push a None
+# check into every metering call site for no gain.
+_current: contextvars.ContextVar[Scope] = contextvars.ContextVar(
+    "obs_scope", default=Scope())  # noqa: B039 - Scope is frozen, see above
 
 
 def set_scope(session_id: str, agent_id: str, user: str = "", version: int = 0) -> None:

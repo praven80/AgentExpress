@@ -21,6 +21,7 @@ runtime traces the analyzers read are indexed.
 import json
 import os
 import time
+from datetime import UTC
 
 from app.common.config import REGION
 
@@ -169,15 +170,16 @@ def _failure_clusters(items: list, known: set) -> list:
     for c in (items or [])[:_MAX_CLUSTERS]:
         subcats = []
         for sc in (c.get("subCategories") or [])[:_MAX_SUBCATS]:
-            rcs = []
-            for rc in (sc.get("rootCauses") or [])[:_MAX_ROOTCAUSES]:
-                rcs.append({
+            rcs = [
+                {
                     "name": _clip(rc.get("name"), 200),
                     "rootCause": _clip(rc.get("rootCause"), 900),
                     "recommendation": _clip(rc.get("recommendation"), 700),
                     "affectedSessionCount": int(rc.get("affectedSessionCount", 0) or 0),
                     "sessions": _failure_sessions(rc, known),
-                })
+                }
+                for rc in (sc.get("rootCauses") or [])[:_MAX_ROOTCAUSES]
+            ]
             subcats.append({
                 "name": _clip(sc.get("name"), 200),
                 "description": _clip(sc.get("description"), 600),
@@ -256,7 +258,7 @@ def run_batch(lookback_hours: int = _DEFAULT_LOOKBACK_HOURS, user: str = "") -> 
     """Start an insights batch evaluation over the app's recent runtime traces,
     poll to completion, and store the findings. Returns a summary dict."""
     import uuid
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     from app.features.evaluations import service as ev
 
@@ -265,7 +267,7 @@ def run_batch(lookback_hours: int = _DEFAULT_LOOKBACK_HOURS, user: str = "") -> 
         return {"status": "error",
                 "error": "No runtime trace sources found (is Transaction Search on, and has a run completed?)."}
 
-    end = datetime.now(timezone.utc)
+    end = datetime.now(UTC)
     start = end - timedelta(hours=int(lookback_hours or _DEFAULT_LOOKBACK_HOURS))
     name = f"insights_{uuid.uuid4().hex[:12]}"  # pattern [a-zA-Z][a-zA-Z0-9_]{0,47} (no hyphens)
 
