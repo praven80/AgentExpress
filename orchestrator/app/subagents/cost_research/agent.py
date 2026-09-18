@@ -213,6 +213,13 @@ class CostResearchAgent(Agent):
             f"shown any.\n\nReturn ONLY JSON matching this schema:\n"
             f"{SERVICES_SCHEMA}")) or {}
         services = _services(payload)
+        # A cut-off service list means we priced fewer services than the use case
+        # needs, and the summary's "N of M" would be counting a truncated M.
+        truncated_note = ([
+            ("The service list was cut off by this agent's output token limit, so the "
+             "prices below cover fewer services than the use case needs. Raise "
+             "`maxTokens` for this agent in workflow.json.")
+        ] if ctx.truncated_calls else [])
         version = assets.prior_version(ctx)
         title = assets.brief_title(brief, ctx)
 
@@ -225,7 +232,7 @@ class CostResearchAgent(Agent):
                          "prices were looked up."),
                 findings=[],
                 limits=[("The service list for this use case could not be "
-                         "established, so nothing was priced.")],
+                         "established, so nothing was priced."), *truncated_note],
                 sources=[],
             )
 
@@ -258,7 +265,7 @@ class CostResearchAgent(Agent):
                     + "; ".join(_volumes_needed(rows)) + ".")
         excluded = ("Free-tier allowances, committed-use discounts, private pricing "
                     "and data transfer between services are not included.")
-        limits = [no_total, excluded]
+        limits = [no_total, excluded, *truncated_note]
         if unpriced and rows:
             limits.insert(0, (
                 "No published unit price was returned for "

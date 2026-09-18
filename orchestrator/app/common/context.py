@@ -140,6 +140,11 @@ class AgentContext:
         # ctx.llm() auto-injects these into the system prompt, so ANY agent
         # benefits from memory with zero agent code — purely config-driven.
         self.recalled_memory: list[str] = []
+        # Names of this agent's model calls whose response hit the maxTokens ceiling
+        # and was therefore cut off mid-answer. Filled by ctx.llm(). An agent that
+        # builds an asset should say so on it — the shipped runners add a limitation —
+        # because the repaired JSON validates and would otherwise look complete.
+        self.truncated_calls: list[str] = []
         # AgentCore features config (from the workflow.json "agentcore" block).
         self._agentcore = dict(getattr(agent, "agentcore", None) or {})
         # Tag every LLM/tool call made during this agent's run with who/what/which
@@ -188,10 +193,27 @@ class AgentContext:
                   "support for what you found. If a recalled detail matters, it "
                   "belongs in your open questions as something to confirm.)"
             )
-        return await run_llm(name or self.agent_id, system, user,
-                             model=model or self.model,
-                             temperature=self.temperature,
-                             max_tokens=max_tokens or self.max_tokens)
+        call = name or self.agent_id
+        budget = max_tokens or self.max_tokens
+        text, truncated = await run_llm(call, system, user,
+                                        model=model or self.model,
+                                        temperature=self.temperature,
+                                        max_tokens=budget)
+        if truncated:
+            # SAY SO. The response is a prefix: it stopped because it ran out of room,
+            # not because the model was done, so whatever the agent builds from it is
+            # missing its tail. `assets.extract_json` repairs the cut-off JSON into a
+            # usable partial asset — the right trade, and the reason this is easy to
+            # miss, because the asset then validates and the run reports success.
+            # Observed live: an `analysis` call stopped at exactly its 6000-token
+            # budget mid-way through a `sources` entry, the timeline said "Analysis
+            # complete (v1)", and the reviewer approved it at the gate.
+            self.truncated_calls.append(call)
+            await self.log(
+                f"'{call}' hit its {budget}-token output ceiling, so the response was "
+                f"cut off and what follows is incomplete. Raise this agent's maxTokens "
+                f"in workflow.json, or ask it for less.")
+        return text
 
     async def call_tool(self, tool_key: str, query: str):
         """Call a Gateway tool by its `tool` label in workflow.json.

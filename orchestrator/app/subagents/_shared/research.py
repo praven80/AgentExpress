@@ -243,6 +243,14 @@ async def synthesize(ctx, *, system_prompt: str,
     # was actually shown, rather than trusted.
     sources = assets.build_sources(payload, verify_urls_against=evidence)
     data_limits = assets.str_list(payload, "dataLimitations") + limitations
+    if ctx.truncated_calls:
+        # The response ran out of room, so this asset is missing its tail — usually
+        # the last findings or sources. `extract_json` repairs the cut-off JSON into
+        # something valid, which is exactly why this has to be said out loud.
+        data_limits.append(
+            "This asset was assembled from a model response that hit its output token "
+            "limit and was cut off, so findings or sources are missing from the end of "
+            "it. Re-run this agent with a higher `maxTokens` in workflow.json.")
     summary = str(payload.get("summary") or "").strip()
     if not summary and not findings:
         # The model answered but produced nothing usable. Fail rather than emit an

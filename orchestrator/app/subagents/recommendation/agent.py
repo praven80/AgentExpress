@@ -50,6 +50,8 @@ class RecommendationAgent(Agent):
         items = _items(payload)
         summary = str(payload.get("summary") or "").strip()
         risks = synthesis.str_list(payload, "risks")
+        # This contract's home for "something about this asset is not sound".
+        risks += synthesis.truncation_limitation(meta)
         if meta["degraded"] or not items:
             summary = summary or "Recommendations could not be synthesised from the approved inputs."
             risks.append("Model output was unavailable or unparseable for this run.")

@@ -63,7 +63,12 @@ class ReportAgent(Agent):
         )
         sections = _sections(payload)
         present = {s.section_type for s in sections}
-        is_complete = bool(sections) and all(t in present for t in SECTIONS)
+        # A report assembled from a cut-off response is NOT complete, whatever sections
+        # survived — `isComplete` is what the UI and the reviewer read as "this is
+        # ready", and the repaired JSON validates, so this flag is the only thing
+        # standing between a truncated report and an approval.
+        is_complete = (bool(sections) and all(t in present for t in SECTIONS)
+                       and not meta["truncated"])
 
         asset = Report(
             **synthesis.envelope(ctx, meta, "report"),

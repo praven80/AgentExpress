@@ -42,7 +42,19 @@ def _text_of(content) -> str:
 
 async def run_llm(name: str, system: str, user: str,
                   model: str | None = None, temperature: float = 0,
-                  max_tokens: int = 300) -> str:
+                  max_tokens: int = 300) -> tuple[str, bool]:
+    """Call the model and return (text, hit_token_ceiling).
+
+    The second value is the one that is easy to lose and expensive to lose. When a
+    response stops because it reached `max_tokens` rather than because the model
+    finished, the text is a PREFIX — for a structured agent that means JSON cut off
+    mid-object. `assets.extract_json` deliberately repairs that into a usable partial
+    asset rather than failing the run, which is the right trade, but it means the only
+    remaining evidence that anything was lost is this flag. Observed live: an
+    `analysis` call stopped at exactly its 6000-token budget, mid-way through writing
+    a `sources` entry; the asset validated, the timeline said "Analysis complete", and
+    a reviewer approved it at the gate with no way to know the tail was missing.
+    """
     model = model or MODEL_ID
     # Capture this call's prompt (system + the real source inputs) so the agent's
     # AGENT span carries it as gen_ai.task.input for AgentCore Evaluations, and so
@@ -65,7 +77,7 @@ async def run_llm(name: str, system: str, user: str,
         with contextlib.suppress(Exception):
             from app.features.observability import otel as _otel
             _otel.capture_output(out_text)  # pair this call's response with its prompt
-        return out_text
+        return out_text, _finish_reason_of(msg).lower() in _TRUNCATED_REASONS
     except Exception as e:
         # Record the failure, then fail the run — see the module docstring: a model
         # call that did not happen must never look like one that returned nothing.
@@ -76,6 +88,12 @@ async def run_llm(name: str, system: str, user: str,
             f"Check that the region has model access enabled for this model id and that "
             f"the runtime's credentials permit bedrock:InvokeModel."
         ) from e
+
+
+# Stop reasons that mean "I ran out of room", not "I finished". Bedrock Converse says
+# `max_tokens`; the two spellings cover the other providers langchain-aws fronts, so a
+# model swap in workflow.json does not quietly turn this check off.
+_TRUNCATED_REASONS = frozenset({"max_tokens", "max_token", "length"})
 
 
 def _finish_reason_of(msg) -> str:

@@ -51,6 +51,7 @@ class AnalysisAgent(Agent):
         )
         summary = str(payload.get("summary") or "").strip()
         limitations = synthesis.str_list(payload, "limitations")
+        limitations += synthesis.truncation_limitation(meta)
         if meta["degraded"] or not summary:
             summary = summary or "Analysis could not be synthesised from the approved inputs."
             limitations.append("Model output was unavailable or unparseable for this run.")

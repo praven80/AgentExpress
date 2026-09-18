@@ -35,6 +35,15 @@ class IntakeAgent(Agent):
 
         payload = assets.extract_json(await ctx.llm(SYSTEM_PROMPT, user)) or {}
         version = synthesis.prior_version(ctx)
+        # A brief cut off by the token ceiling is the worst one to let through
+        # silently: it frames every agent after it, and a missing scope or question
+        # list narrows the whole run. `assumptions` is where this brief records what a
+        # reviewer should check, which is exactly what this is.
+        truncated = ([
+            ("This brief was assembled from a model response that hit its output token "
+             "limit and was cut off, so the lists below may be incomplete. Raise "
+             "`maxTokens` for this agent in workflow.json.")
+        ] if ctx.truncated_calls else [])
 
         title = str(payload.get("title") or ctx.topic or "Untitled request").strip()
         objective = str(payload.get("objective") or "").strip()
@@ -56,7 +65,7 @@ class IntakeAgent(Agent):
             scope=payload.get("scope") or {},
             keyQuestions=synthesis.str_list(payload, "keyQuestions"),
             constraints=synthesis.str_list(payload, "constraints"),
-            assumptions=synthesis.str_list(payload, "assumptions"),
+            assumptions=synthesis.str_list(payload, "assumptions") + truncated,
             openQuestions=synthesis.str_list(payload, "openQuestions"),
         )
         return json.dumps(asset.model_dump(by_alias=True, mode="json"), indent=2)

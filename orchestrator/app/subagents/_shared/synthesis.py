@@ -150,5 +150,26 @@ async def synthesize(ctx, *, upstream_ids: list[str], system_prompt: str,
         "brief": b,
         "upstream_asset_ids": upstream_asset_ids,
         "degraded": not bool(payload),
+        # Carried so the agent can put it on the asset. `extract_json` repairs a
+        # response that ran out of room into a valid partial payload, which is what
+        # makes the loss invisible: a reviewer sees a complete-looking asset. Each
+        # agent appends this to its own `limitations`, because only the agent knows
+        # which of its fields that list is.
+        "truncated": list(ctx.truncated_calls),
     }
     return payload, meta
+
+
+def truncation_limitation(meta: dict) -> list[str]:
+    """A `limitations` entry when this asset was built from a cut-off response, else [].
+
+    Shared so the three synthesis agents word it identically and none of them forgets.
+    """
+    if not meta.get("truncated"):
+        return []
+    return [
+        ("This asset was assembled from a model response that hit its output token "
+         "limit and was cut off, so content is missing from the end of it — most "
+         "likely the last entries of the longest list. Re-run this agent with a "
+         "higher `maxTokens` in workflow.json to get the complete version.")
+    ]
