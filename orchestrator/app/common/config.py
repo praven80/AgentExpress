@@ -50,42 +50,6 @@ FIRST_AGENT_ID = _FIRST_STEP.get("agent") or (
 # guardrail). Environment variables still take precedence at deploy time.
 ORCHESTRATOR: dict = WORKFLOW.get("orchestrator", {})
 
-# Output-rule enforcement (app/common/rules.py + app/common/structured.py), and
-# specifically WHETHER A FAILED CHECK COSTS A SECOND MODEL CALL.
-#
-# The checks themselves are pure functions — no model, no IO, no measurable cost.
-# The repair is a whole extra call per affected agent, which on an eight-agent
-# workflow can double the price of a run. That is the customer's decision to make,
-# not the framework's, so it is config with a per-agent override:
-#
-#   orchestrator.outputRules   { "enabled": true, "repair": false }   engine default
-#   agents.<id>.outputRules    { "repair": true }                     per agent
-#
-# Three meaningful settings:
-#   enabled false            no checks. One call. Nothing recorded.
-#   enabled, repair false    check, record what failed on the asset, DO NOT re-ask.
-#                            One call. The reviewer still sees every violation in
-#                            the UI; they just fix it by revising the gate rather
-#                            than paying the model to try again.
-#   enabled, repair true     check, re-ask once with the violations quoted. Up to
-#                            two calls for an agent that failed, one for an agent
-#                            that passed.
-#
-# The default is repair OFF. Enforcement should not silently change what a run
-# costs: a customer who deploys this sample gets the same bill as before the rules
-# existed, plus visibility, and opts in to paying for repair per agent once they
-# have seen which agents actually need it.
-#   maxWords  a prose budget for one agent's payload, checked deterministically.
-#             0 disables it, which is the engine default: a framework must not
-#             impose a house style on a workflow it knows nothing about. Set it per
-#             agent for the outputs where length is the defect — three separate
-#             prompt clauses failed to keep one report under control, and a number
-#             in config succeeds where wording did not because it is not
-#             negotiable.
-_OUTPUT_RULES_DEFAULTS = {"enabled": True, "repair": False, "maxWords": 0}
-OUTPUT_RULES: dict = {**_OUTPUT_RULES_DEFAULTS,
-                      **(ORCHESTRATOR.get("outputRules") or {})}
-
 # How the orchestrator calls a DEDICATED agent runtime (app/common/agentcore_agent.py),
 # and specifically WHETHER THE SDK MAY SILENTLY RUN AN AGENT TWICE.
 #
@@ -121,15 +85,6 @@ OUTPUT_RULES: dict = {**_OUTPUT_RULES_DEFAULTS,
 _RUNTIME_INVOKE_DEFAULTS = {"maxAttempts": 1, "readTimeoutSeconds": 120}
 RUNTIME_INVOKE: dict = {**_RUNTIME_INVOKE_DEFAULTS,
                         **(ORCHESTRATOR.get("runtimeInvoke") or {})}
-
-
-def output_rules_for(spec: dict) -> dict:
-    """The engine default overlaid with one agent's `outputRules` block.
-
-    Merged rather than replaced, so an agent that only wants to turn repair on
-    writes `{"repair": true}` and does not have to restate `enabled`.
-    """
-    return {**OUTPUT_RULES, **(spec.get("outputRules") or {})}
 
 
 # Presentation strings (title, the default topic, placeholders). Config rather

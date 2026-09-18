@@ -288,15 +288,19 @@ describe("constants duplicated across languages", () => {
   });
 
   it("every tool type has an evidence label in the app", () => {
-    // A third place the type list appears: app/common/research.py labels the evidence
-    // block by tool type so the model knows what kind of source it is reading. A type
-    // with no label silently falls back to the generic "TOOL" heading.
+    // A third place the type list appears: the sample's shared research runner labels
+    // the evidence block by tool type so the model knows what kind of source it is
+    // reading. A type with no label silently falls back to the generic "TOOL" heading.
+    // It lives under app/subagents/ because it is sample code, not framework — the
+    // IaC still has to agree with it, since a customer declaring a tool type the
+    // runner cannot label gets an unlabelled evidence block.
     const fromTs = stackSrc
       .match(/const TOOL_TYPES: ToolType\[\] = \[([^\]]*)\]/)![1]
       .match(/"(\w+)"/g)!
       .map((s) => s.replace(/"/g, ""))
       .sort();
-    const labels = read(path.join(ORCH_ROOT, "app", "common", "research.py"))
+    const labels = read(
+      path.join(ORCH_ROOT, "app", "subagents", "_shared", "research.py"))
       .match(/_EVIDENCE_LABELS = \{([\s\S]*?)\n\}/)![1]
       .split("\n")
       .map((l) => l.replace(/#.*$/, "").match(/^\s*"(\w+)":/)?.[1])

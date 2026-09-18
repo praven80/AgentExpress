@@ -11,7 +11,9 @@ from typing import Literal
 
 from pydantic import Field
 
-from .base import AssetEnvelope, AssetType, Base
+from app.common.contracts.base import AssetEnvelope, Base
+
+from .types import AssetType
 
 # Open on purpose: a section type is any slug. Closing this Literal previously
 # meant an unrecognised sectionType was SILENTLY DROPPED from the report.

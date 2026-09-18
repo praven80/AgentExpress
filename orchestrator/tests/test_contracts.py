@@ -13,14 +13,8 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from app.common.contracts import (
-    AssetEnvelope,
-    AssetStatus,
-    AssetType,
-    Report,
-    ReportSection,
-    Source,
-)
+from app.common.contracts import AssetEnvelope, AssetStatus, Source
+from app.subagents._shared.contracts import AssetType, Report, ReportSection
 
 ENVELOPE = {"assetId": "asset-x-v1", "version": 1, "status": AssetStatus.IN_REVIEW,
             "createdAt": "2026-09-09 10:00:00", "createdByAgent": "agent"}
@@ -83,7 +77,7 @@ def test_serialisation_is_camel_case():
 # which is not JSON and was pasted into every downstream agent's prompt.
 
 def test_scope_accepts_the_object_the_model_produces():
-    from app.common.contracts import RequestBrief
+    from app.subagents._shared.contracts import RequestBrief
 
     brief = RequestBrief(title="T", scope={
         "inScope": ["architecture", "patterns"], "outOfScope": ["deep theory"]},
@@ -94,7 +88,7 @@ def test_scope_accepts_the_object_the_model_produces():
 
 def test_scope_still_accepts_a_plain_string():
     """So an asset written before the change still validates."""
-    from app.common.contracts import RequestBrief
+    from app.subagents._shared.contracts import RequestBrief
 
     brief = RequestBrief(title="T", scope="everything about X", **ENVELOPE)
     assert brief.scope.summary == "everything about X"
@@ -102,7 +96,7 @@ def test_scope_still_accepts_a_plain_string():
 
 
 def test_scope_serialises_as_camelcase_json_not_a_python_repr():
-    from app.common.contracts import RequestBrief
+    from app.subagents._shared.contracts import RequestBrief
 
     dumped = RequestBrief(title="T", scope={"inScope": ["a"], "outOfScope": ["b"]},
                           **ENVELOPE).model_dump(by_alias=True, mode="json")
@@ -113,7 +107,7 @@ def test_scope_serialises_as_camelcase_json_not_a_python_repr():
 
 
 def test_scope_defaults_to_empty_rather_than_none():
-    from app.common.contracts import RequestBrief
+    from app.subagents._shared.contracts import RequestBrief
 
     brief = RequestBrief(title="T", **ENVELOPE)
     assert brief.scope.in_scope == [] and brief.scope.summary == ""

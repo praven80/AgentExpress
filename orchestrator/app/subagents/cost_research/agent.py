@@ -16,8 +16,8 @@ Whatever the use case, someone will ask what it costs, and before this the answe
 was always "no cost figures were supplied" — correctly, because nothing supplied
 any. That leaves an agent two options: say nothing useful, or invent a number. The
 second is the dangerous one. A fabricated "$50,000 budget" is indistinguishable
-from a real estimate once it is in a report, and this framework's own output rules
-(app/common/rules.py) exist largely because an earlier version did exactly that.
+from a real estimate once it is in a report, which is why this agent asks the model
+for a service LIST and never for a number.
 
 THE SPLIT: JUDGEMENT TO THE MODEL, ARITHMETIC TO CODE
 This agent makes exactly ONE model call, and it is not the one you would expect.
@@ -50,11 +50,11 @@ from __future__ import annotations
 
 import json
 
-from app.common import assets, clock, research, structured
+from app.common import assets, clock
 from app.common.base import Agent
 from app.common.context import AgentContext
-from app.common.contracts import Finding, ResearchOutput
 from app.common.contracts.base import AssetStatus, Source
+from app.subagents._shared.contracts import Finding, ResearchOutput
 
 from .prompts import SERVICES_SCHEMA, SYSTEM_PROMPT
 
@@ -204,21 +204,14 @@ class CostResearchAgent(Agent):
         brief_text = assets.for_prompt(brief) if brief else ctx.topic
 
         # --- the ONE model call: which services does this use case need? --------
-        # Rules are checked on this payload like any other (a service list can
-        # still carry an invented figure or a numbered plan), but `upstream` is the
-        # brief because that is all the model was shown.
-        payload, unrepaired = await structured.ask_json(
-            ctx,
+        payload = assets.extract_json(await ctx.llm(
             SYSTEM_PROMPT,
             f"=== APPROVED REQUEST ===\n{brief_text}\n\n"
             f"List the AWS services this use case would run on, most significant "
             f"cost first, at most {MAX_SERVICES}. Name the service only — you are "
             f"NOT asked for prices, quantities, or a total, and you will not be "
             f"shown any.\n\nReturn ONLY JSON matching this schema:\n"
-            f"{SERVICES_SCHEMA}",
-            rule_set=research.rules.RESEARCH,
-            upstream=brief_text,
-        )
+            f"{SERVICES_SCHEMA}")) or {}
         services = _services(payload)
         version = assets.prior_version(ctx)
         title = assets.brief_title(brief, ctx)
@@ -234,7 +227,6 @@ class CostResearchAgent(Agent):
                 limits=[("The service list for this use case could not be "
                          "established, so nothing was priced.")],
                 sources=[],
-                violations=unrepaired,
             )
 
         # --- the tool: real prices for exactly those services -------------------
@@ -307,12 +299,10 @@ class CostResearchAgent(Agent):
                 sourceType="aws-price-list",
                 sourceName=f"AWS Price List Query API ({region})",
             )] if rows else [],
-            violations=unrepaired,
         )
 
 
-def _asset(ctx, title, version, *, summary, findings, limits, sources,
-           violations) -> str:
+def _asset(ctx, title, version, *, summary, findings, limits, sources) -> str:
     asset = ResearchOutput(
         assetId=f"asset-research-{ctx.agent_id}-{assets.slug(str(title))}-v{version}",
         version=version,
@@ -324,9 +314,6 @@ def _asset(ctx, title, version, *, summary, findings, limits, sources,
         findings=findings,
         dataLimitations=limits,
         sources=sources,
-        # Only the service-list call can break a rule; every price is copied from a
-        # tool row, so there is nothing to check on that half.
-        ruleViolations=violations,
     )
     return json.dumps(asset.model_dump(by_alias=True, mode="json"), indent=2)
 

@@ -7,9 +7,9 @@ endpoint, no schema: the connector is AWS-operated and queries never leave AWS.
 Nothing about the search is coded here — `maxResults` and any domain filters come
 from the tool's entry in workflow.json.
 """
-from app.common import research
 from app.common.base import Agent
 from app.common.context import AgentContext
+from app.subagents._shared import research
 
 from .prompts import SYSTEM_PROMPT
 

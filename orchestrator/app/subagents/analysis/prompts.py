@@ -9,43 +9,27 @@ that the model answered a different question — it narrated the REQUEST rather 
 explaining how the evidence was weighed. Rule 9 in the shared instructions already
 forbids that; the field had to stop inviting it.
 
-AND WHY REPAIR IS *NOT* ENABLED FOR THIS AGENT, HAVING BEEN TRIED
-The defect survived three revisions of the wording below while all seven other
-agents came back clean, which looked like the signal that prompting had run out. So
-`outputRules.repair` was turned on for this agent alone — one extra model call, only
-when a check fails — and it was measured.
+A SECOND MODEL CALL DOES NOT FIX IT, AND THAT WAS MEASURED
+The obvious next lever is to re-ask the model when the field comes back wrong. It
+was tried on this agent and it failed: the re-ask genuinely rewrote the sentence and
+landed in the same defect class — "Cold-start implications are mentioned in the
+request brief as a key question but are not addressed in any of the four research
+findings." Same defect before and after, $0.022 spent.
 
-It did not work. Repair fired, the re-ask genuinely rewrote the field (the sentence
-changed), and the rewrite landed in the same defect class: "Cold-start implications
-are mentioned in the request brief as a key question but are not addressed in any of
-the four research findings." One violation before, one after, $0.022 spent. The
-retry is kept only when it has strictly fewer violations and introduces no new kind,
-so it was kept — and it bought nothing.
+Recorded here because it is the useful negative result: when a model reaches for the
+same wrong subject on the second attempt as on the first, asking again is not the
+lever. The wording below is, and if that stops working the next step is a schema
+change argued on its own merits.
 
-The flag is therefore reverted, and this note is the reason it should not be tried
-again without new evidence. When a model reaches for the same wrong subject on the
-second attempt as on the first, the re-ask is not the lever either.
-
-AND WHY THE FIELD IS KEPT ANYWAY, WITH THE VIOLATION RECORDED
-The obvious next step is to delete `rationale` from the schema below — it is
-optional in the contract (`contracts/analysis.py`), nothing downstream reads it
-specifically, and removing it would take the violation count to zero.
-
-Reading what it actually produced argues against that. On the fourth run it opened:
-"All four research findings converge on the same layered architecture and service
-selection framework. Documentation search, web search and knowledge research all
-cite the same AWS reference architectures, establishing high confidence in the
-five-layer model." That is exactly the field's job, and it is information no other
-field carries. The violation was ONE trailing sentence about which key questions the
-evidence covered.
-
-So this one is left recorded rather than removed, and that is the output-rules layer
-working as designed: a visible note on the asset telling a reviewer which sentence
-to distrust, on a field whose other three sentences are worth having. Deleting good
-content to clear a counter would be the check corrupting the deliverable — the same
-mistake as suppressing a useful recommendation to satisfy `action-on-unavailable`.
-Four prompt revisions and one measured repair attempt is enough; the next lever, if
-anyone wants one, is a schema change and should be argued on its own merits.
+AND WHY THE FIELD IS KEPT
+Deleting `rationale` would be the easy way out — it is optional in the contract
+(`contracts/analysis.py`) and nothing downstream reads it specifically. But read what
+it actually produces: "All four research findings converge on the same layered
+architecture and service selection framework. Documentation search, web search and
+knowledge research all cite the same reference architectures, establishing high
+confidence in the five-layer model." That is exactly the field's job, and no other
+field carries it. The defect was ever only one trailing sentence. Removing three good
+sentences to be rid of a fourth is a worse deliverable, not a better one.
 """
 
 SYSTEM_PROMPT = (

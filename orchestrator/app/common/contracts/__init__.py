@@ -1,19 +1,31 @@
-"""Asset contracts — the structured JSON shapes agents produce and persist.
+"""The asset ENVELOPE — the only asset shape the framework itself defines.
 
 Every agent emits a validated asset, so downstream agents and the UI can rely on
-the shape instead of parsing prose. The five below are what THIS sample's agents
-produce; they are examples, not a fixed set:
+a shape instead of parsing prose. What the framework fixes is the *provenance*
+half: an id, a type, a version, a status, who made it and when, and where its
+content came from (`sources`, `artifacts`, `sourceAssetIds`). That much is
+identical for every use case, and the UI, the sink and the review gates all read
+it.
 
-  * RequestBrief    — framing: what the run is trying to achieve
-  * ResearchOutput  — evidence gathered from a tool, with provenance per finding
-  * Analysis        — claims traced back to the assets that support them
-  * Recommendation  — options with rationale and risks
-  * Report          — the assembled, sectioned final asset
+What an asset CONTAINS is yours. Subclass `AssetEnvelope` in your own agent's
+folder, add your fields, and pin `assetType` to whatever you call it:
 
-A customer's own contract goes in their agent's folder: subclass `AssetEnvelope`
-for the shared provenance fields and pin `assetType` to whatever they call it.
-Nothing here needs editing to add one — `assetType`, `sourceType` and
-`sectionType` are all open strings for exactly that reason.
+    # app/subagents/claim_triage/contract.py
+    from app.common.contracts import AssetEnvelope, Base
+
+    class ClaimDecision(AssetEnvelope):
+        asset_type: Literal["claim-decision"] = Field(alias="assetType")
+        disposition: str
+        policy_refs: list[str] = Field(default_factory=list, alias="policyRefs")
+
+Nothing in this package needs editing to add one. `assetType`, `sourceType` and
+`sectionType` are open strings for exactly that reason — as closed enums they
+silently coerced a customer's own vocabulary to "other".
+
+This sample's own five contracts (request-brief, research-finding, analysis,
+recommendation, report) live with the agents that emit them, in
+`app/subagents/_shared/contracts/`. They are examples to copy, not a fixed set,
+and deleting them costs the framework nothing.
 """
 
 from .base import (
@@ -22,16 +34,10 @@ from .base import (
     ArtifactType,
     AssetEnvelope,
     AssetStatus,
-    AssetType,
     Base,
     Source,
     SourceType,
 )
-from .brief import RequestBrief
-from .research import EvidenceClass, Finding, ResearchOutput
-from .analysis import Analysis, TracedClaim
-from .recommendation import Recommendation, RecommendationItem
-from .report import Report, ReportSection, SectionType
 
 __all__ = [
     "Artifact",
@@ -39,19 +45,7 @@ __all__ = [
     "ArtifactType",
     "AssetEnvelope",
     "AssetStatus",
-    "AssetType",
     "Base",
     "Source",
     "SourceType",
-    "RequestBrief",
-    "EvidenceClass",
-    "Finding",
-    "ResearchOutput",
-    "Analysis",
-    "TracedClaim",
-    "Recommendation",
-    "RecommendationItem",
-    "Report",
-    "ReportSection",
-    "SectionType",
 ]

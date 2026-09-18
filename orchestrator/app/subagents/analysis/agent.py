@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import json
 
-from app.common import synthesis
 from app.common.base import Agent
 from app.common.config import upstream_of
 from app.common.context import AgentContext
-from app.common.contracts import Analysis, TracedClaim
+from app.subagents._shared import synthesis
+from app.subagents._shared.contracts import Analysis, TracedClaim
 
 from .prompts import SCHEMA, SYSTEM_PROMPT
 
@@ -64,7 +64,6 @@ class AnalysisAgent(Agent):
             assumptions=synthesis.str_list(payload, "assumptions"),
             limitations=limitations,
             sources=synthesis.build_sources(payload),
-            ruleViolations=meta["violations"],
         )
         return json.dumps(asset.model_dump(by_alias=True, mode="json"), indent=2)
 

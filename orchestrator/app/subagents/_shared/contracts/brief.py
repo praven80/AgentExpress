@@ -11,7 +11,9 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from .base import AssetEnvelope, AssetType, Base
+from app.common.contracts.base import AssetEnvelope, Base
+
+from .types import AssetType
 
 
 class Scope(Base):

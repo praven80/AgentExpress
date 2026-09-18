@@ -250,7 +250,7 @@ def test_a_rate_without_its_unit_is_dropped(_=None):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("field", ["assetId", "assetType", "summary", "findings",
-                                   "dataLimitations", "sources", "ruleViolations"])
+                                   "dataLimitations", "sources"])
 def test_it_emits_the_asset_a_reviewer_expects(field):
     asset, _p, _q = _run(ROWS)
     assert field in asset

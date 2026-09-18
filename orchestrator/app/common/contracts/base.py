@@ -45,22 +45,6 @@ class Base(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class AssetType(str, Enum):
-    """The asset types THIS sample's five contracts use.
-
-    Canonical constants, not an exhaustive list: `AssetEnvelope.asset_type` is a
-    plain `str`, so a customer can define a contract with an asset type of their
-    own without adding a member here. The built-in contracts each pin their own
-    value with `Literal[AssetType.X]`, which keeps them strict.
-    """
-
-    REQUEST_BRIEF = "request-brief"
-    RESEARCH_FINDING = "research-finding"
-    ANALYSIS = "analysis"
-    RECOMMENDATION = "recommendation"
-    REPORT = "report"
-
-
 class AssetStatus(str, Enum):
     """The asset's own `status` field.
 
@@ -85,30 +69,12 @@ ArtifactType = Literal[
 
 ArtifactRole = Literal["final", "supporting-artifact"]
 
-# Deliberately `str`, not a closed Literal — for the same reason as
-# `AssetEnvelope.asset_type` and `report.SectionType`. As a Literal this listed
-# THIS sample's asset types, and anything outside the list was silently coerced to
-# "other": a customer whose provenance is a "claim-file" or a "policy-doc" lost
-# that word from every citation, and the only way to keep it was to edit this
-# shared file. The values below are the sample's own vocabulary, kept as a named
-# tuple so the built-in agents and the UI's chips agree on spelling.
+# Deliberately `str`, not a closed Literal. As a Literal this listed THIS sample's
+# provenance kinds and anything outside the list was silently coerced to "other": a
+# customer whose provenance is a "claim-file" or a "policy-doc" lost that word from
+# every citation, and the only way to keep it was to edit this shared framework file.
+# Whatever your agent writes here is carried through as given.
 SourceType = str
-
-SOURCE_TYPES: tuple[str, ...] = (
-    # external inputs / grounding
-    "knowledge-base",
-    "mcp-tool",
-    "user-input",
-    # internal assets
-    "request-brief",
-    "research-finding",
-    "analysis",
-    "recommendation",
-    # provenance of a derived claim
-    "calculation",
-    "assumption",
-    "other",
-)
 
 
 # ---------------------------------------------------------------------------
@@ -166,10 +132,10 @@ class AssetEnvelope(Base):
     """Fields common to every asset."""
 
     asset_id: str = Field(alias="assetId")
-    # Deliberately `str`, not the AssetType enum: a customer's own contract can
-    # declare its own asset type (e.g. Literal["claim-decision"]) without editing
-    # this shared file. The five built-in contracts still pin themselves to an
-    # AssetType member, so nothing here gets looser in practice.
+    # Deliberately a plain `str`, and there is no enum of permitted values anywhere
+    # in the framework: your contract declares its own type
+    # (`Literal["claim-decision"]`) without editing this file. The sample's own five
+    # names live with the sample, in app/subagents/_shared/contracts/types.py.
     asset_type: str = Field(alias="assetType")
     version: int = Field(ge=1)
     status: AssetStatus
@@ -180,13 +146,3 @@ class AssetEnvelope(Base):
     source_asset_ids: list[str] = Field(default_factory=list, alias="sourceAssetIds")
     artifacts: list[Artifact] = Field(default_factory=list)
     sources: list[Source] = Field(default_factory=list)
-
-    # Output rules this asset still breaks after the one repair attempt
-    # (app/common/rules.py + app/common/structured.py). Empty on the happy path.
-    #
-    # It lives on the ENVELOPE so it is uniform: every asset can say what is wrong
-    # with it, in one place a reviewer and the UI can both find, instead of each
-    # contract improvising a home for it. Provenance, like `sources` — the
-    # difference between a deliverable that is wrong and one that is wrong and
-    # says so is the whole value of a review step.
-    rule_violations: list[str] = Field(default_factory=list, alias="ruleViolations")

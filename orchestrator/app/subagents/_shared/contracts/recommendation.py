@@ -11,7 +11,9 @@ from typing import Literal
 
 from pydantic import Field
 
-from .base import AssetEnvelope, AssetType, Base, Source
+from app.common.contracts.base import AssetEnvelope, Base, Source
+
+from .types import AssetType
 
 
 class RecommendationItem(Base):

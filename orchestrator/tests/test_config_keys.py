@@ -35,7 +35,6 @@ AGENT_KEYS = {
     "corpus": "registry.py -> agent.corpus; validated against tools.<kb>.corpora",
     "produces": "nodes.py, injected into the agent's task prompt",
     "access": "UI data-source chip, ONLY for an agent with no `tool`",
-    "outputRules": "registry.py -> agent.output_rules; overrides orchestrator.outputRules",
     "agentcore": "the feature block, keys below",
 }
 
@@ -58,7 +57,6 @@ TOP_LEVEL = {
 
 ORCHESTRATOR_KEYS = {
     "defaultModel": "config.py:MODEL_ID fallback",
-    "outputRules": "config.py:OUTPUT_RULES -> structured.ask_json (enabled/repair)",
     "runtimeInvoke": "config.py:RUNTIME_INVOKE -> agentcore_agent._agentcore (SDK retries/timeout)",
     "policy": "policy.tf / tool-plane.ts - Cedar engine on/off + mode",
     "chatbot": "bff/chatbot.py + the UI gate",
@@ -202,10 +200,18 @@ def test_max_tokens_reaches_the_agent_objects():
 
 
 def test_no_agent_hardcodes_a_token_budget():
-    """The budget is config. A literal at a call site puts it back in code, where it
-    is invisible to whoever edits workflow.json."""
+    """The budget is config. A LITERAL at a call site puts it back in code, where it
+    is invisible to whoever edits workflow.json.
+
+    A pass-through (`max_tokens=max_tokens`, `max_tokens=None`) is fine and is how
+    the shared synthesis runner lets one caller override for one call; what must
+    never appear is a number.
+    """
+    import re
+
+    literal = re.compile(r"max_tokens\s*=\s*\d")
     for path in (ORCH_ROOT / "app" / "subagents").rglob("*.py"):
-        text = path.read_text()
-        assert "max_tokens=" not in text, (
-            f"{path.relative_to(ORCH_ROOT)} passes max_tokens explicitly; let it "
-            f"default to the agent's configured maxTokens instead")
+        hit = literal.search(path.read_text())
+        assert not hit, (
+            f"{path.relative_to(ORCH_ROOT)} hardcodes {hit.group()!r}; let it default "
+            f"to the agent's configured maxTokens instead")

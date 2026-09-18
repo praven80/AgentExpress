@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import json
 
-from app.common import synthesis
 from app.common.base import Agent
 from app.common.config import upstream_of
 from app.common.context import AgentContext
-from app.common.contracts import Report, ReportSection
+from app.subagents._shared import synthesis
+from app.subagents._shared.contracts import Report, ReportSection
 
 from .prompts import SCHEMA, SECTIONS, SYSTEM_PROMPT
 
@@ -63,11 +63,7 @@ class ReportAgent(Agent):
         )
         sections = _sections(payload)
         present = {s.section_type for s in sections}
-        # A report that still breaks an output rule is not complete, whatever
-        # sections it has: `isComplete` is what the UI and the reviewer read as
-        # "this is ready", and the rule detail sits alongside in ruleViolations.
-        is_complete = (bool(sections) and all(t in present for t in SECTIONS)
-                       and not meta["violations"])
+        is_complete = bool(sections) and all(t in present for t in SECTIONS)
 
         asset = Report(
             **synthesis.envelope(ctx, meta, "report"),
@@ -75,7 +71,6 @@ class ReportAgent(Agent):
             title=str(payload.get("title") or meta["title"]).strip(),
             sections=sections,
             isComplete=is_complete,
-            ruleViolations=meta["violations"],
         )
         return json.dumps(asset.model_dump(by_alias=True, mode="json"), indent=2)
 

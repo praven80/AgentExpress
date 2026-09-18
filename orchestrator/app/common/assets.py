@@ -19,13 +19,7 @@ import json
 import re
 
 from app.common.config import FIRST_AGENT_ID
-from app.common.contracts.base import SOURCE_TYPES, Source
-
-# The provenance kinds the shipped contracts use. Not a gate: `Source.source_type`
-# is a plain str, so a customer's own kind ("claim-file", "policy-doc") is carried
-# through as given. Used only to spot a model that echoed the schema's placeholder
-# text back instead of a real value.
-KNOWN_SOURCE_TYPES = frozenset(SOURCE_TYPES)
+from app.common.contracts.base import Source
 
 # The schema shows `"sourceType": "the kind of source"`, so a model that returns
 # that instruction verbatim has supplied no provenance at all and we fall back to
@@ -223,21 +217,8 @@ def str_list(payload: dict, key: str) -> list[str]:
     return [str(x) for x in (payload.get(key) or []) if str(x).strip()]
 
 
-# Envelope fields that are ABOUT the asset rather than part of it, and that a
-# downstream agent must not read as evidence.
-#
-# `ruleViolations` is the one that matters. It records which output rules an
-# upstream asset still breaks (app/common/rules.py), for a human reviewer. Left in
-# the prompt it became part of the next agent's evidence: the analysis agent was
-# shown 'findings[2] restates the request brief rather than reporting evidence…'
-# as though it were a research finding. That is critique of a sibling agent, not
-# information about the subject, and it wastes context on every downstream call.
-_NOT_EVIDENCE = ("ruleViolations",)
-
-
 def for_prompt(parsed: dict) -> str:
-    """An upstream asset rendered for a downstream prompt, minus the fields that
-    are commentary on the asset rather than content of it. Returns "" if there is
+    """An upstream asset rendered for a downstream prompt. Returns "" if there is
     nothing to render, so the caller can fall back to the raw string.
     """
     if not parsed:
@@ -248,5 +229,4 @@ def for_prompt(parsed: dict) -> str:
     # six characters \u2013, so no downstream agent could ever quote a range with
     # an en dash and have it recognised as supported. It also spent tokens on
     # escape sequences for every dash, quote and accent in the inputs.
-    return json.dumps({k: v for k, v in parsed.items() if k not in _NOT_EVIDENCE},
-                      indent=2, default=str, ensure_ascii=False)
+    return json.dumps(parsed, indent=2, default=str, ensure_ascii=False)

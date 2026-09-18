@@ -16,7 +16,9 @@ from typing import Literal
 
 from pydantic import Field
 
-from .base import AssetEnvelope, AssetType, Base
+from app.common.contracts.base import AssetEnvelope, Base
+
+from .types import AssetType
 
 # The evidence taxonomy every finding is tagged with, so a reviewer can tell a
 # sourced fact from an agent's own interpretation.

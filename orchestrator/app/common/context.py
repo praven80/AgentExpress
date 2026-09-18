@@ -12,7 +12,7 @@ disabled. An agent can therefore call them unconditionally.
 import json as _json
 import re
 
-from app.common.config import OUTPUT_RULES, TOOLS
+from app.common.config import TOOLS
 from app.common.llm import run_llm
 from app.common.sink import WorkflowCancelled, emit, is_cancelled
 from app.features.gateway.client import query_tool, query_tool_rows
@@ -23,6 +23,18 @@ def _slug(text: str) -> str:
     """Lowercase, hyphenated, alphanumeric-only slug (safe for a memory actorId)."""
     return re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
 
+
+# A field name that says "this list holds what the run could not settle", in
+# whatever vocabulary the workflow chose. Used by `_insight_from` to find the most
+# reusable part of an asset for long-term memory WITHOUT knowing any schema: it
+# previously named this sample's own `openQuestions`/`limitations`/`dataLimitations`,
+# so a workflow calling the same thing `caveats`, `gaps` or `unknowns` stored only
+# half of what it should. These are generic English words about uncertainty, not
+# about any subject matter.
+_UNCERTAIN_KEY_RE = re.compile(
+    r"question|limitation|gap|unknown|caveat|missing|unresolved|outstanding"
+    r"|risk|blocker|assumption|exclusion|constraint",
+    re.IGNORECASE)
 
 # Words that say nothing about the subject, so sharing one is not evidence that a
 # recalled insight belongs to this run.
@@ -76,13 +88,6 @@ class AgentContext:
         # rather than coded.
         self.tool = getattr(agent, "tool", None)
         self.corpus = getattr(agent, "corpus", None)
-        # Output-rule enforcement for this agent: {"enabled": bool, "repair": bool}.
-        # `repair` costs a second model call, so it is config, not a framework
-        # choice — see config.output_rules_for. Defaulted here as well as in the
-        # registry so a hand-built Agent (a test, a customer's own runner) behaves
-        # like the shipped default instead of raising.
-        self.output_rules = dict(getattr(agent, "output_rules", None)
-                                 or OUTPUT_RULES)
         self.state = state
         self.session_id = config["configurable"]["thread_id"]
         self.topic = state.get("topic", "")
@@ -139,16 +144,13 @@ class AgentContext:
                 "\n\n=== RELEVANT PAST INSIGHTS (long-term memory) ===\n"
                 + "\n---\n".join(self.recalled_memory)
                 + "\n(These are UNVERIFIED recollections from earlier runs, not "
-                  "evidence. They may be stale, may belong to a different "
-                  "request, and may assert things the user never said. Use them "
-                  "only to orient yourself. Never present a recalled item as a "
-                  "sourced fact, as a fact about the user, or as the rationale "
-                  "for a recommendation — an observed failure asserted 'the "
-                  "user's background (hands-on with AWS serverless, Lambda, "
-                  "DynamoDB) suggests custom-built on Lambda is feasible' when "
-                  "the entire request was five words long. If a recalled detail "
-                  "matters, it belongs in your open questions as something to "
-                  "confirm, not in your findings.)"
+                  "evidence. They may be stale, they may belong to a different "
+                  "request, and they may assert things nobody said. Use them only "
+                  "to orient yourself. Never present a recalled item as a sourced "
+                  "fact, as a fact about the requester, or as the reason for a "
+                  "conclusion: a recollection is a hint about where to look, never "
+                  "support for what you found. If a recalled detail matters, it "
+                  "belongs in your open questions as something to confirm.)"
             )
         return await run_llm(name or self.agent_id, system, user,
                              model=model or self.model,
@@ -447,10 +449,14 @@ class AgentContext:
         if gist:
             parts.append(gist)
         # What the run could NOT establish is the most reusable thing here: it tells
-        # a later run what to ask for up front.
-        for key in ("openQuestions", "limitations", "dataLimitations"):
-            items = [self._drop_meta_sentences(str(x)) for x in (obj.get(key) or [])]
-            items = [x for x in items if x]
+        # a later run what to ask for up front. Found by SHAPE and by a generic
+        # uncertainty word, not by this sample's field names — those were
+        # `openQuestions`/`limitations`/`dataLimitations`, so a workflow calling the
+        # same thing `caveats`, `gaps` or `unknowns` silently lost half its memory.
+        for key, value in obj.items():
+            if not _UNCERTAIN_KEY_RE.search(key) or not isinstance(value, list):
+                continue
+            items = [t for t in (self._drop_meta_sentences(str(x)) for x in value) if t]
             if items:
                 parts.append("Unresolved: " + "; ".join(items[:3]))
                 break

@@ -404,7 +404,7 @@ def test_every_tool_type_has_an_evidence_label(client, monkeypatch):
     """A type with no label falls back to the generic "TOOL" heading, so the model is
     never told what kind of source the evidence came from. Cheap to forget when
     adding a type, so pin it."""
-    from app.common.research import _EVIDENCE_LABELS
+    from app.subagents._shared.research import _EVIDENCE_LABELS
 
     assert set(_EVIDENCE_LABELS) == {"kb", "websearch", "mcp", "openapi", "lambda"}
     assert all(v and v.isupper() for v in _EVIDENCE_LABELS.values())

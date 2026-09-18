@@ -59,6 +59,43 @@ def test_the_topic_and_the_unknowns_are_what_gets_kept(ctx):
     assert "What is the deployment target?" in insight
 
 
+def test_the_unknowns_are_found_in_a_customers_own_vocabulary(ctx):
+    """The framework must not need to know your schema to remember the useful part.
+
+    This used to look for `openQuestions`, `limitations` and `dataLimitations` — this
+    sample's own field names — so a workflow that called the same thing something
+    else stored the gist and silently dropped the unresolved half. Found by shape
+    (a list of strings) and a generic uncertainty word instead.
+    """
+    import json
+
+    for key in ("caveats", "openGaps", "unknowns", "outstandingItems",
+                "blockers", "riskRegister"):
+        insight = ctx._insight_from(json.dumps({
+            "assetId": "asset-claim-decision-v1",
+            "assetType": "claim-decision",
+            "executiveSummary": "The claim is payable in part.",
+            key: ["Policy wording for clause 4(b) is ambiguous."],
+        }))
+        assert "The claim is payable in part." in insight
+        assert "Unresolved: Policy wording for clause 4(b) is ambiguous." in insight, key
+
+
+def test_a_list_that_is_not_about_uncertainty_is_not_stored_as_unresolved(ctx):
+    """The heuristic has to be narrow enough to stay meaningful: a list of parties
+    or line items is not a list of open questions."""
+    import json
+
+    insight = ctx._insight_from(json.dumps({
+        "assetId": "asset-claim-decision-v1",
+        "executiveSummary": "The claim is payable in part.",
+        "claimants": ["A. Patel", "R. Gomez"],
+        "lineItems": ["Windscreen", "Courtesy car"],
+    }))
+    assert "Unresolved" not in insight
+    assert "A. Patel" not in insight
+
+
 def test_claims_about_the_requester_are_dropped(ctx):
     """Observed live, and the reason a later run recommended Lambda: memory
     asserted a background the user never mentioned."""

@@ -19,23 +19,13 @@ from __future__ import annotations
 import json
 import re
 
-from app.common import assets, clock, rules, structured
+from app.common import assets, clock
 from app.common.config import TOOLS
-from app.common.contracts import EvidenceClass, Finding, ResearchOutput
 from app.common.contracts.base import AssetStatus
 from app.common.errors import ModelOutputUnusable
+from app.subagents._shared.contracts import EvidenceClass, Finding, ResearchOutput
 
 _EVIDENCE = set(EvidenceClass.__args__)
-
-# The brief's own lists, so a stated count can be checked against them. A research
-# agent that writes "seven open questions" has no copy of them in its own payload;
-# the count is only resolvable against the brief it was given.
-_BRIEF_COUNT_KEYS = ("openQuestions", "keyQuestions", "constraints", "assumptions")
-
-
-def _brief_counts(brief: dict) -> dict[str, int]:
-    return {k: len(brief[k]) for k in _BRIEF_COUNT_KEYS
-            if isinstance(brief.get(k), list)}
 
 # How each tool type is labelled in the evidence block handed to the model, so the
 # model can attribute a finding to the right kind of source.
@@ -68,10 +58,12 @@ RESEARCH_SCHEMA = (
     '"sourceAssetId": "optional"}]}'
 )
 
-# How to use the inputs. Domain-neutral on purpose — it talks about evidence,
-# provenance and citations, not about any particular subject matter. Override it
-# per agent from app/subagents/<id>/prompts.py when your domain needs different
-# wording:
+# How to use the inputs. THIS IS THIS SAMPLE'S WORDING, not the framework's, and it
+# is written for a technical-research pipeline — the worked examples below name real
+# services and libraries because concrete examples beat abstract ones and these are
+# the defects this pipeline actually produced. Expect to replace them.
+#
+# Override per agent from app/subagents/<id>/prompts.py:
 #
 #     research.synthesize(ctx, system_prompt=SYSTEM, instructions=MY_INSTRUCTIONS)
 #
@@ -244,16 +236,7 @@ async def synthesize(ctx, *, system_prompt: str,
     # structured JSON — summary + several classified findings + sources +
     # limitations — so too small a budget truncates it mid-JSON and it fails to
     # parse. Raise that agent's maxTokens rather than editing this line.
-    #
-    # `upstream` is the brief plus the evidence — exactly what the model was
-    # shown — because the grounding rules (a figure, an ordinal series) test the
-    # output against it. Passing anything else would make those rules lie.
-    payload, unrepaired = await structured.ask_json(
-        ctx, system_prompt, user,
-        rule_set=rules.RESEARCH,
-        upstream=f"{brief_text}\n{evidence}",
-        extra_counts=_brief_counts(brief),
-    )
+    payload = assets.extract_json(await ctx.llm(system_prompt, user)) or {}
 
     findings = _findings(payload, evidence)
     # `evidence` is passed so a citation URL can be verified against what the model
@@ -283,6 +266,5 @@ async def synthesize(ctx, *, system_prompt: str,
         findings=findings,
         dataLimitations=data_limits,
         sources=sources,
-        ruleViolations=unrepaired,
     )
     return json.dumps(asset.model_dump(by_alias=True, mode="json"), indent=2)

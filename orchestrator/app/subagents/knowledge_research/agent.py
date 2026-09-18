@@ -7,9 +7,9 @@ The shared runner in app/common/research.py does the rest.
 To point this at your own documents, replace the contents of kb_docs/ — each
 top-level folder is a corpus. No change here.
 """
-from app.common import research
 from app.common.base import Agent
 from app.common.context import AgentContext
+from app.subagents._shared import research
 
 from .prompts import SYSTEM_PROMPT
 

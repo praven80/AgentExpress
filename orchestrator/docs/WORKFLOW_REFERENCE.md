@@ -54,9 +54,6 @@ does not turn tests red.
 | Key | Read by | Notes |
 |---|---|---|
 | `defaultModel` | `config.py` | Model for any agent that doesn't name its own. `BEDROCK_MODEL_ID` overrides it. |
-| `outputRules.enabled` | `config.py` → `structured.ask_json` | Run the deterministic output checks in `app/common/rules.py` on every agent's payload, and record whatever fails on the asset (`ruleViolations`, rendered in the UI above the summary). Pure functions — no model call, no added cost. Default **on**. |
-| `outputRules.repair` | same | When a check fails, spend **one extra model call** re-asking that agent with the concrete violations quoted. Default **off**, because it is a real cost: on a run where most agents fail a check it roughly doubles the price and the wall-clock. Turn it on per agent (below) for the outputs a reader actually consumes, once you've seen from the recorded violations which agents need it. Bounded at one retry. The retry is kept unless it raises the violation count or brings a **new kind** of violation; on a tie it is kept only when the prose actually got shorter, since a tie can otherwise hide a rewrite that dropped content. |
-| `outputRules.maxWords` | same | A prose budget for one agent's output, checked deterministically as the `over-budget` rule. **0 (off) by default** — the right length is a property of your workflow, not of the framework. Counted over the reader-facing fields, so it follows your schema rather than naming any field. Set it where length is the observed defect: three separate prompt clauses failed to keep the shipped `report` under control (2164 → 1749 → 2600 words) and a number in config succeeded, because wording is negotiable and a number is not. Pair it with `repair` — "cut this to the budget" is a mechanical instruction a re-ask can execute. |
 | `runtimeInvoke.maxAttempts` | `config.py` → `agentcore_agent._agentcore` | **Total** attempts per call to a `dedicated` agent's runtime, not retries-after-the-first. Default **1, i.e. no retrying**, which is deliberate: `InvokeAgentRuntime` is synchronous, slow and **not idempotent**, so a retry does not replace the attempt it followed — the remote container is already working and cannot tell the caller stopped listening. boto3's own default (`legacy` mode, up to 5 attempts) therefore lets one transient blip run a research agent twice, bill both model calls, and return whichever answered last, with nothing in the timeline to show it: the node logs "Invoking dedicated AgentCore Runtime" once, before any retry exists. Observed on a live run — two invocations of the `web_search` runtime with different `requestId`s, 13s apart, for one node execution, $0.0158 spent on a discarded answer. For a call this long the failure that matters is a lost response to work that already succeeded, and retrying that is strictly worse than failing: an error reaches the reviewer, a duplicate just inflates the bill. Raise it only if you have made the call idempotent. |
 | `runtimeInvoke.readTimeoutSeconds` | same | How long to wait for a dedicated agent's response. Default **120**, well above boto3's 60 and the ~15–20s the shipped research agents take. With retrying off this timeout is fatal to the run, so keep it comfortably above your slowest agent — otherwise you trade a duplicate for a truncated run, which is not the trade being made here. |
 | `policy.enabled` | `policy.tf`, `tool-plane.ts` | Creates the Cedar policy engine and attaches it to the Gateway. |
@@ -106,7 +103,6 @@ AgentCore Runtime name.
 | `corpus` | `registry.py` | For a `type: "kb"` tool: which corpus to retrieve from. Must be one of that tool's declared `corpora`. |
 | `produces` | `nodes.py` | The deliverable name, injected into the agent's task prompt. |
 | `access` | UI chip | A short human label for the data source. **Only read when the agent has no `tool`** — with a tool, the chip is derived from the tool's type. Don't set both. |
-| `outputRules` | `registry.py` → `agent.output_rules` | **Optional.** Overrides `orchestrator.outputRules` for this agent, merged over it — so `{"repair": true}` turns repair on here and leaves `enabled` alone. This is the per-agent cost dial: pay for a second call only where a reader actually consumes the output. The shipped workflow sets it on `analysis` and nowhere else — see below. |
 
 **How to decide which agent gets repair — and it is not "the worst one".** From the
 recorded violations, and from what KIND of defect they are.
@@ -293,8 +289,7 @@ Three things in it are worth copying into your own Lambda:
   are a property of the workload, not of AWS. A tool that multiplies a real rate by
   a volume nobody supplied has invented the volume, and the invented half is the
   half that makes the total wrong. The tool instead names the volumes a total would
-  need, and `app/common/rules.py` catches any downstream agent that invents them
-  (`unsupported-figure`).
+  need, and leaves supplying them to whoever knows them.
 - **It resolves names explicitly, and reports what it cannot.** Pricing ServiceCodes
   are neither guessable nor consistent (`AmazonStates`, not `AWSStepFunctions`), so
   the mapping is a table, not a transformation. A name with no match or more than one

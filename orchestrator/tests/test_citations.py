@@ -15,7 +15,7 @@ import pytest
 
 @pytest.fixture()
 def research():
-    from app.common import research as r
+    from app.subagents._shared import research as r
     return r
 
 
@@ -208,7 +208,7 @@ def test_synthesis_carries_urls_through_without_re_verifying(research):
     """A synthesis agent only ever reads upstream ASSETS, whose URLs were already
     verified against the evidence at research time. Re-checking against a
     non-existent evidence block would strip every legitimate citation."""
-    from app.common import synthesis
+    from app.subagents._shared import synthesis
 
     out = synthesis.build_sources({"sources": [
         {"sourceType": "research-finding", "sourceName": "AWS Lambda FAQs",
@@ -218,7 +218,7 @@ def test_synthesis_carries_urls_through_without_re_verifying(research):
 
 def test_synthesis_keeps_a_customers_own_source_type_too(research):
     """Same helper, so the two runners cannot disagree about provenance."""
-    from app.common import synthesis
+    from app.subagents._shared import synthesis
 
     out = synthesis.build_sources({"sources": [
         {"sourceType": "redshift", "sourceName": "analytics.claims"}]})
