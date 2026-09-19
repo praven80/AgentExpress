@@ -175,6 +175,25 @@ class A2AAgent(Agent):
             headers["Authorization"] = f"Bearer {token}"
         return headers
 
+    def _auth_hint(self, status: int) -> str:
+        """Extra diagnosis for a 403, which on this path is almost always ours and not
+        theirs — and says nothing by itself.
+
+        A SigV4 403 means the signature was rejected, and the only question that matters
+        is WHICH principal signed: an IAM-authed endpoint has to name it. Resolving that
+        needs a call, so it only happens on the failure path, and it is best-effort
+        because a diagnostic must never replace the error it is explaining.
+        """
+        if status != 403 or self.auth != "sigv4":
+            return ""
+        try:
+            import boto3
+            arn = boto3.client("sts").get_caller_identity()["Arn"]
+        except Exception:  # noqa: BLE001 - a hint that cannot be produced is just absent
+            return " (signed with SigV4; could not resolve the calling identity)"
+        return (f" (signed with SigV4 as {arn} — that principal needs "
+                f"lambda:InvokeFunctionUrl on the target)")
+
     def _sign(self, request: urllib.request.Request) -> None:
         """SigV4-sign an outgoing request in place, for `auth: "sigv4"`.
 
@@ -233,7 +252,7 @@ class A2AAgent(Agent):
                 detail = ""
             raise RemoteAgentUnavailable(
                 f"remote agent '{self.id}' returned HTTP {e.code}"
-                f"{f': {detail}' if detail else ''}") from e
+                f"{f': {detail}' if detail else ''}{self._auth_hint(e.code)}") from e
         except (urllib.error.URLError, TimeoutError, ValueError) as e:
             raise RemoteAgentUnavailable(
                 f"remote agent '{self.id}' could not be reached: {type(e).__name__}: {e}") from e

@@ -256,7 +256,7 @@ def test_source_is_a_closed_list_not_an_arbitrary_string():
 def test_a_source_agent_takes_its_endpoint_from_the_injected_map():
     """The URL the IaC discovered at deploy time, delivered the same way the dedicated
     runtime ARNs are."""
-    defn = remote_wf(source="a2a_lambda")
+    defn = remote_wf(source="a2a_lambda", auth="sigv4")
     del defn["agents"]["partner"]["agentCard"]
     with workflow(defn) as imp:
         mod = imp("app.common.a2a_agent")
@@ -271,7 +271,7 @@ def test_a_source_agent_takes_its_endpoint_from_the_injected_map():
 def test_a_source_agent_with_no_injected_endpoint_says_so():
     """Which is what a customer sees if they add the agent but skip the deploy that
     creates it — a clearer failure than a request to the empty string."""
-    defn = remote_wf(source="a2a_lambda")
+    defn = remote_wf(source="a2a_lambda", auth="sigv4")
     del defn["agents"]["partner"]["agentCard"]
     with workflow(defn) as imp:
         mod = imp("app.common.a2a_agent")

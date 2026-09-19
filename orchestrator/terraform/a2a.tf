@@ -134,6 +134,18 @@ resource "aws_lambda_function_url" "a2a" {
   authorization_type = "AWS_IAM"
 }
 
+# Granted on the RESOURCE side too. Identity-based alone is enough for a same-account
+# caller, but this is what makes the permission visible on the function when a 403 has to
+# be diagnosed — and it is what the CDK path's grantInvokeUrl writes.
+resource "aws_lambda_permission" "a2a_invoke_url" {
+  count                  = local.a2a_lambda_enabled
+  statement_id           = "AllowOrchestratorInvokeFunctionUrl"
+  action                 = "lambda:InvokeFunctionUrl"
+  function_name          = aws_lambda_function.a2a[0].function_name
+  principal              = aws_iam_role.runtime.arn
+  function_url_auth_type = "AWS_IAM"
+}
+
 # The orchestrator is the only principal allowed to call it.
 resource "aws_iam_role_policy" "runtime_invoke_a2a" {
   count = local.a2a_lambda_enabled

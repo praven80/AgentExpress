@@ -181,7 +181,34 @@ reviewer can see which parts of a deliverable came from outside.
 **When it fails** it raises `RemoteAgentUnavailable` with whatever the remote side
 said, and the run fails with that reason on that node. There is no fallback: an empty
 answer would flow into every downstream agent looking exactly like a real finding of
-nothing.
+nothing. A SigV4 403 additionally reports which principal signed, because that is the
+only question a rejected signature raises and the status alone does not answer it.
+
+**A third thing you lose: assetId traceability.** A remote agent returns its own output
+shape, not this framework's asset envelope, so it has no `assetId` — and a downstream
+synthesis agent can only list ids that exist. Measured on a live run: the remote reviews
+reached the analysis and the final report (their failure modes are quoted there), but
+they do not appear in `analysis.sourceAssetIds`. The content is used and attributed in
+prose; it is not machine-traceable the way a local agent's asset is. If you need that,
+have the remote agent emit your envelope — but demanding it is also what makes a
+third-party agent un-integrable, which is the trade this placement exists to offer.
+
+### The shipped stand-in (`source: "a2a_lambda"`)
+
+`runtime: "a2a"` needs an agent you do not operate, so a committed placeholder URL would
+fail every run. The framework therefore ships one: a real A2A server
+(`a2a_lambda/handler.py`) in its own Lambda behind its own Function URL, deployed only
+when an agent asks for it with `source: "a2a_lambda"`. The sample's External Review stage
+uses two of them, `skill: "compliance"` and `skill: "resilience"`, selected by path so
+one function backs two genuinely different reviewers.
+
+It requires `auth: "sigv4"`, and that is validated rather than defaulted: the endpoint is
+an `AWS_IAM` Function URL, so an unsigned request is a guaranteed 403 that surfaces as
+"could not read the Agent Card … HTTP 403" — which reads like a missing agent instead of
+like wrong config. Observed on a live run, because `auth` defaults to `none`.
+
+Point an agent at a real partner's `agentCard` instead and none of that infrastructure
+is provisioned.
 
 > **There is no `repair` key, and this file used to claim there was.** An earlier
 > version of the framework shipped an output-rules engine that could re-ask an agent

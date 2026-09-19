@@ -282,7 +282,7 @@ export const A2A_LAMBDA_SKILLS = ["compliance", "resilience"];
 export const A2A_SOURCES = ["a2a_lambda"];
 
 export const RUNTIMES = ["main", "dedicated", "a2a"];
-export const A2A_AUTH_MODES = ["none", "bearer", "oauth2"];
+export const A2A_AUTH_MODES = ["none", "bearer", "oauth2", "sigv4"];
 
 /**
  * Validate each agent's `runtime` placement, mirroring registry.validate_runtimes
@@ -327,6 +327,14 @@ export function validateRuntimes(agents: Record<string, any>): void {
           `(an agent that already exists — its base URL, or its card URL) or "source" (one of ` +
           `${A2A_SOURCES.join(", ")}, the stand-in this repo deploys for you, whose URL only ` +
           `exists after a deploy). Got ${card && source ? "both" : "neither"}.`
+      );
+    }
+    if (source === "a2a_lambda" && String(a.auth ?? "").toLowerCase() !== "sigv4") {
+      throw new Error(
+        `workflow.json agent "${id}" has source "a2a_lambda" and needs auth "sigv4" (got ` +
+          `"${a.auth ?? "none"}"). That stand-in is deployed behind an AWS_IAM Function URL, so ` +
+          `the request must be SigV4-signed with the orchestrator's own role — there is no ` +
+          `token, by design.`
       );
     }
     if (source && !A2A_SOURCES.includes(source)) {
@@ -1310,6 +1318,7 @@ export class OrchestratorStack extends cdk.Stack {
     const a2aAgents = a2aLambdaAgents(agents);
     let a2aEndpoints: Record<string, string> = {};
     let a2aFunction: lambda.Function | undefined;
+    let a2aFunctionUrl: lambda.FunctionUrl | undefined;
     if (Object.keys(a2aAgents).length) {
       const a2aName = `A2AAgent-${agentName}`;
       a2aFunction = new lambda.Function(this, "A2AAgent", {
@@ -1336,12 +1345,12 @@ export class OrchestratorStack extends cdk.Stack {
       });
       // It is an agent, so it calls a model.
       a2aFunction.addToRolePolicy(bedrockInvoke);
-      const a2aUrl = a2aFunction.addFunctionUrl({
+      const a2aUrl = (a2aFunctionUrl = a2aFunction.addFunctionUrl({
         // AWS_IAM, never NONE. This is why the client has an `auth: "sigv4"` mode: the
         // endpoint is not public, the caller must present a SigV4 signature from a
         // principal allowed to invoke it, and no bearer token exists to leak or rotate.
         authType: lambda.FunctionUrlAuthType.AWS_IAM,
-      });
+      }));
       // The skill is a PATH SEGMENT, not a query string: a client appends
       // `/.well-known/agent-card.json` to the base URL it is given, and
       // `https://host/?skill=x` + that path resolves to nothing.
@@ -1391,14 +1400,18 @@ export class OrchestratorStack extends cdk.Stack {
         resources: invokeRuntimeResources,
       })
     );
-    // The orchestrator is the only principal allowed to call the stand-in.
-    if (a2aFunction) {
+    // The orchestrator is the only principal allowed to call the stand-in — granted on
+    // BOTH sides. Identity-based alone is enough for a same-account caller, but the
+    // resource policy is what makes the permission visible on the function when a 403
+    // has to be diagnosed, and it is what CDK's grantInvokeUrl exists to write.
+    if (a2aFunction && a2aFunctionUrl) {
       runtimeRole.addToPolicy(
         new iam.PolicyStatement({
           actions: ["lambda:InvokeFunctionUrl"],
           resources: [a2aFunction.functionArn],
         })
       );
+      a2aFunctionUrl.grantInvokeUrl(runtimeRole);
     }
     statusTable.grantReadWriteData(runtimeRole);
     eventsTable.grantReadWriteData(runtimeRole);

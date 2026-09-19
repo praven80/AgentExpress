@@ -126,6 +126,17 @@ def validate_runtimes() -> None:
                 f"agent {agent_id!r} has skill {skill!r}; the stand-in A2A server publishes "
                 f"{', '.join(A2A_LAMBDA_SKILLS)} (see a2a_lambda/handler.py SKILLS). An "
                 f"unrecognised one would silently fall back to the default reviewer.")
+        if source == "a2a_lambda" and auth.lower() != "sigv4":
+            # The stand-in sits behind a Function URL with authType AWS_IAM, so an
+            # unsigned request is a guaranteed 403 — and it arrives as "could not read
+            # the Agent Card ... HTTP 403", which reads like the agent is missing rather
+            # than like this config being wrong. Observed on a live run, because `auth`
+            # defaults to "none" and this was left unset.
+            raise ValueError(
+                f"agent {agent_id!r} has source \"a2a_lambda\" and needs auth \"sigv4\" (got "
+                f"{auth or 'none'!r}). That stand-in is deployed behind an AWS_IAM Function URL, "
+                f"so the request must be SigV4-signed with the orchestrator's own role — there is "
+                f"no token, by design.")
         if source and source not in A2A_SOURCES:
             raise ValueError(
                 f"agent {agent_id!r} has source {source!r}; the only value is "

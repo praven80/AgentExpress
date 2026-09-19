@@ -328,7 +328,7 @@ locals {
   # the agent is somebody else's service, reached at its Agent Card URL. Mirrors
   # registry.validate_runtimes and validateRuntimes in the CDK path.
   a2a_runtimes   = ["main", "dedicated", "a2a"]
-  a2a_auth_modes = ["none", "bearer", "oauth2"]
+  a2a_auth_modes = ["none", "bearer", "oauth2", "sigv4"]
 
   # A misspelled runtime falls through to "main" and dies on a missing module.
   bad_runtimes = [
@@ -352,6 +352,13 @@ locals {
     for id in local.a2a_agent_ids :
     "${id}=${try(local.workflow_def.agents[id].agentCard, "") != "" ? "both" : "neither"}"
     if(try(local.workflow_def.agents[id].agentCard, "") != "") == (try(local.workflow_def.agents[id].source, "") != "")
+  ]
+  # The stand-in is behind an AWS_IAM Function URL, so sigv4 is the only auth that can
+  # reach it; anything else is a guaranteed 403 that reads like a missing agent.
+  a2a_source_without_sigv4 = [
+    for id in local.a2a_agent_ids : "${id}=${lower(try(local.workflow_def.agents[id].auth, "none"))}"
+    if try(local.workflow_def.agents[id].source, "") == "a2a_lambda"
+    && lower(try(local.workflow_def.agents[id].auth, "none")) != "sigv4"
   ]
   a2a_bad_source = [
     for id in local.a2a_agent_ids : "${id}=${try(local.workflow_def.agents[id].source, "")}"
@@ -637,6 +644,10 @@ resource "terraform_data" "workflow_validation" {
     precondition {
       condition     = length(local.a2a_card_xor_source) == 0
       error_message = "app/workflow.json A2A agent(s) need EXACTLY ONE of `agentCard` (an agent that already exists - its base URL, or its card URL) or `source` (the stand-in this repo deploys, whose URL only exists after a deploy). Shown as \"<agent>=<both|neither>\": ${join(", ", local.a2a_card_xor_source)}."
+    }
+    precondition {
+      condition     = length(local.a2a_source_without_sigv4) == 0
+      error_message = "app/workflow.json agent(s) use `source = \"a2a_lambda\"` without `auth = \"sigv4\"` (shown as \"<agent>=<auth>\"): ${join(", ", local.a2a_source_without_sigv4)}. That stand-in is deployed behind an AWS_IAM Function URL, so the request must be SigV4-signed with the orchestrator's own role - there is no token, by design."
     }
     precondition {
       condition     = length(local.a2a_bad_source) == 0

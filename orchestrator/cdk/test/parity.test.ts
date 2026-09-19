@@ -285,6 +285,48 @@ describe("constants duplicated across languages", () => {
     expect(fromTs).toEqual(fromPython);
   });
 
+  it("the A2A auth modes and runtimes match in all three places", () => {
+    // Necessarily duplicated: registry.py enforces it at container start, and both IaC
+    // paths need it at plan/synth. Nothing was comparing them, which is exactly how
+    // `sigv4` came to exist in the Python list and not the other two — the shipped
+    // workflow then failed `cdk synth` with "valid values are none, bearer, oauth2".
+    const registry = read(path.join(ORCH_ROOT, "app", "orchestrator", "registry.py"));
+    const list = (src: string, re: RegExp) =>
+      src.match(re)![1].match(/"([\w]+)"/g)!.map((x) => x.replace(/"/g, "")).sort();
+
+    const pyAuth = list(registry, /^AUTH_MODES = \(([^)]*)\)/m);
+    const tsAuth = list(stackSrc, /const A2A_AUTH_MODES = \[([^\]]*)\]/);
+    const tfAuth = list(toolsTf, /a2a_auth_modes\s*=\s*\[([^\]]*)\]/);
+    expect(pyAuth).toEqual(["bearer", "none", "oauth2", "sigv4"]);
+    expect(tsAuth).toEqual(pyAuth);
+    expect(tfAuth).toEqual(pyAuth);
+
+    const pyRuntimes = list(registry, /^RUNTIMES = \(([^)]*)\)/m);
+    const tsRuntimes = list(stackSrc, /const RUNTIMES = \[([^\]]*)\]/);
+    const tfRuntimes = list(toolsTf, /a2a_runtimes\s*=\s*\[([^\]]*)\]/);
+    expect(pyRuntimes).toEqual(["a2a", "dedicated", "main"]);
+    expect(tsRuntimes).toEqual(pyRuntimes);
+    expect(tfRuntimes).toEqual(pyRuntimes);
+
+    // And the stand-in's skills, which the config names and the handler implements.
+    const skills = (src: string, re: RegExp) => list(src, re);
+    // Sliced to the SKILLS dict before matching: an earlier version matched the whole
+    // file and picked up `"compliance_review": {` out of the module docstring's example.
+    const handlerSrc = read(path.join(ORCH_ROOT, "a2a_lambda", "handler.py"));
+    const skillsBlock = handlerSrc.slice(
+      handlerSrc.indexOf("SKILLS: dict[str, dict] = {"),
+      handlerSrc.indexOf("DEFAULT_SKILL =")
+    );
+    expect(skillsBlock.length).toBeGreaterThan(100); // the slice actually found it
+    const handlerSkills = [...skillsBlock.matchAll(/^    "(\w+)": \{$/gm)]
+      .map((m) => m[1])
+      .sort();
+    expect(handlerSkills).toEqual(["compliance", "resilience"]);
+    expect(skills(stackSrc, /const A2A_LAMBDA_SKILLS = \[([^\]]*)\]/)).toEqual(handlerSkills);
+    expect(skills(toolsTf, /a2a_lambda_skills\s*=\s*\[([^\]]*)\]/)).toEqual(handlerSkills);
+    expect(skills(registry, /^A2A_LAMBDA_SKILLS = \(([^)]*)\)/m)).toEqual(handlerSkills);
+  });
+
   it("the shipped authorization block only uses recognised actions", () => {
     const known = read(path.join(ORCH_ROOT, "bff", "authz.py"))
       .match(/^ACTIONS = \(([^)]*)\)/m)![1]

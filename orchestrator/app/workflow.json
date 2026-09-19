@@ -217,6 +217,7 @@
       "runtime": "a2a",
       "source": "a2a_lambda",
       "skill": "compliance",
+      "auth": "sigv4",
       "produces": "compliance-review"
     },
     "resilience_review": {
@@ -224,6 +225,7 @@
       "runtime": "a2a",
       "source": "a2a_lambda",
       "skill": "resilience",
+      "auth": "sigv4",
       "produces": "resilience-review"
     },
     "analysis": {
