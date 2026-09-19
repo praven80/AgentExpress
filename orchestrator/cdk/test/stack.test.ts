@@ -18,7 +18,7 @@ import * as cdk from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import * as path from "path";
 
-import { OrchestratorStack } from "../lib/orchestrator-stack";
+import { buildBffWorkflow, OrchestratorStack } from "../lib/orchestrator-stack";
 
 const ORCH_ROOT = path.join(__dirname, "..", "..");
 const shipped = require(`${ORCH_ROOT}/app/workflow.json`);
@@ -42,6 +42,7 @@ function synth(overrides: Record<string, any> = {}) {
     gatewayClientSecret: "dummy",
     gatewayAudience: "",
     toolApiKeys: {},
+    a2aTokens: {},
     transactionSearchIndexingPercentage: 100,
     ...overrides,
   });
@@ -242,5 +243,73 @@ describe("idp=none", () => {
     expect(() => synth({ idp: "none", createCognito: false, enableGateway: false })).toThrow(
       /idp = "none" deploys the API with no authorizer/
     );
+  });
+});
+
+describe("a remote (a2a) agent", () => {
+  // `runtime: "a2a"` is an agent this deployment does NOT operate. The thing to prove
+  // at the stack level is a negative: it must provision no compute, no IAM and no log
+  // group, because there is nothing of ours to run. A dedicated runtime accidentally
+  // created for it would be a container that boots, finds no module under
+  // app/subagents/<id>/, and crash-loops — while the orchestrator happily called the
+  // partner's URL and the run succeeded, so nothing would point at the waste.
+  const withRemote = {
+    ...shipped,
+    agents: {
+      ...shipped.agents,
+      partner_check: {
+        name: "Partner Check",
+        runtime: "a2a",
+        agentCard: "https://agents.partner.example/check",
+        produces: "partner-assessment",
+      },
+    },
+    steps: [...shipped.steps, { agent: "partner_check" }],
+  };
+
+  let remoteTemplate: Template;
+  beforeAll(() => {
+    remoteTemplate = synth({ workflow: withRemote, a2aTokens: {} });
+  });
+
+  it("provisions no AgentCore Runtime of its own", () => {
+    const runtimes = Object.values<any>(
+      remoteTemplate.findResources("AWS::BedrockAgentCore::Runtime")
+    ).map((r) => r.Properties.AgentRuntimeName);
+    // One per `dedicated` agent, plus the orchestrator. Never one for a2a.
+    const dedicated = Object.entries<any>(withRemote.agents)
+      .filter(([, a]) => (a.runtime ?? "main") === "dedicated")
+      .map(([id]) => id);
+    expect(runtimes).toHaveLength(dedicated.length + 1);
+    expect(runtimes.join(" ")).not.toContain("partner_check");
+  });
+
+  it("still reaches the UI, labelled by its Agent Card host", () => {
+    const projected = buildBffWorkflow(withRemote).agents.partner_check;
+    expect(projected.runtime).toBe("a2a");
+    expect(projected.source).toBe("A2A \u00b7 agents.partner.example");
+  });
+
+  it("ships an A2A_TOKENS env var to the orchestrator", () => {
+    const orchestrator = Object.values<any>(
+      remoteTemplate.findResources("AWS::BedrockAgentCore::Runtime")
+    ).find((r) => r.Properties.AgentRuntimeName === "multiagent_orchestrator");
+    expect(orchestrator.Properties.EnvironmentVariables).toHaveProperty("A2A_TOKENS");
+  });
+
+  it("refuses to synth when a bearer agent's token was not supplied", () => {
+    // The alternative is a 401 from a service you do not control, which is a far
+    // harder failure to read than a synth error naming the agent.
+    const bearer = {
+      ...withRemote,
+      agents: {
+        ...withRemote.agents,
+        partner_check: { ...withRemote.agents.partner_check, auth: "bearer" },
+      },
+    };
+    expect(() => synth({ workflow: bearer, a2aTokens: {} })).toThrow(
+      /declare auth "bearer" but no token was supplied for them: partner_check/
+    );
+    expect(() => synth({ workflow: bearer, a2aTokens: { partner_check: "t0k" } })).not.toThrow();
   });
 });

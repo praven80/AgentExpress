@@ -150,6 +150,7 @@ describe("BFF workflow projection", () => {
       "MCP \u00b7 ",
       "Session input",
       "Upstream agent outputs",
+      "A2A \u00b7 ",
     ]) {
       expect(bff).toContain(label);
     }
@@ -165,6 +166,38 @@ describe("BFF workflow projection", () => {
     expect(out.agents[mcp].source).toMatch(/^MCP \u00b7 /);
     expect(out.agents[firstAgent].source).toBe("Session input");
     expect(out.agents[upstreamAgent].source).toBe("Upstream agent outputs");
+  });
+
+  it("labels a remote (a2a) agent by its Agent Card host, identically on both paths", () => {
+    // A remote agent has no `tool`, so it hits a branch of its own. The two paths
+    // compute the host with different primitives — a JS regex here, HCL replace/split
+    // there — and they DID disagree on an uppercase scheme and on an empty card until
+    // both were run against these four inputs. Hence the literal expectations: the
+    // point is that the strings match, not that each side is individually plausible.
+    const { a2aHost } = require("../lib/orchestrator-stack");
+    expect(a2aHost("https://agents.partner.example/credit/v2")).toBe("agents.partner.example");
+    expect(a2aHost("https://a.example")).toBe("a.example");
+    expect(a2aHost("HTTPS://B.example/z")).toBe("B.example"); // scheme match is case-insensitive
+    expect(a2aHost("")).toBe("remote"); // never an empty chip
+
+    const out = buildBffWorkflow({
+      orchestrator: {}, tools: {}, steps: [{ agent: "remote_one" }],
+      agents: {
+        remote_one: {
+          name: "Partner Agent", runtime: "a2a",
+          agentCard: "https://agents.partner.example/credit/v2",
+        },
+      },
+    });
+    expect(out.agents.remote_one.source).toBe("A2A \u00b7 agents.partner.example");
+    expect(out.agents.remote_one.runtime).toBe("a2a");
+
+    // And the HCL must strip the scheme case-insensitively and default to "remote",
+    // which is what the two divergences were.
+    const bff = read(path.join(TF, "bff.tf"));
+    expect(bff).toContain('"A2A \u00b7 ');
+    expect(bff).toContain("(?i)^https?:");
+    expect(bff).toContain('"remote"');
   });
 });
 

@@ -27,7 +27,9 @@ from conftest import ORCH_ROOT
 # Agent-level keys, each with the module that reads it.
 AGENT_KEYS = {
     "name": "registry.py -> agent.name; UI node title",
-    "runtime": "registry.py (main vs dedicated); subagent_runtimes.tf; UI chip",
+    "runtime": "registry.py (main | dedicated | a2a); subagent_runtimes.tf; UI chip",
+    "agentCard": "a2a_agent.py -> the remote agent's Agent Card URL; runtime \"a2a\" only",
+    "auth": "a2a_agent.py -> none | bearer | oauth2; runtime \"a2a\" only",
     "model": "registry.py -> agent.model (omit to use orchestrator.defaultModel)",
     "maxTokens": "registry.py -> agent.max_tokens, the model output budget",
     "temperature": "registry.py -> agent.temperature",
@@ -58,6 +60,7 @@ TOP_LEVEL = {
 ORCHESTRATOR_KEYS = {
     "defaultModel": "config.py:MODEL_ID fallback",
     "runtimeInvoke": "config.py:RUNTIME_INVOKE -> agentcore_agent._agentcore (SDK retries/timeout)",
+    "a2aInvoke": "config.py:A2A_INVOKE -> a2a_agent (request timeout, poll interval, poll budget)",
     "policy": "policy.tf / tool-plane.ts - Cedar engine on/off + mode",
     "chatbot": "bff/chatbot.py + the UI gate",
 }
@@ -180,10 +183,18 @@ def test_top_level_and_orchestrator_keys_are_known():
     assert not unknown, f"orchestrator has unread key(s): {sorted(unknown)}"
 
 
+def _local_agents() -> dict:
+    """Agents whose model call this deployment makes. A `runtime: "a2a"` agent is
+    someone else's service: it chooses its own model and owns its own token budget,
+    so the model settings do not apply to it (see registry.validate_runtimes)."""
+    return {aid: a for aid, a in wf()["agents"].items()
+            if str(a.get("runtime") or "main") != "a2a"}
+
+
 def test_every_agent_declares_a_token_budget():
     """Without one it silently falls back to a framework default, which is how the
     budget ended up hardcoded at each call site in the first place."""
-    for aid, a in wf()["agents"].items():
+    for aid, a in _local_agents().items():
         assert isinstance(a.get("maxTokens"), int) and a["maxTokens"] > 0, (
             f"agent {aid!r} needs a positive integer maxTokens")
 
@@ -192,11 +203,32 @@ def test_max_tokens_reaches_the_agent_objects():
     """The config value must actually arrive on the Agent, not just sit in the file."""
     from app.orchestrator.registry import load_agents
 
-    conf = wf()["agents"]
+    conf = _local_agents()
     for aid, agent in load_agents().items():
+        if aid not in conf:
+            continue
         assert agent.max_tokens == conf[aid]["maxTokens"], (
             f"{aid}: config says {conf[aid]['maxTokens']} but the agent got "
             f"{agent.max_tokens}")
+
+
+def test_remote_agent_keys_appear_only_on_a_remote_agent():
+    """`agentCard` and `auth` are read by A2AAgent alone. On a `main` or `dedicated`
+    agent they would look like settings and control nothing — the failure this whole
+    module exists to prevent. Enforced at container start too, by
+    registry.validate_runtimes; asserted here against the shipped file."""
+    for aid, a in wf()["agents"].items():
+        remote = str(a.get("runtime") or "main") == "a2a"
+        for key in ("agentCard", "auth"):
+            if key in a:
+                assert remote, (
+                    f"agent {aid!r} sets {key!r} but is not runtime \"a2a\"; nothing reads it")
+        if remote:
+            assert a.get("agentCard"), f"agent {aid!r} is runtime \"a2a\" with no agentCard"
+            for key in ("model", "temperature", "maxTokens", "tool", "corpus"):
+                assert key not in a, (
+                    f"agent {aid!r} is runtime \"a2a\" and also sets {key!r}; a remote agent "
+                    f"makes its own model call and reaches its own data sources")
 
 
 def test_no_agent_hardcodes_a_token_budget():

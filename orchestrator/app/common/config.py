@@ -86,6 +86,26 @@ _RUNTIME_INVOKE_DEFAULTS = {"maxAttempts": 1, "readTimeoutSeconds": 120}
 RUNTIME_INVOKE: dict = {**_RUNTIME_INVOKE_DEFAULTS,
                         **(ORCHESTRATOR.get("runtimeInvoke") or {})}
 
+# How the orchestrator calls a REMOTE agent over A2A (app/common/a2a_agent.py) — an
+# agent this deployment does not operate, reached at its Agent Card URL.
+#
+# Separate from runtimeInvoke on purpose. A dedicated runtime is ours: we know how
+# slow it is and we control its timeout. A remote agent is somebody else's service
+# behind an interface that is explicitly allowed to be slow — A2A models a unit of
+# work as a Task precisely so it can take minutes and be polled — so the budget that
+# matters is not one request timeout but how long we are willing to wait overall.
+#
+#   timeoutSeconds      per HTTP request (the card fetch, each RPC call).
+#   pollIntervalSeconds gap between `tasks/get` calls while their task is working.
+#                       Their rate limit is unknown to us; a busy loop is rude and
+#                       may be throttled, which looks like their agent failing.
+#   maxPollSeconds      total wall-clock before we give up and fail the run with the
+#                       last state we saw. Bounded rather than open-ended: a task
+#                       that never leaves "working" would otherwise hold the whole
+#                       workflow until the runtime's own 8-hour ceiling.
+_A2A_INVOKE_DEFAULTS = {"timeoutSeconds": 30, "pollIntervalSeconds": 2, "maxPollSeconds": 300}
+A2A_INVOKE: dict = {**_A2A_INVOKE_DEFAULTS, **(ORCHESTRATOR.get("a2aInvoke") or {})}
+
 
 # Presentation strings (title, the default topic, placeholders). Config rather
 # than literals so re-branding for a different use case is a workflow.json edit.

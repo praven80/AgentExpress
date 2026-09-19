@@ -86,6 +86,14 @@ for your use case.
 - **Structured, validated output** — every agent emits a Pydantic contract asset
   with an evidence classification and claim tracing, so a reviewer can trust,
   exclude, or challenge each input.
+- **Agents you don't own — A2A** — a step can be an agent operated by someone
+  else: a partner's, another team's, a managed one. Set `runtime: "a2a"` and its
+  Agent Card URL, and the orchestrator delegates that step over the **Agent2Agent
+  protocol**. No code of theirs in your repo, and no new concept in the graph — it
+  is an ordinary node, so review gates, `branch`, re-run and version history all
+  work on it. Guardrails and memory still apply (the framework wraps the call);
+  evaluations and Cedar policy cannot reach inside their service, and the UI marks
+  the boundary so a reviewer can see which parts of a deliverable came from outside.
 - **Per-agent runtime placement** — each agent runs **in-process** in the
   orchestrator (`runtime: "main"`) or, by flipping one config field, in its **own
   dedicated AgentCore Runtime** (`runtime: "dedicated"`), invoked cross-runtime
@@ -379,6 +387,8 @@ orchestrator/
 │   │   ├── agentcore_agent.py  #   AgentCoreRuntimeAgent: node body for a dedicated agent (InvokeAgentRuntime)
 │   │   ├── assets.py           #   asset plumbing both agent runners use (brief, versioning, JSON repair, provenance)
 │   │   ├── branching.py        #   the `branch` rule language (schema-agnostic; see "Branching" above)
+│   │   ├── a2a_agent.py        #   runtime "a2a": delegate a step to an agent you do NOT operate,
+│   │   │                       #     over the Agent2Agent protocol at its Agent Card URL
 │   │   ├── contracts/base.py   #   the asset ENVELOPE every agent's output shares
 │   │   ├── clock.py            #   Eastern-Time helper (all timestamps: YYYY-MM-DD HH:MM:SS ET)
 │   │   └── llm.py, sink.py, bus.py, errors.py  # infra helpers

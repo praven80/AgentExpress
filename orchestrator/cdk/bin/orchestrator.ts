@@ -15,17 +15,18 @@ if (!["cognito", "auth0", "none"].includes(idp)) {
   throw new Error(`idp must be one of "cognito", "auth0", "none" (got "${idp}")`);
 }
 
-/** Parse $TOOL_API_KEYS (a JSON object of toolName -> key). */
-function parseToolApiKeys(raw?: string): Record<string, string> {
+/** Parse a JSON object of name -> secret from an env var. Never a context key: cdk.json
+ *  is committed, and both of these carry credentials. */
+function parseSecretMap(envName: string, keyedBy: string, raw?: string): Record<string, string> {
   if (!raw) return {};
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    throw new Error('TOOL_API_KEYS must be a JSON object, e.g. \'{"billing":"sk-live-..."}\'.');
+    throw new Error(`${envName} must be a JSON object, e.g. '{"billing":"sk-live-..."}'.`);
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new Error("TOOL_API_KEYS must be a JSON object keyed by the workflow.json tool name.");
+    throw new Error(`${envName} must be a JSON object keyed by the workflow.json ${keyedBy}.`);
   }
   return parsed as Record<string, string>;
 }
@@ -68,7 +69,10 @@ new OrchestratorStack(app, `${agentName.replace(/_/g, "-")}-stack`, {
   // From the ENVIRONMENT, never context: cdk.json is committed and -c values
   // land in cdk.out. Mirrors TF_VAR_tool_api_keys.
   //   export TOOL_API_KEYS='{"billing":"sk-live-..."}'
-  toolApiKeys: parseToolApiKeys(process.env.TOOL_API_KEYS),
+  toolApiKeys: parseSecretMap("TOOL_API_KEYS", "tool name", process.env.TOOL_API_KEYS),
+  // Bearer tokens for `runtime: "a2a"` agents, keyed by agent id. Credentials for
+  // somebody ELSE's agent, so they come from the environment and never from config.
+  a2aTokens: parseSecretMap("A2A_TOKENS", "agent id", process.env.A2A_TOKENS),
 
   transactionSearchIndexingPercentage: Number(ctx("transactionSearchIndexingPercentage", "100")),
 });

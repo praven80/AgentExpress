@@ -219,6 +219,124 @@ export function validateTools(
  * graph-build crash, an opaque deploy-time AgentCore error, or — worst — silently
  * empty retrievals with no error anywhere.
  */
+/**
+ * Bearer tokens to ship to the container: only for agents that are `runtime: "a2a"`
+ * AND declare `auth: "bearer"`.
+ *
+ * Projected rather than passed whole, for the same reason the tools projection is: a
+ * token for an agent that no longer exists, or for one using OAuth, would be shipped
+ * to a running container for no reason. Throws when a bearer agent has no token,
+ * because the alternative is a 401 from a service you do not control — a much harder
+ * failure to read than a synth error.
+ */
+export function a2aTokenEnv(
+  agents: Record<string, any>,
+  tokens: Record<string, string>
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  const missing: string[] = [];
+  for (const [id, a] of Object.entries<any>(agents)) {
+    if (String(a.runtime ?? "main") !== "a2a") continue;
+    if (String(a.auth ?? "none").toLowerCase() !== "bearer") continue;
+    const token = tokens[id];
+    if (!token) missing.push(id);
+    else out[id] = token;
+  }
+  if (missing.length) {
+    throw new Error(
+      `workflow.json agent(s) declare auth "bearer" but no token was supplied for them: ` +
+        `${missing.join(", ")}. Tokens never go in workflow.json — pass them keyed by agent id: ` +
+        `export A2A_TOKENS='{"${missing[0]}":"..."}'.`
+    );
+  }
+  return out;
+}
+
+/** The host of an Agent Card URL, for the UI chip. Mirrors the regex in terraform/bff.tf. */
+export function a2aHost(card: string): string {
+  return String(card ?? "").replace(/^https?:\/\//i, "").split("/")[0] || "remote";
+}
+
+export const RUNTIMES = ["main", "dedicated", "a2a"];
+export const A2A_AUTH_MODES = ["none", "bearer", "oauth2"];
+
+/**
+ * Validate each agent's `runtime` placement, mirroring registry.validate_runtimes
+ * and the preconditions in terraform/tools.tf.
+ *
+ * `a2a` is the placement where the agent is NOT ours — somebody else's service,
+ * reached at its Agent Card URL. That makes the wrong config here expensive: a
+ * misspelled `runtime` falls through to "main" and dies on a missing module; an
+ * `agentCard` on a non-a2a agent reads like a setting and does nothing; a non-https
+ * card puts a bearer token on the wire in plaintext.
+ */
+export function validateRuntimes(agents: Record<string, any>): void {
+  for (const [id, a] of Object.entries<any>(agents)) {
+    const placement = String(a.runtime ?? "main");
+    if (!RUNTIMES.includes(placement)) {
+      throw new Error(
+        `workflow.json agent "${id}" has runtime "${placement}"; valid values are ` +
+          `${RUNTIMES.join(", ")}. A misspelling would otherwise be treated as "main" and fail ` +
+          `on a missing module under app/subagents/.`
+      );
+    }
+    if (placement !== "a2a") {
+      for (const key of ["agentCard", "auth"]) {
+        if (a[key]) {
+          throw new Error(
+            `workflow.json agent "${id}" sets "${key}" but its runtime is "${placement}". ` +
+              `${key} is only read for runtime "a2a" — an agent this workflow does not operate.`
+          );
+        }
+      }
+      continue;
+    }
+    const card = String(a.agentCard ?? "");
+    if (!card) {
+      throw new Error(
+        `workflow.json agent "${id}" has runtime "a2a" but no "agentCard". Give it the remote ` +
+          `agent's base URL (its card is read from <url>/.well-known/agent-card.json) or the ` +
+          `card URL itself.`
+      );
+    }
+    if (!card.toLowerCase().startsWith("https://")) {
+      throw new Error(
+        `workflow.json agent "${id}" agentCard must be an https:// URL — the request may carry ` +
+          `a bearer token. Got "${card}".`
+      );
+    }
+    const auth = String(a.auth ?? "none").toLowerCase();
+    if (!A2A_AUTH_MODES.includes(auth)) {
+      throw new Error(
+        `workflow.json agent "${id}" has auth "${a.auth}"; valid values are ` +
+          `${A2A_AUTH_MODES.join(", ")}.`
+      );
+    }
+    if (auth === "oauth2" && !(a.agentcore?.identity?.outbound ?? []).length) {
+      throw new Error(
+        `workflow.json agent "${id}" has auth "oauth2" but no agentcore.identity.outbound ` +
+          `provider to get a token from. Add one, or use auth "bearer" with a token injected ` +
+          `by the IaC.`
+      );
+    }
+    if (a.tool || a.corpus) {
+      throw new Error(
+        `workflow.json agent "${id}" has runtime "a2a" and also a tool/corpus binding. A remote ` +
+          `agent reaches its own data sources; binding one here would imply this deployment's ` +
+          `Gateway and Cedar policy govern those calls, which they cannot.`
+      );
+    }
+    const decorative = ["model", "temperature", "maxTokens"].filter((k) => k in a);
+    if (decorative.length) {
+      throw new Error(
+        `workflow.json agent "${id}" has runtime "a2a" and also ${decorative.join(", ")}. Those ` +
+          `configure this deployment's model call, which a remote agent does not make — it ` +
+          `chooses its own model and owns its own token budget. Remove them.`
+      );
+    }
+  }
+}
+
 /** The name a step is addressed by, and what a `branch` target names.
  *  Mirrors graph_builder._step_name and the same expression in terraform/tools.tf. */
 export const stepName = (s: any, i: number): string => s.agent ?? s.gateId ?? `group${i}`;
@@ -377,6 +495,7 @@ export function validateWorkflow(workflow: any, orchRoot: string, agentName: str
   }
 
   validateBranches(steps);
+  validateRuntimes(agents);
 
   // The id becomes part of the AgentCore Runtime name, which only accepts
   // [a-zA-Z][a-zA-Z0-9_]* — a hyphen fails at DEPLOY time with an opaque error.
@@ -493,8 +612,20 @@ export interface OrchestratorStackProps extends cdk.StackProps {
    * From $TOOL_API_KEYS, never a context key (cdk.json is committed).
    */
   toolApiKeys: Record<string, string>;
+  /**
+   * Bearer tokens for `runtime: "a2a"` agents, keyed by the workflow.json agent id.
+   * From $A2A_TOKENS, never a context key (cdk.json is committed). These are
+   * credentials for an agent this deployment does not operate.
+   */
+  a2aTokens: Record<string, string>;
   /** Percentage of spans indexed by CloudWatch Transaction Search (0-100). */
   transactionSearchIndexingPercentage: number;
+  /**
+   * The parsed workflow. Defaults to `app/workflow.json`, which is what every real
+   * deployment uses; supplied only by tests that need a topology the shipped file
+   * does not contain.
+   */
+  workflow?: any;
 }
 
 // Repo layout: this file is orchestrator/cdk/lib/, so orchestrator/ is two levels up.
@@ -524,9 +655,13 @@ export class OrchestratorStack extends cdk.Stack {
     const { agentName, modelId, memoryEventExpiryDays } = props;
 
     // ---- workflow.json: the single source of truth for agents + topology ----
-    const workflow = JSON.parse(
-      fs.readFileSync(path.join(ORCH_ROOT, "app", "workflow.json"), "utf8")
-    );
+    // Overridable so the stack is a pure function of its props, like every other
+    // input here. Tests use it to synthesize topologies the shipped file does not
+    // contain — chiefly to prove a NEGATIVE, that a `runtime: "a2a"` agent
+    // provisions no compute of its own.
+    const workflow =
+      props.workflow ??
+      JSON.parse(fs.readFileSync(path.join(ORCH_ROOT, "app", "workflow.json"), "utf8"));
     const agents: Record<string, any> = workflow.agents;
     const dedicatedIds = Object.keys(agents).filter(
       (id) => (agents[id].runtime ?? "main") === "dedicated"
@@ -1169,6 +1304,7 @@ export class OrchestratorStack extends cdk.Stack {
           TELEMETRY_TABLE: telemetryTable.tableName,
           INSIGHTS_TABLE: insightsTable.tableName,
           AGENT_RUNTIME_ARNS: arnMapJson,
+          A2A_TOKENS: JSON.stringify(a2aTokenEnv(agents, props.a2aTokens)),
           ...featureEnv,
           ...gatewayEnv,
         },
@@ -1644,7 +1780,13 @@ export function buildBffWorkflow(workflow: any): any {
     // Display-ready label, derived from the tool's declared TYPE so a new tool
     // type gets a sensible chip with no UI change.
     let source = "\u2014";
-    if (tool) {
+    // A remote agent has no `tool` by construction (it reaches its own data sources),
+    // so without this it would render as an em dash — the one agent on the diagram
+    // whose provenance the reviewer most needs to see. Host only, never the path: the
+    // label lands in a 4 KB env and a full URL is mostly noise on a chip.
+    if (String(a.runtime ?? "main") === "a2a") {
+      source = `A2A \u00b7 ${a2aHost(a.agentCard)}`;
+    } else if (tool) {
       const ty = toolTypes[tool];
       if (ty === "kb") source = `Knowledge Base \u00b7 ${corpus ?? "all"}`;
       else if (ty === "websearch") source = "Web Search";

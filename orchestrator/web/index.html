@@ -117,6 +117,10 @@
   .tag.mcp { background:#ecfeff; color:#0e7490; } .tag.model { background:#f5f3ff; color:#7c3aed; }
   .tag.rag { background:#ecfdf5; color:#047857; } .tag.src { background:#eef2ff; color:#4338ca; }
   .tag.hitl { background:#fef3c7; color:#b45309; } .tag.dedicated { background:#fff7ed; color:#c2410c; }
+  /* A step run by an agent this deployment does not operate (runtime "a2a").
+     Deliberately the loudest chip on the card: it marks a trust boundary, not a
+     placement — the reasoning, the tools and the model are all someone else's. */
+  .tag.a2a { background:#fdf2f8; color:#a21caf; border:1px solid #f0abfc; font-weight:700; }
   .bar { height:5px; background:#eef2f7; border-radius:3px; overflow:hidden; margin-top:10px; }
   .bar > i { display:block; height:100%; background:var(--accent); width:0; transition:width .3s; }
 
@@ -653,6 +657,7 @@ function nodeCard(nodes, agentId) {
   const tags = [
     (meta.kind && meta.kind !== "sync") ? `<span class="tag">${esc(meta.kind)}</span>` : "",
     meta.runtime==="dedicated" ? `<span class="tag dedicated">dedicated</span>` : "",
+    meta.runtime==="a2a" ? `<span class="tag a2a" title="Run by a remote agent over the Agent2Agent protocol — not operated by this deployment">a2a</span>` : "",
     meta.tool ? `<span class="tag mcp">tool:${esc(meta.tool)}</span>` : "",
     meta.corpus ? `<span class="tag rag">corpus:${esc(meta.corpus)}</span>` : "",
     (srcLabel && srcLabel !== "—") ? `<span class="tag src">${esc(srcLabel.toLowerCase())}</span>` : "",

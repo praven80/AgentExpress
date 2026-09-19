@@ -33,6 +33,7 @@ keep that promise honest.
 | `test_topology.py` | `step_agents`, `FIRST_AGENT_ID` / `LAST_AGENT_ID`, `upstream_of` across all three step shapes |
 | `test_graph_build.py` | `build_graph` compiles for 14 topologies; the three HITL gate routers |
 | `test_rerun_plan.py` | `rerun_plan` / `group_rerun_plan` — which node a rewind is attributed to |
+| `test_a2a.py` | `runtime: "a2a"` — Agent Card discovery, the JSON-RPC request shape asserted against the published form, all three auth modes, task polling and every terminal state, and each place the protocol allows an answer to hide |
 | `test_branching.py` | `branch` — every operator and near-miss, the spec/topology validation, and a graph that is actually **invoked** to prove the chosen path ran and the other was marked skipped |
 | `test_tool_calls.py` | `_tool_arguments` (the argument shape, per tool type), `_select_tool` (Gateway naming), `_extract_chunks` (evidence + citations) |
 | `test_citations.py` | URL verification against the evidence; downgrading a `sourced-fact` that rested on an invented link |

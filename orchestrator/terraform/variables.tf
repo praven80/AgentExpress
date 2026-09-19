@@ -148,3 +148,17 @@ variable "tool_api_keys" {
   default     = {}
   sensitive   = true
 }
+
+variable "a2a_tokens" {
+  description = <<-EOT
+    Map of workflow.json agent id -> bearer token, for each `runtime = "a2a"` agent
+    declaring `auth = "bearer"`. These are credentials for somebody ELSE's agent, so
+    they are deliberately not in workflow.json (which is committed):
+      export TF_VAR_a2a_tokens='{"credit_check":"..."}'
+    For an OAuth-protected remote agent use `auth = "oauth2"` instead and let
+    AgentCore Workload Identity mint the token, so no long-lived secret exists here.
+  EOT
+  type        = map(string)
+  default     = {}
+  sensitive   = true
+}

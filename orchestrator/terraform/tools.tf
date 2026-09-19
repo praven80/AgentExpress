@@ -323,6 +323,59 @@ locals {
     && index(local.step_names, split("|", t)[1]) <= tonumber(split("|", t)[0])
   ]
 
+  # ---- Agent placement (`runtime`), for validation ------------------------
+  # "main" and "dedicated" are placements of OUR code; "a2a" is a trust boundary —
+  # the agent is somebody else's service, reached at its Agent Card URL. Mirrors
+  # registry.validate_runtimes and validateRuntimes in the CDK path.
+  a2a_runtimes   = ["main", "dedicated", "a2a"]
+  a2a_auth_modes = ["none", "bearer", "oauth2"]
+
+  # A misspelled runtime falls through to "main" and dies on a missing module.
+  bad_runtimes = [
+    for id, a in local.workflow_def.agents : "${id}=${try(a.runtime, "main")}"
+    if !contains(local.a2a_runtimes, try(a.runtime, "main"))
+  ]
+  a2a_agent_ids = [
+    for id, a in local.workflow_def.agents : id if try(a.runtime, "main") == "a2a"
+  ]
+  # `agentCard`/`auth` on any other placement read as settings and control nothing.
+  a2a_keys_on_local_agents = [
+    for id, a in local.workflow_def.agents : id
+    if try(a.runtime, "main") != "a2a"
+    && (try(a.agentCard, "") != "" || try(a.auth, "") != "")
+  ]
+  a2a_without_card = [
+    for id in local.a2a_agent_ids : id
+    if try(local.workflow_def.agents[id].agentCard, "") == ""
+  ]
+  # A plaintext card URL would put the bearer token for someone else's agent on the wire.
+  a2a_insecure_card = [
+    for id in local.a2a_agent_ids : id
+    if !startswith(lower(try(local.workflow_def.agents[id].agentCard, "")), "https://")
+  ]
+  a2a_bad_auth = [
+    for id in local.a2a_agent_ids : "${id}=${try(local.workflow_def.agents[id].auth, "none")}"
+    if !contains(local.a2a_auth_modes, lower(try(local.workflow_def.agents[id].auth, "none")))
+  ]
+  a2a_oauth_without_provider = [
+    for id in local.a2a_agent_ids : id
+    if lower(try(local.workflow_def.agents[id].auth, "none")) == "oauth2"
+    && length(try(local.workflow_def.agents[id].agentcore.identity.outbound, [])) == 0
+  ]
+  # A remote agent reaches its own data sources, and makes its own model call.
+  a2a_with_local_only_keys = flatten([
+    for id in local.a2a_agent_ids : [
+      for k in ["tool", "corpus", "model", "temperature", "maxTokens"] :
+      "${id}.${k}" if can(local.workflow_def.agents[id][k])
+    ]
+  ])
+  # A bearer-auth agent needs its token supplied out of band, never in workflow.json.
+  a2a_missing_tokens = [
+    for id in local.a2a_agent_ids : id
+    if lower(try(local.workflow_def.agents[id].auth, "none")) == "bearer"
+    && try(var.a2a_tokens[id], "") == ""
+  ]
+
   # The real corpora available to the KB: the TOP-LEVEL folders under kb_docs/,
   # because kb.tf derives each document's doc_type from its first path segment.
   # Files sitting at the root have no folder and would produce a junk doc_type.
@@ -548,6 +601,41 @@ resource "terraform_data" "workflow_validation" {
     precondition {
       condition     = length(local.branch_on_last) == 0
       error_message = "app/workflow.json: `branch` on the LAST step has nowhere to route. Use it on an earlier step, or drop it - \"END\" is already where the last step goes. Offending step(s): ${join(", ", local.branch_on_last)}."
+    }
+    precondition {
+      condition     = length(local.bad_runtimes) == 0
+      error_message = "app/workflow.json has agent(s) with an unknown `runtime` (shown as \"<agent>=<value>\"): ${join(", ", local.bad_runtimes)}. Valid values are ${join(", ", local.a2a_runtimes)}. A misspelling would otherwise be treated as \"main\" and fail at container start on a missing module under app/subagents/."
+    }
+    precondition {
+      condition     = length(local.a2a_keys_on_local_agents) == 0
+      error_message = "app/workflow.json agent(s) set `agentCard` or `auth` without `runtime = \"a2a\"`: ${join(", ", local.a2a_keys_on_local_agents)}. Those keys are read only for a remote (A2A) agent, so elsewhere they look like settings and control nothing."
+    }
+    precondition {
+      condition     = length(local.a2a_without_card) == 0
+      error_message = "app/workflow.json agent(s) with `runtime = \"a2a\"` have no `agentCard`: ${join(", ", local.a2a_without_card)}. Give each the remote agent's base URL (its card is read from <url>/.well-known/agent-card.json) or the card URL itself."
+    }
+    precondition {
+      # The A2A request may carry a bearer token, so plaintext is not an option.
+      condition     = length(local.a2a_insecure_card) == 0
+      error_message = "app/workflow.json agent(s) have a non-https `agentCard`: ${join(", ", local.a2a_insecure_card)}. The A2A request may carry a bearer token, so the endpoint must be https://."
+    }
+    precondition {
+      condition     = length(local.a2a_bad_auth) == 0
+      error_message = "app/workflow.json has A2A agent(s) with an unknown `auth` (shown as \"<agent>=<value>\"): ${join(", ", local.a2a_bad_auth)}. Valid values are ${join(", ", local.a2a_auth_modes)}."
+    }
+    precondition {
+      condition     = length(local.a2a_oauth_without_provider) == 0
+      error_message = "app/workflow.json agent(s) use `auth = \"oauth2\"` with no `agentcore.identity.outbound` provider to get a token from: ${join(", ", local.a2a_oauth_without_provider)}. Add one, or use `auth = \"bearer\"` with a token in var.a2a_tokens."
+    }
+    precondition {
+      condition     = length(local.a2a_with_local_only_keys) == 0
+      error_message = "app/workflow.json A2A agent(s) also set keys that only apply to an agent THIS deployment runs: ${join(", ", local.a2a_with_local_only_keys)}. A remote agent reaches its own data sources (tool/corpus) and makes its own model call (model/temperature/maxTokens)."
+    }
+    precondition {
+      # A silent empty token becomes a 401 from a service you do not control, which is
+      # a much harder failure to read than this message.
+      condition     = length(local.a2a_missing_tokens) == 0
+      error_message = "app/workflow.json agent(s) declare `auth = \"bearer\"` but no token was supplied for them: ${join(", ", local.a2a_missing_tokens)}. Tokens never go in workflow.json — pass them keyed by agent id: export TF_VAR_a2a_tokens='{\"<agent>\":\"...\"}'."
     }
     precondition {
       condition     = length(local.branch_duplicate_step_names) == 0

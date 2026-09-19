@@ -8,11 +8,20 @@ An agent's `runtime` decides its implementation:
                            passing/returning the same data an in-process agent
                            would. The dedicated runtime itself runs the real
                            module via build_agent_module() below.
-Both expose the same Agent interface, so the graph wiring is identical.
+  * runtime "a2a"       -> A2AAgent: the step is run by an agent THIS WORKFLOW DOES
+                           NOT OWN, reached over the Agent2Agent protocol at its
+                           Agent Card URL. No module under app/subagents/, because
+                           the code is somebody else's.
+All three expose the same Agent interface, so the graph wiring is identical.
+
+The first two are placements of OUR code; the third is a trust boundary. That is why
+`a2a` is a `runtime` value and not a `tool`: a tool returns data for one of our
+agents to reason over, whereas this replaces the agent.
 """
 
 import importlib
 
+from app.common.a2a_agent import A2AAgent
 from app.common.agentcore_agent import AgentCoreRuntimeAgent
 from app.common.base import Agent
 from app.common.config import AGENTS
@@ -43,7 +52,80 @@ def _configure(agent: Agent, agent_id: str, spec: dict) -> Agent:
     # AgentCore feature flags (memory, guardrails, evaluations, policy, …).
     # AgentContext reads these to decide which features apply to this agent.
     agent.agentcore = dict(spec.get("agentcore") or {})
+    # Where a remote (runtime "a2a") agent lives, and how we authenticate to it.
+    # Set unconditionally so the attributes are never missing; they are read only by
+    # A2AAgent, and validated at load for exactly the agents that use them.
+    agent.agent_card = str(spec.get("agentCard") or "")
+    agent.auth = str(spec.get("auth") or "none").lower()
     return agent
+
+
+RUNTIMES = ("main", "dedicated", "a2a")
+AUTH_MODES = ("none", "bearer", "oauth2")
+
+
+def validate_runtimes() -> None:
+    """Reject a placement that cannot work, at container start, naming the agent.
+
+    Mirrored by both IaC paths so a customer normally sees these at plan/synth time.
+    Every case below is otherwise a LATE failure: a misspelled `runtime` silently
+    falls through to "main" and then dies on a missing module; an `a2a` agent with no
+    `agentCard` dies on the first request, after the run has already spent money on
+    the agents before it.
+    """
+    for agent_id, spec in AGENTS.items():
+        placement = str(spec.get("runtime") or "main")
+        if placement not in RUNTIMES:
+            raise ValueError(
+                f"agent {agent_id!r} has runtime {placement!r}; valid values are "
+                f"{', '.join(RUNTIMES)}. A misspelling would otherwise be treated as "
+                f"'main' and fail on a missing module under app/subagents/.")
+        card, auth = str(spec.get("agentCard") or ""), str(spec.get("auth") or "")
+        if placement != "a2a":
+            # These read as settings, so on any other placement they would be read as
+            # working and do nothing at all.
+            for key, value in (("agentCard", card), ("auth", auth)):
+                if value:
+                    raise ValueError(
+                        f"agent {agent_id!r} sets {key!r} but its runtime is {placement!r}. "
+                        f"{key} is only read for runtime \"a2a\" — an agent this workflow does "
+                        f"not operate.")
+            continue
+        if not card:
+            raise ValueError(
+                f"agent {agent_id!r} has runtime \"a2a\" but no \"agentCard\". Give it the remote "
+                f"agent's base URL (its card is read from <url>/.well-known/agent-card.json) or "
+                f"the card URL itself.")
+        if not card.lower().startswith("https://"):
+            raise ValueError(
+                f"agent {agent_id!r} agentCard must be an https:// URL — the request may carry a "
+                f"bearer token. Got {card!r}.")
+        if auth and auth.lower() not in AUTH_MODES:
+            raise ValueError(
+                f"agent {agent_id!r} has auth {auth!r}; valid values are {', '.join(AUTH_MODES)}.")
+        decorative = [k for k in ("model", "temperature", "maxTokens") if k in spec]
+        if decorative:
+            # All three configure ctx.llm, and a remote agent never calls it — its
+            # model, its temperature, its budget. Left settable, they would read as
+            # governing the remote agent's cost and behaviour while doing nothing.
+            raise ValueError(
+                f"agent {agent_id!r} has runtime \"a2a\" and also {', '.join(decorative)}. Those "
+                f"configure this deployment's model call, which a remote agent does not make — it "
+                f"chooses its own model and owns its own token budget. Remove them.")
+        if spec.get("tool") or spec.get("corpus"):
+            # The remote agent owns its own tools. A `tool` here would look like this
+            # deployment governs that access through its Gateway and Cedar policy,
+            # and it does not.
+            raise ValueError(
+                f"agent {agent_id!r} has runtime \"a2a\" and also a tool/corpus binding. A remote "
+                f"agent reaches its own data sources; binding one here would imply this "
+                f"deployment's Gateway and Cedar policy govern those calls, which they cannot.")
+        if str(spec.get("auth") or "none").lower() == "oauth2" and not (
+                (spec.get("agentcore") or {}).get("identity", {}).get("outbound")):
+            raise ValueError(
+                f"agent {agent_id!r} has auth \"oauth2\" but no "
+                f"agentcore.identity.outbound provider to get a token from. Add one, or use "
+                f"auth \"bearer\" with a token injected by the IaC.")
 
 
 def build_agent_module(agent_id: str) -> Agent:
@@ -60,11 +142,17 @@ def build_agent_module(agent_id: str) -> Agent:
 
 
 def load_agents() -> dict[str, Agent]:
-    """The orchestrator's view: dedicated agents are invoked cross-runtime."""
+    """The orchestrator's view: dedicated agents are invoked cross-runtime, and a2a
+    agents are delegated to over the network."""
+    validate_runtimes()
     registry: dict[str, Agent] = {}
     for agent_id, spec in AGENTS.items():
-        if spec.get("runtime", "main") == "dedicated":
+        placement = spec.get("runtime", "main")
+        if placement == "dedicated":
             agent: Agent = AgentCoreRuntimeAgent()
+            _configure(agent, agent_id, spec)
+        elif placement == "a2a":
+            agent = A2AAgent()
             _configure(agent, agent_id, spec)
         else:
             agent = build_agent_module(agent_id)

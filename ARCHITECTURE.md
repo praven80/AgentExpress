@@ -226,7 +226,7 @@ different boundaries, both config-driven.
   JSON → validated contract). Both live under `subagents/` on purpose: they are this
   SAMPLE's editorial choices, not framework, and a customer replaces them.
 
-### Agent runtime placement — in-process vs dedicated
+### Agent runtime placement — in-process, dedicated, or not yours at all
 - `runtime: "main"` — the agent runs in-process as a LangGraph node inside the
   orchestrator runtime.
 - `runtime: "dedicated"` — Terraform provisions a **separate AgentCore Runtime**
@@ -236,6 +236,22 @@ different boundaries, both config-driven.
   `Agent` interface either way, so the graph wiring is identical — placement is
   config only. This sample ships three of its eight agents as `dedicated`
   (`knowledge_research`, `web_search`, `documentation_search`); the rest are `main`.
+- `runtime: "a2a"` is the third value, and it is not a placement of your code — it is a
+  **trust boundary**. The step is run by an agent you do not operate, reached over the
+  **Agent2Agent protocol** at its Agent Card URL (`app/common/a2a_agent.py`): the card
+  is fetched from `/.well-known/agent-card.json`, `supportedInterfaces` chooses the RPC
+  endpoint in the card's preference order, the task goes out as JSON-RPC 2.0
+  `message/send`, and a Task that is still working is polled via `tasks/get` under a
+  bounded budget. No module under `app/subagents/`, because the code is somebody
+  else's; `tool`/`corpus`/`model`/`maxTokens` are rejected, because a remote agent
+  reaches its own data sources and makes its own model call.
+  A2A is transport and discovery only — it carries no opinion about WHICH agent to
+  call, so routing stays this framework's job (`steps`, `branch`, a review gate) and an
+  a2a agent slots into the topology with no special case. What degrades is worth
+  knowing: guardrails and memory still apply because the framework wraps the call in
+  *our* container, but evaluations fall back to a role descriptor (there is no local
+  model call to capture a prompt from) and the remote agent's own tool calls are
+  outside this deployment's Cedar policy.
 
 ### Tool access (which tools an agent may call) — AgentCore Gateway
 - Agents reach tools through one **Gateway** MCP endpoint over Streamable HTTP, using

@@ -326,6 +326,15 @@ resource "awscc_bedrockagentcore_runtime" "orchestrator" {
     AGENT_RUNTIME_ARNS = jsonencode({
       for id, r in awscc_bedrockagentcore_runtime.subagent : id => r.agent_runtime_arn
     })
+    # Map of agent_id -> bearer token for each `runtime = "a2a"` agent with
+    # `auth = "bearer"`, consumed by A2AAgent. Projected rather than passed whole so a
+    # token for an agent that no longer exists is not shipped to the container. These
+    # are credentials for someone else's service, which is why they come from
+    # var.a2a_tokens (sensitive) and never from workflow.json.
+    A2A_TOKENS = jsonencode({
+      for id in local.a2a_agent_ids : id => var.a2a_tokens[id]
+      if lower(try(local.workflow_def.agents[id].auth, "none")) == "bearer"
+    })
 
     # Gateway-backed MCP access (agent -> Gateway via IdP client-credentials).
     # Empty when var.enable_gateway is false, in which case an agent with a `tool`

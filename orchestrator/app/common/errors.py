@@ -36,6 +36,18 @@ class ToolDenied(DependencyUnavailable):
     """
 
 
+class RemoteAgentUnavailable(DependencyUnavailable):
+    """An agent this workflow does not operate could not be reached or did not finish.
+
+    Its own class because the blast radius is different from every other failure
+    here: a `runtime: "a2a"` step is somebody else's service, so the cause is
+    usually outside this deployment entirely — their endpoint moved, their auth
+    rejected us, their task failed or never left a working state. The message
+    carries whatever they told us, because that is the only diagnostic available on
+    this side of the boundary.
+    """
+
+
 class ModelOutputUnusable(DependencyUnavailable):
     """The model answered, but the response could not be used.
 

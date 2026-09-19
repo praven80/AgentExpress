@@ -23,7 +23,12 @@ locals {
       # Compact, display-ready data-source label for the UI (avoids shipping the
       # full access[] array in the 4 KB env). Derived from the tool's declared
       # TYPE, so a new tool type shows a sensible chip with no UI change.
+      # A remote (runtime "a2a") agent has no `tool` by construction, so it is matched
+      # FIRST — otherwise it renders as an em dash, and it is the one agent on the
+      # diagram whose provenance the reviewer most needs to see. Host only, never the
+      # path: this lands in a 4 KB env. Mirrors a2aHost() on the CDK path.
       source = (
+        lookup(a, "runtime", "main") == "a2a" ? "A2A · ${coalesce(split("/", replace(lookup(a, "agentCard", ""), "/(?i)^https?:\\/\\//", ""))[0], "remote")}" :
         lookup(a, "tool", null) == null ? (
           can(regex("(?i)session", try(a.access[0], ""))) ? "Session input" :
           can(regex("(?i)upstream", try(a.access[0], ""))) ? "Upstream agent outputs" :

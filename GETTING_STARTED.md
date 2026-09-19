@@ -364,6 +364,38 @@ the topology rather than hardcoding it.
 `"runtime": "main"` runs the agent in-process instead; `"dedicated"` gives it its
 own container and its own scaling.
 
+### Using an agent you don't own
+
+A third `runtime` value delegates a step to an agent operated by somebody else, over
+the **A2A (Agent2Agent) protocol**. There is no folder to write — the code is theirs:
+
+```json
+"credit_check": {
+  "name": "Partner Credit Check",
+  "runtime": "a2a",
+  "agentCard": "https://agents.partner.example/credit",
+  "auth": "bearer",
+  "produces": "credit-assessment"
+}
+```
+
+Then put `credit_check` in `steps` like any other agent. Its Agent Card is read for the
+RPC endpoint, it receives the request plus the approved upstream outputs, and its answer
+becomes that node's output — so a review gate, a `branch`, a re-run and the version
+history all work on it unchanged.
+
+`auth` is `none`, `bearer` (token from `TF_VAR_a2a_tokens` / `$A2A_TOKENS`, keyed by
+agent id — never in `workflow.json`, which is committed) or `oauth2` (minted per call
+from the agent's `agentcore.identity.outbound` provider, so no long-lived secret
+exists). `model`, `maxTokens`, `tool` and `corpus` are rejected on an `a2a` agent: it
+makes its own model call and reaches its own data sources, so those keys would read as
+governing its cost and access while doing nothing.
+
+Two things you give up at the boundary: evaluations drop to role-level, because there
+is no local model call to capture a prompt from, and the remote agent's tool calls are
+outside your Cedar policy. Guardrails and long-term memory still apply, because the
+framework wraps the call on your side.
+
 ---
 
 ## 4. Branding and content safety — also config
@@ -527,6 +559,18 @@ the exact problem:
 - an agent id that isn't `^[a-zA-Z][a-zA-Z0-9_]*$` (the id becomes part of the
   AgentCore Runtime name, which rejects hyphens)
 - `<agentName>_<agentId>` longer than the 48-character runtime-name limit
+
+**`runtime` and A2A**
+- a `runtime` that isn't `main`, `dedicated` or `a2a` (a typo would silently become
+  `main` and then die on a missing module under `app/subagents/`)
+- `agentCard` or `auth` on an agent that isn't `runtime: "a2a"` — read by nothing there
+- `runtime: "a2a"` with no `agentCard`, or a non-`https` one (the request may carry a
+  bearer token, and `file://` would read a local path instead of making a request)
+- an `auth` value that isn't `none`/`bearer`/`oauth2`; `oauth2` with no
+  `agentcore.identity.outbound` provider to mint from
+- `auth: "bearer"` with no token supplied for that agent — the alternative is a 401 from
+  a service you do not control, which is far harder to read
+- `model`/`temperature`/`maxTokens`/`tool`/`corpus` on an `a2a` agent
 
 **`branch`** — also all quiet failures: an unmatchable rule or an unresolvable target
 means the run just takes the default on every request, and the branch looks wired

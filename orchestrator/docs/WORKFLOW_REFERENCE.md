@@ -56,6 +56,9 @@ does not turn tests red.
 | `defaultModel` | `config.py` | Model for any agent that doesn't name its own. `BEDROCK_MODEL_ID` overrides it. |
 | `runtimeInvoke.maxAttempts` | `config.py` → `agentcore_agent._agentcore` | **Total** attempts per call to a `dedicated` agent's runtime, not retries-after-the-first. Default **1, i.e. no retrying**, which is deliberate: `InvokeAgentRuntime` is synchronous, slow and **not idempotent**, so a retry does not replace the attempt it followed — the remote container is already working and cannot tell the caller stopped listening. boto3's own default (`legacy` mode, up to 5 attempts) therefore lets one transient blip run a research agent twice, bill both model calls, and return whichever answered last, with nothing in the timeline to show it: the node logs "Invoking dedicated AgentCore Runtime" once, before any retry exists. Observed on a live run — two invocations of the `web_search` runtime with different `requestId`s, 13s apart, for one node execution, $0.0158 spent on a discarded answer. For a call this long the failure that matters is a lost response to work that already succeeded, and retrying that is strictly worse than failing: an error reaches the reviewer, a duplicate just inflates the bill. Raise it only if you have made the call idempotent. |
 | `runtimeInvoke.readTimeoutSeconds` | same | How long to wait for a dedicated agent's response. Default **120**, well above boto3's 60 and the ~15–20s the shipped research agents take. With retrying off this timeout is fatal to the run, so keep it comfortably above your slowest agent — otherwise you trade a duplicate for a truncated run, which is not the trade being made here. |
+| `a2aInvoke.timeoutSeconds` | `config.py` → `a2a_agent` | Per HTTP request to a `runtime: "a2a"` agent (the card fetch, each RPC call). Default **30**. |
+| `a2aInvoke.pollIntervalSeconds` | same | Gap between `tasks/get` calls while a remote task is still working. Default **2**. Their rate limit is unknown to you; a busy loop is rude and may be throttled, which then looks like their agent failing. |
+| `a2aInvoke.maxPollSeconds` | same | Total wall-clock before giving up on a remote task, failing the run with the last state seen. Default **300**. Separate from `runtimeInvoke` on purpose: a dedicated runtime is yours and you know how slow it is, whereas A2A models work as a *Task* precisely so it can take minutes — so the budget that matters is not one request timeout but how long you are willing to wait overall. Bounded rather than open-ended, because a task that never leaves `working` would otherwise hold the workflow until the runtime's own 8-hour ceiling. |
 | `policy.enabled` | `policy.tf`, `tool-plane.ts` | Creates the Cedar policy engine and attaches it to the Gateway. |
 | `policy.mode` | same | `ENFORCE` obeys a DENY and blocks the call; `LOG_ONLY` evaluates and logs without blocking — the safe way to roll out. |
 | `chatbot.enabled` | `bff/chatbot.py`, UI | Shows the chat icon. |
@@ -88,14 +91,14 @@ no change, with nothing to tell you why).
 
 ## `agents.<id>`
 
-The key **is** the agent id **and** the folder name under `app/subagents/`. It must
-match `^[a-zA-Z][a-zA-Z0-9_]*$` — no hyphens, because the id becomes part of an
-AgentCore Runtime name.
+The key **is** the agent id, and — for an agent whose code you ship — the folder name
+under `app/subagents/`. It must match `^[a-zA-Z][a-zA-Z0-9_]*$` — no hyphens, because
+the id becomes part of an AgentCore Runtime name.
 
 | Key | Read by | Notes |
 |---|---|---|
 | `name` | `registry.py`, UI | Display name. |
-| `runtime` | `registry.py`, `subagent_runtimes.tf` | `main` runs in-process in the orchestrator; `dedicated` provisions the agent its **own** AgentCore Runtime and the orchestrator calls it via `InvokeAgentRuntime`. Same `run()` code either way — placement is config. |
+| `runtime` | `registry.py`, `subagent_runtimes.tf` | `main` \| `dedicated` \| `a2a`. See below — the first two are placements of *your* code, the third is an agent you don't operate. |
 | `model` | `registry.py` | **Optional.** Omit to use `orchestrator.defaultModel`. No shipped agent sets it; the mechanism is there when you want a bigger model for one step. |
 | `maxTokens` | `registry.py` → `agent.max_tokens` | Output budget in tokens for this agent's model calls. |
 | `temperature` | `registry.py` | **Optional**, defaults to 0. |
@@ -103,6 +106,82 @@ AgentCore Runtime name.
 | `corpus` | `registry.py` | For a `type: "kb"` tool: which corpus to retrieve from. Must be one of that tool's declared `corpora`. |
 | `produces` | `nodes.py` | The deliverable name, injected into the agent's task prompt. |
 | `access` | UI chip | A short human label for the data source. **Only read when the agent has no `tool`** — with a tool, the chip is derived from the tool's type. Don't set both. |
+| `agentCard` | `a2a_agent.py` | **`runtime: "a2a"` only.** The remote agent's base URL or Agent Card URL. Must be `https://`. |
+| `auth` | `a2a_agent.py` | **`runtime: "a2a"` only.** `none` \| `bearer` \| `oauth2`. Defaults to `none`. |
+
+### `runtime` — where the agent actually runs
+
+Three placements. The first two differ only in *where your code executes*; the third
+is a different thing entirely.
+
+| | What it is | Needs a folder under `app/subagents/`? |
+|---|---|---|
+| `main` (default) | a LangGraph node inside the orchestrator container | yes |
+| `dedicated` | its **own** AgentCore Runtime, called with `InvokeAgentRuntime` | yes |
+| `a2a` | an agent **you do not operate**, called over the Agent2Agent protocol at its Agent Card URL | **no** |
+
+`main` and `dedicated` run the same `run()` code — placement is config, so moving an
+agent to its own container and its own scaling is a one-word edit.
+
+`a2a` is not a placement, it is a **trust boundary.** The agent is somebody else's
+service: a partner's, another team's, or a managed one. Nothing of it lives in this
+repo, which is the point — it turns a multi-agent workflow into a multi-*organisation*
+one. That is also why it is a `runtime` value and not a `tool`: a tool returns data
+for one of *your* agents to reason over, whereas this replaces the agent.
+
+```json
+"credit_check": {
+  "name": "Partner Credit Check",
+  "runtime": "a2a",
+  "agentCard": "https://agents.partner.example/credit",
+  "auth": "bearer",
+  "produces": "credit-assessment"
+}
+```
+
+It is an ordinary node in the topology: put it in `steps` anywhere, gate it with
+`hitl`, route to it with `branch`, re-run it, read its version history. The framework
+sends it the same inputs an in-process agent reads — the request, the approved
+upstream outputs, any reviewer feedback — as one opaque text part, because A2A carries
+text and the remote agent has its own output contract. Demanding yours would make it
+un-integrable.
+
+**Discovery.** `agentCard` may be the agent's base URL (the card is read from
+`<url>/.well-known/agent-card.json`) or the card URL itself. The card is *read*, not
+assumed: if it declares `supportedInterfaces`, the first JSON-RPC entry wins, in the
+card's preference order. So an agent may serve its RPC endpoint on a different host
+from its card and still work.
+
+**Auth.**
+
+| `auth` | What happens | Where the credential comes from |
+|---|---|---|
+| `none` | no `Authorization` header | — |
+| `bearer` | `Authorization: Bearer <token>` | `var.a2a_tokens` / `$A2A_TOKENS`, keyed by agent id |
+| `oauth2` | a token minted per call | the agent's existing `agentcore.identity.outbound` provider |
+
+Tokens are **never** written in `workflow.json` — it is committed, and these are
+credentials for somebody else's service. A `bearer` agent with no token supplied fails
+at plan/synth, not at runtime, because the alternative is a 401 from a service you do
+not control.
+
+**Keys that do not apply.** `model`, `temperature`, `maxTokens`, `tool` and `corpus`
+are all rejected on an `a2a` agent. A remote agent makes its own model call and reaches
+its own data sources, so those would read as governing its cost and its access while
+doing nothing. Setting them fails validation rather than misleading you.
+
+**What you keep, and what you lose.** The framework wraps the call in *your*
+container, so guardrails and long-term memory still apply. Two things cannot:
+evaluations fall back to a role descriptor (there is no local model call to capture a
+prompt from — the reasoning happened on their side), and any tool the remote agent
+uses is outside your Cedar policy. You are trusting their boundary, not enforcing
+yours. The UI marks it with an `a2a` chip and labels its source `A2A · <host>` so a
+reviewer can see which parts of a deliverable came from outside.
+
+**When it fails** it raises `RemoteAgentUnavailable` with whatever the remote side
+said, and the run fails with that reason on that node. There is no fallback: an empty
+answer would flow into every downstream agent looking exactly like a real finding of
+nothing.
 
 > **There is no `repair` key, and this file used to claim there was.** An earlier
 > version of the framework shipped an output-rules engine that could re-ask an agent
