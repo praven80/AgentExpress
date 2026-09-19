@@ -76,6 +76,53 @@ function lambdaTarget(t: Template): any {
   return target.Properties.TargetConfiguration.Mcp.Lambda;
 }
 
+function connectorTarget(t: Template): any {
+  const target = Object.values<any>(
+    t.findResources("AWS::BedrockAgentCore::GatewayTarget")
+  ).find((r) => r.Properties.TargetConfiguration?.Mcp?.Connector);
+  expect(target).toBeDefined();
+  return target.Properties.TargetConfiguration.Mcp.Connector;
+}
+
+// The websearch connector target had NO coverage here at all, which is how collapsing
+// four domain keys into `domains` passed this suite without a single change. A filter
+// that silently stops being applied is the worst case for this particular key: results
+// keep coming back and nothing says they are no longer scoped.
+describe("type=websearch target", () => {
+  it("applies `domains` on the TARGET, where the agent cannot reach it", () => {
+    const connector = connectorTarget(
+      plane({
+        ws: {
+          type: "websearch",
+          description: "Managed web search.",
+          domains: { include: ["docs.aws.amazon.com"], exclude: ["spam.example"] },
+        },
+      })
+    );
+    expect(connector.Source.ConnectorId).toBe("web-search");
+    expect(connector.Configurations[0].ParameterValues).toEqual({
+      domainFilter: { include: ["docs.aws.amazon.com"], exclude: ["spam.example"] },
+    });
+  });
+
+  it("accepts either half on its own", () => {
+    for (const domains of [{ include: ["a.example"] }, { exclude: ["b.example"] }]) {
+      const values = connectorTarget(plane({ ws: { type: "websearch", domains } }))
+        .Configurations[0].ParameterValues;
+      expect(values.domainFilter).toEqual(domains);
+    }
+  });
+
+  it("emits {} rather than an empty filter when no domains are configured", () => {
+    // Not cosmetic: the API DISCARDS a configuration entry with no ParameterValues and
+    // then reports "Connector configurations must not be empty", which reads as if the
+    // list were absent rather than its single entry dropped.
+    const connector = connectorTarget(plane({ ws: { type: "websearch" } }));
+    expect(connector.Configurations[0].ParameterValues).toEqual({});
+    expect(connector.Configurations[0].Name).toBe("WebSearch");
+  });
+});
+
 describe("type=lambda target", () => {
   const template = plane({ claims: LAMBDA_TOOL });
 

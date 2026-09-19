@@ -232,7 +232,9 @@ def _load_tools() -> dict:
     # `tools_env`, cdk/lib/orchestrator-stack.ts `toolsEnv`). A field missing here
     # is silently dropped on the fallback path, which is how `publishedFrom` /
     # `publishedTo` came to work under one deployment and not the other.
-    keep = ("type", "corpora", "maxResults", "includeDomains", "excludeDomains",
+    # `domains` is deliberately absent: web search's domain filter is applied on the
+    # Gateway target, so the app neither needs it nor should be able to send one.
+    keep = ("type", "corpora", "maxResults",
             "publishedFrom", "publishedTo", "call", "arg", "args", "rowFields")
     return {
         name: {k: v for k, v in (spec or {}).items() if k in keep}

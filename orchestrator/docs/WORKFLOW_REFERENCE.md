@@ -25,6 +25,34 @@ Three framework-owned files sit behind that, none of which you edit:
 | `app/vocabulary.json` | the closed value sets (`runtime`, tool `type`, auth modes, …) |
 | `app/workflow.schema.json` | **generated** from the two above — what your editor uses |
 
+## The smallest workflow that works
+
+Everything else in this file is optional. **Two keys are required on an agent**
+(`name`, `maxTokens`) and two blocks at the top level (`agents`, `steps`). This
+deploys and runs:
+
+```json
+{
+  "$schema": "./workflow.schema.json",
+  "agents": {
+    "intake": { "name": "Intake", "maxTokens": 2000, "produces": "brief" },
+    "report": { "name": "Report", "maxTokens": 4000, "produces": "report" }
+  },
+  "steps": [
+    { "agent": "intake", "hitl": true },
+    { "agent": "report" }
+  ]
+}
+```
+
+Two folders under `app/subagents/` — `python3 scaffold.py agent intake` writes each —
+and that is a working human-reviewed pipeline. No tools, no guardrail, no `runtime` (it
+defaults to `main`), no `agentcore` block. Add each of those when you want what it does,
+not before.
+
+For scale: the shipped eight-agent sample uses **6 keys per agent** on average and 11
+distinct agent keys in total. The full tables below are a reference, not a checklist.
+
 ## Two commands
 
 ```bash
@@ -439,22 +467,37 @@ retrieval quietly returned nothing.
 
 One per deployment, and only in `us-east-1`, `eu-west-1`, `ap-northeast-1`.
 
-Domain filtering has **two layers that compose on every request**:
+**Domain filtering is one key**, applied on the Gateway target:
 
-- **Target level** — `targetIncludeDomains` / `targetExcludeDomains`. Set on the
-  target, hidden from the agent, applied to every request. The enforceable layer.
-- **Request level** — `includeDomains` / `excludeDomains`, plus `publishedFrom` /
-  `publishedTo` as inclusive ISO-8601 UTC bounds. Sent per call by the app and
-  supplied by the caller, so treat it as scoping, not a boundary.
+```json
+"websearch": {
+  "type": "websearch",
+  "maxResults": 10,
+  "domains": { "include": ["docs.aws.amazon.com"], "exclude": ["spam.example"] }
+}
+```
 
-A domain is dropped if it appears on **either** exclude list, and returned only if
-it appears on **every** include list that is set — so a request-level filter can
-never override a target-level exclude or widen past a target-level include.
+Because it lives on the target it is hidden from the agent and applied by the Gateway
+to every request, so it is a **boundary** — a prompt-injected instruction cannot widen
+it. A domain is dropped if it is on `exclude`, and returned only if it is on `include`
+when `include` is set.
+
+> **Renamed.** This was four keys: a request-level `includeDomains`/`excludeDomains`
+> pair beside a target-level `targetIncludeDomains`/`targetExcludeDomains` pair. They
+> expressed one intent, and the pair with the obvious name was the weaker one — a
+> request-level filter is caller-supplied, so the Gateway treats it as scoping rather
+> than as a boundary, and it additionally needs connector v1.2.0+. Both lists came from
+> the same config file, so setting both only ever produced their intersection, which you
+> could write directly. Nothing was lost. Any of the four old names is now **rejected**
+> rather than ignored, and the message names the replacement.
+
+`publishedFrom` / `publishedTo` (inclusive ISO-8601 UTC) stay request-level, because the
+target has no equivalent — there is no stronger place to put them.
 
 `maxResults` is 1–25, default 10. The query is capped at 200 characters and the app
-clamps it. Request-level filters need connector v1.2.0+; `connectorVersion` pins it,
-but **only on the Terraform path** — CloudFormation's connector source accepts only
-`connectorId`, so CDK rejects the field rather than accepting and ignoring it.
+clamps it. `connectorVersion` pins the connector, but **only on the Terraform path** —
+CloudFormation's connector source accepts only `connectorId`, so CDK rejects the field
+rather than accepting and ignoring it.
 
 **Acceptable use:** you must retain and display the source citations returned with
 each result. The framework enforces the display half — the connector's

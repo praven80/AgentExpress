@@ -1964,8 +1964,8 @@ export function toolsEnv(tools: Record<string, ToolSpec>): Record<string, any> {
     if (t.type === "kb") spec.corpora = t.corpora ?? [];
     if (t.type === "websearch") {
       spec.maxResults = t.maxResults ?? 10;
-      if (t.includeDomains?.length) spec.includeDomains = t.includeDomains;
-      if (t.excludeDomains?.length) spec.excludeDomains = t.excludeDomains;
+      // `domains` is deliberately NOT projected: it is applied on the Gateway target,
+      // so the runtime neither needs it nor should be able to send one of its own.
       if (t.publishedFrom) spec.publishedFrom = t.publishedFrom;
       if (t.publishedTo) spec.publishedTo = t.publishedTo;
     }

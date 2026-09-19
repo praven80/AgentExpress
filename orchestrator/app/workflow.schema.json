@@ -797,32 +797,25 @@
             "description": "How many results to return — retrieval depth for a kb, page size for websearch. Raising it costs tokens on every call, which is why it is config and not a constant.\n\nRead by: kb: KB_NUM_RESULTS in kb.tf / tool-plane.ts. websearch: TOOLS_JSON -> gateway/client.py",
             "type": "integer"
           },
-          "includeDomains": {
-            "description": "Restrict results to these domains, per request. A preference, not a control — an agent's own request carries it.\n\nRead by: TOOLS_JSON -> gateway/client.py filters.domainFilter.include",
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "excludeDomains": {
-            "description": "Drop results from these domains, per request.\n\nRead by: TOOLS_JSON -> gateway/client.py filters.domainFilter.exclude",
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "targetIncludeDomains": {
-            "description": "The same restriction applied at the TARGET, so an agent cannot widen it. Use this one when the domain list is a rule rather than a preference.\n\nRead by: tools.tf / tool-plane.ts only — never reaches the agent",
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "targetExcludeDomains": {
-            "description": "Target-level exclusion, enforced by infrastructure rather than by the request.\n\nRead by: tools.tf / tool-plane.ts only",
-            "type": "array",
-            "items": {
-              "type": "string"
+          "domains": {
+            "description": "Which domains web search may return, e.g. {\"include\": [\"docs.aws.amazon.com\"]}. Applied on the Gateway TARGET, so it is hidden from the agent and enforced on every request rather than asked for per call — a prompt-injected instruction cannot widen it.\n\nRead by: tools.tf / tool-plane.ts, as the target's domainFilter — never sent in a request",
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "include": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Return results ONLY from these domains."
+              },
+              "exclude": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Never return results from these domains."
+              }
             }
           },
           "publishedFrom": {
@@ -984,18 +977,25 @@
                   "description": "Becomes the Gateway target's description. Truncated to 190 characters on deploy.\n\nRead by: tools.tf, tool-plane.ts",
                   "type": "string"
                 },
-                "excludeDomains": {
-                  "description": "Drop results from these domains, per request.\n\nRead by: TOOLS_JSON -> gateway/client.py filters.domainFilter.exclude",
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                },
-                "includeDomains": {
-                  "description": "Restrict results to these domains, per request. A preference, not a control — an agent's own request carries it.\n\nRead by: TOOLS_JSON -> gateway/client.py filters.domainFilter.include",
-                  "type": "array",
-                  "items": {
-                    "type": "string"
+                "domains": {
+                  "description": "Which domains web search may return, e.g. {\"include\": [\"docs.aws.amazon.com\"]}. Applied on the Gateway TARGET, so it is hidden from the agent and enforced on every request rather than asked for per call — a prompt-injected instruction cannot widen it.\n\nRead by: tools.tf / tool-plane.ts, as the target's domainFilter — never sent in a request",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "include": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Return results ONLY from these domains."
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Never return results from these domains."
+                    }
                   }
                 },
                 "maxResults": {
@@ -1027,20 +1027,6 @@
                 "publishedTo": {
                   "description": "Ignore results published after this ISO-8601 date.\n\nRead by: tools.tf, TOOLS_JSON -> gateway/client.py publishedDateFilter.to",
                   "type": "string"
-                },
-                "targetExcludeDomains": {
-                  "description": "Target-level exclusion, enforced by infrastructure rather than by the request.\n\nRead by: tools.tf / tool-plane.ts only",
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                },
-                "targetIncludeDomains": {
-                  "description": "The same restriction applied at the TARGET, so an agent cannot widen it. Use this one when the domain list is a rule rather than a preference.\n\nRead by: tools.tf / tool-plane.ts only — never reaches the agent",
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
                 },
                 "type": {
                   "description": "The kind of Gateway target to create. Closed by what the framework can provision — anything else goes behind a Lambda with type=\"lambda\".\n\nRead by: tools.tf, tool-plane.ts, registry.validate_tool_types, gateway/client.py, the UI chip\n\nAllowed values (toolTypes in app/vocabulary.json): 'kb', 'websearch', 'mcp', 'openapi', 'lambda'",

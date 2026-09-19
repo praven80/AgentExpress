@@ -87,11 +87,7 @@
     "websearch": {
       "type": "websearch",
       "description": "AgentCore Web Search - a managed built-in Gateway connector. No API keys, no infrastructure, queries never leave AWS. us-east-1, eu-west-1, ap-northeast-1 only.",
-      "maxResults": 10,
-      "includeDomains": [],
-      "excludeDomains": [],
-      "targetIncludeDomains": [],
-      "targetExcludeDomains": []
+      "maxResults": 10
     },
     "docs": {
       "type": "mcp",

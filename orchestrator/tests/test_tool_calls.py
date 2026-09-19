@@ -83,17 +83,8 @@ def test_websearch_query_is_clamped_to_200_characters(client, monkeypatch):
 def test_websearch_omits_maxresults_and_filters_when_not_configured(client, monkeypatch):
     """An empty filter object is not the same as no filter object — send the
     minimal documented payload rather than empty scaffolding."""
-    with_tools(client, {"ws": {"type": "websearch", "includeDomains": [],
-                              "excludeDomains": []}}, monkeypatch)
+    with_tools(client, {"ws": {"type": "websearch"}}, monkeypatch)
     assert client._tool_arguments("ws", "q") == {"query": "q"}
-
-
-def test_websearch_domain_filters_nest_under_filters_domainfilter(client, monkeypatch):
-    with_tools(client, {"ws": {"type": "websearch",
-                              "includeDomains": ["aws.amazon.com"],
-                              "excludeDomains": ["example.com"]}}, monkeypatch)
-    assert client._tool_arguments("ws", "q")["filters"] == {
-        "domainFilter": {"include": ["aws.amazon.com"], "exclude": ["example.com"]}}
 
 
 def test_websearch_date_bounds_nest_under_publisheddatefilter(client, monkeypatch):
@@ -111,16 +102,46 @@ def test_websearch_accepts_one_date_bound(client, monkeypatch):
         "from": "2026-01-01T00:00:00Z"}
 
 
-def test_target_level_domain_lists_never_reach_the_request(client, monkeypatch):
-    """targetIncludeDomains / targetExcludeDomains are set on the Gateway target and
-    must stay INVISIBLE to the agent — that is what makes them enforceable rather
-    than merely advisory."""
+def test_the_domain_filter_never_reaches_the_request(client, monkeypatch):
+    """`domains` is applied on the Gateway target, and must stay INVISIBLE here — that
+    is what makes it a boundary rather than a preference.
+
+    There used to be a second, request-level pair (`includeDomains`/`excludeDomains`)
+    that this process DID send, and a test asserting it nested correctly under
+    `filters.domainFilter`. Both are gone: four keys expressed one intent, the pair with
+    the obvious name was the weaker one, and since both lists came from the same config
+    file setting both only ever produced their intersection. What is left to assert is
+    that no domain list leaves this process at all — including one a caller put in
+    `domains` by mistake, expecting it to be sent.
+    """
     with_tools(client, {"ws": {"type": "websearch",
-                              "targetIncludeDomains": ["aws.amazon.com"],
-                              "targetExcludeDomains": ["spam.example"]}}, monkeypatch)
+                               "domains": {"include": ["aws.amazon.com"],
+                                           "exclude": ["spam.example"]}}}, monkeypatch)
     args = client._tool_arguments("ws", "q")
     assert args == {"query": "q"}
     assert "aws.amazon.com" not in json.dumps(args)
+    assert "domainFilter" not in json.dumps(args)
+
+
+def test_the_app_is_not_even_given_the_domain_lists(monkeypatch):
+    """One level lower than the test above: `domains` is stripped from TOOLS_JSON by both
+    IaC projections, so the runtime cannot send a domain filter even if a future edit to
+    `_tool_arguments` tried to. Asserted on the projection the app itself performs when
+    it reads workflow.json directly (local dev), which is the same allow-list."""
+    from conftest import workflow
+
+    defn = {
+        "orchestrator": {},
+        "tools": {"ws": {"type": "websearch", "maxResults": 5,
+                         "domains": {"include": ["aws.amazon.com"]}}},
+        "agents": {"a": {"name": "A", "runtime": "dedicated", "maxTokens": 100,
+                         "tool": "ws"}},
+        "steps": [{"agent": "a"}],
+    }
+    with workflow(defn) as imp:
+        tools = imp("app.common.config").TOOLS
+    assert tools["ws"] == {"type": "websearch", "maxResults": 5}
+    assert "domains" not in json.dumps(tools)
 
 
 # --- _select_tool ----------------------------------------------------------

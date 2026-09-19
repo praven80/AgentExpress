@@ -408,7 +408,7 @@ is a JSON edit — no HCL, no TypeScript, no policy to write.
 | `type` | Backend | Key fields |
 |---|---|---|
 | `kb` | Bedrock Knowledge Base on S3 Vectors, via a Lambda target | `corpora` — the top-level folders under `kb_docs/` |
-| `websearch` | The AWS-managed AgentCore Web Search connector | `maxResults`, `targetIncludeDomains`/`targetExcludeDomains` (enforced, agent-invisible), `includeDomains`/`excludeDomains`, `publishedFrom`/`publishedTo`, `connectorVersion` (Terraform only) |
+| `websearch` | The AWS-managed AgentCore Web Search connector | `maxResults`, `domains` (`{include, exclude}` — set on the target, enforced, agent-invisible), `publishedFrom`/`publishedTo`, `connectorVersion` (Terraform only) |
 | `mcp` | **Any** remote MCP server over Streamable HTTP | `endpoint`, `call`, `arg`, `args`, `listingMode`, `auth` |
 | `openapi` | Any REST API described by an OpenAPI schema in S3 | `schemaS3Uri` |
 | `lambda` | **Any function you own** — a warehouse, an RDBMS, an internal service, anything inside a VPC | `lambdaArn` (yours) *or* `source: "tool_lambda"` (the shipped demo), plus `toolSchema` — there is no `tools/list` for the Gateway to call, so the tools are declared |
@@ -487,9 +487,9 @@ apply uploads, re-ingests, and updates the authorization policy.
 > *display* them. The framework preserves them into the model's evidence, verifies
 > every citation URL against that evidence (dropping invented links and downgrading
 > any `sourced-fact` that rested on one), and renders each source as a link in the UI.
-> Configure `targetIncludeDomains` / `targetExcludeDomains` for filters an agent
-> cannot influence; `includeDomains` / `excludeDomains` / `publishedFrom` /
-> `publishedTo` are request-level and caller-supplied.
+> Configure `domains` for a filter an agent cannot influence — it is set on the Gateway
+> target, so the Gateway applies it to every request. `publishedFrom` / `publishedTo`
+> are request-level and caller-supplied.
 
 An OpenAPI operation an agent calls should accept a parameter named `query`.
 

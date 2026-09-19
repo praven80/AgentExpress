@@ -87,12 +87,18 @@ export interface ToolSpec {
    */
   toolSchema?: LambdaToolDef[];
   /**
-   * type=websearch: TARGET-level domain lists. Hidden from the calling agent and
-   * applied to every request — the enforceable layer, unlike the request-level
-   * includeDomains/excludeDomains the app sends per call.
+   * type=websearch: which domains web search may return. Applied on the Gateway
+   * TARGET, so it is hidden from the calling agent and enforced on every request —
+   * a prompt-injected instruction cannot widen it.
+   *
+   * ONE key, replacing four. There used to be a request-level
+   * includeDomains/excludeDomains pair beside a target-level
+   * targetIncludeDomains/targetExcludeDomains pair; they expressed one intent, and
+   * the pair with the obvious name was the weaker one (caller-supplied, so scoping
+   * rather than a boundary, and needing connector v1.2.0+). Both came from the same
+   * config file, so setting both only produced their intersection.
    */
-  targetIncludeDomains?: string[];
-  targetExcludeDomains?: string[];
+  domains?: { include?: string[]; exclude?: string[] };
   /** type=websearch: pin the connector version, e.g. "1.2.0". */
   connectorVersion?: string;
   /** type=websearch: request-level published-date bounds (ISO-8601 UTC). */
@@ -128,8 +134,6 @@ export interface ToolSpec {
   auth?: "none" | "apikey" | "sigv4";
   /** SigV4 signing name; auto-detected from the hostname when omitted. */
   service?: string;
-  includeDomains?: string[];
-  excludeDomains?: string[];
   /** Cedar shape. Omit for a target-level permit (all the target's tools). */
   policy?: {
     /** Narrow the permit to ONE tool name within this target. */
@@ -810,17 +814,14 @@ export class ToolPlane extends Construct {
         // A managed built-in connector: no endpoint, no schema, no API key.
         // The tool surfaces as "<name>___WebSearch".
         //
-        // Two layers of domain filtering compose on every request (mirrors the
-        // notes in terraform/tools.tf):
-        //   TARGET level  — targetIncludeDomains / targetExcludeDomains, set here,
-        //                   HIDDEN from the agent, applied to every request. The
-        //                   enforceable layer.
-        //   REQUEST level — includeDomains / excludeDomains / publishedFrom / To,
-        //                   sent per call by the app. Caller-supplied, so scoping
-        //                   rather than a boundary.
+        // Domain filtering is ONE key and ONE place: `domains` in workflow.json,
+        // applied here on the target, so the Gateway enforces it on every request and
+        // the agent never sees it. See the longer note in terraform/tools.tf for what
+        // this replaced and why nothing was lost. `publishedFrom`/`publishedTo` stay
+        // request-level because the target has no equivalent.
         const domainFilter: Record<string, string[]> = {};
-        if (spec.targetIncludeDomains?.length) domainFilter.include = spec.targetIncludeDomains;
-        if (spec.targetExcludeDomains?.length) domainFilter.exclude = spec.targetExcludeDomains;
+        if (spec.domains?.include?.length) domainFilter.include = spec.domains.include;
+        if (spec.domains?.exclude?.length) domainFilter.exclude = spec.domains.exclude;
         return {
           connector: {
             // NOTE: no version pin here. The CreateGatewayTarget API and the

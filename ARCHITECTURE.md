@@ -390,12 +390,16 @@ different boundaries, both config-driven.
   `sourced-fact` resting on one is downgraded to `agent-interpretation`. The UI
   renders each source URL as a link. Without this, a fabricated URL is
   indistinguishable from a real citation to whoever reads the report.
-- **Two filter layers compose.** Target-level `targetIncludeDomains` /
-  `targetExcludeDomains` are set on the target, hidden from the agent and applied to
-  every request — the enforceable layer. Request-level `includeDomains` /
-  `excludeDomains` / `publishedFrom` / `publishedTo` are sent per call by the app;
-  being caller-supplied they are scoping, not a boundary. A domain is dropped if it
-  is on *either* exclude list, and returned only if on *every* include list set.
+- **Domain filtering is one key, on the target.** `domains: {include, exclude}` is set
+  on the Gateway target, hidden from the agent and applied to every request, so it is a
+  boundary rather than a preference. It replaced four keys — a request-level
+  `includeDomains`/`excludeDomains` pair beside a target-level
+  `targetIncludeDomains`/`targetExcludeDomains` pair — which expressed one intent, with
+  the weaker layer holding the more obvious name. `publishedFrom` / `publishedTo` remain
+  request-level because the target has no equivalent; being caller-supplied they are
+  scoping, not a boundary.
+  A domain is dropped if it is on `exclude`, and returned only if on `include` when
+  `include` is set.
 
 ### RAG — Bedrock Knowledge Base on S3 Vectors
 - A single Bedrock Knowledge Base (Titan Text Embeddings v2) backed by **S3 Vectors**

@@ -343,21 +343,22 @@ def _tool_arguments(tool_key: str, query: str) -> dict:
         max_results = spec.get("maxResults")
         if max_results:
             args["maxResults"] = int(max_results)
-        # Request-level filters (connector v1.2.0+). These are supplied by the
-        # CALLER, so they are scoping, not a security boundary: they compose with
-        # the target-level lists and cannot override an exclude or widen beyond an
-        # include. Configure targetIncludeDomains / targetExcludeDomains for the
-        # enforceable, agent-invisible form (see terraform/tools.tf).
+        # NO DOMAIN FILTER IS SENT FROM HERE, deliberately. The connector accepts one
+        # per request, and this used to build it from `includeDomains`/`excludeDomains`
+        # alongside a second, target-level pair named `targetIncludeDomains`/
+        # `targetExcludeDomains`. Four keys for one intent, and the pair with the
+        # obvious name was the weaker one: a request-level filter is supplied by the
+        # caller, so the Gateway treats it as scoping rather than as a boundary, and it
+        # additionally needs connector v1.2.0+. The target-level form is enforced on
+        # every request, invisible to the agent, and has no version requirement — there
+        # was no case where statically configuring the request-level pair bought a
+        # customer anything. So `domains` is now one key, applied at the target
+        # (terraform/tools.tf, cdk/lib/tool-plane.ts), and nothing about which domains
+        # are allowed travels in a request this process builds.
         filters: dict = {}
-        domain_filter = {
-            k: v for k, v in (
-                ("include", spec.get("includeDomains") or []),
-                ("exclude", spec.get("excludeDomains") or []),
-            ) if v
-        }
-        if domain_filter:
-            filters["domainFilter"] = domain_filter
-        # Published-date bounds, inclusive, ISO-8601 UTC. Web results only.
+        # Published-date bounds, inclusive, ISO-8601 UTC. Web results only. These stay
+        # request-level because the connector target has no equivalent — there is no
+        # stronger place to put them.
         date_filter = {
             k: v for k, v in (
                 ("from", spec.get("publishedFrom") or ""),

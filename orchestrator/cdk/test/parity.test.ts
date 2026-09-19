@@ -269,6 +269,66 @@ describe("the framework vocabulary has ONE home", () => {
 // The shipped config is coherent for both paths
 // ---------------------------------------------------------------------------
 
+describe("web search domain filtering", () => {
+  // It lived in FOUR keys — a request-level includeDomains/excludeDomains pair and a
+  // target-level targetIncludeDomains/targetExcludeDomains pair — for one intent, and
+  // the pair with the obvious name was the weaker of the two. Now one `domains` key,
+  // applied on the target by both planes. These assert the collapse actually happened
+  // everywhere rather than in the plane somebody remembered.
+  const REMOVED = [
+    "includeDomains",
+    "excludeDomains",
+    "targetIncludeDomains",
+    "targetExcludeDomains",
+  ];
+
+  it("is one key in the spec, with the old four recorded as removed", () => {
+    const keys = JSON.parse(read(path.join(ORCH_ROOT, "app", "keys.json")));
+    expect(keys.tool.keys.domains).toBeDefined();
+    for (const old of REMOVED) {
+      expect(keys.tool.keys[old]).toBeUndefined();
+      // A closed key set REJECTS an old key rather than ignoring it, so the message has
+      // to name the replacement or a customer upgrading is left reading a diff.
+      expect(keys.tool.$removed[old]).toContain("domains");
+    }
+  });
+
+  it("is read from `domains` by both IaC planes, and by neither of the old names", () => {
+    const tf = read(path.join(TF, "tools.tf"));
+    const cdkPlane = read(path.join(__dirname, "..", "lib", "tool-plane.ts"));
+    expect(tf).toContain("t.domains.include");
+    expect(tf).toContain("t.domains.exclude");
+    expect(cdkPlane).toContain("spec.domains?.include");
+    expect(cdkPlane).toContain("spec.domains?.exclude");
+    // Prose may still explain what was replaced; a READ of an old key may not exist.
+    for (const old of REMOVED) {
+      expect(tf).not.toMatch(new RegExp(`t\\.${old}`));
+      expect(cdkPlane).not.toMatch(new RegExp(`spec\\.${old}`));
+    }
+  });
+
+  it("is never projected to the runtime by either plane", () => {
+    // The point of moving it to the target: the app cannot send a domain filter of its
+    // own, so the filter is a boundary rather than a preference. Both projections have
+    // to agree on withholding it, or a CDK deployment would scope differently from a
+    // Terraform one.
+    const tf = read(path.join(TF, "tools.tf"));
+    const stack = read(path.join(__dirname, "..", "lib", "orchestrator-stack.ts"));
+    // Comments stripped: both projections carry a note SAYING they withhold the domain
+    // lists, and the check is about the code, not about whether the code is explained.
+    const strip = (src: string) => src.replace(/^\s*(?:\/\/|#).*$/gm, "");
+    const window = (src: string, from: string) =>
+      strip(src.slice(src.indexOf(from), src.indexOf(from) + 1400));
+    for (const src of [window(tf, "tools_env"), window(stack, "export function toolsEnv")]) {
+      expect(src).not.toContain("domains");
+      expect(src).toContain("maxResults");   // the projection is not simply empty
+    }
+    const client = read(path.join(ORCH_ROOT, "app", "features", "gateway", "client.py"));
+    expect(client).not.toContain('spec.get("includeDomains")');
+    expect(client).not.toContain('spec.get("domains")');
+  });
+});
+
 describe("the shipped workflow.json", () => {
   it("declares an authorization block with groups for every restricted action", () => {
     const actions: Record<string, string[]> = shipped.authorization.actions;

@@ -66,15 +66,15 @@ locals {
           ]
         }
       ]
-      max_results     = try(t.maxResults, 10)
-      exclude_domains = try(t.excludeDomains, [])
-      include_domains = try(t.includeDomains, [])
-      # TARGET-level domain lists: hidden from the agent, enforced on every
-      # request. The stronger control — see the notes on the websearch resource.
-      target_include_domains = try(t.targetIncludeDomains, [])
-      target_exclude_domains = try(t.targetExcludeDomains, [])
-      # Optional connector version pin, e.g. "1.2.0" (request-level filters need
-      # 1.2.0 or later). Empty tracks the latest.
+      max_results = try(t.maxResults, 10)
+      # Which domains web search may return. ONE key, applied on the target: hidden
+      # from the agent and enforced on every request. It replaced four keys — a
+      # request-level includeDomains/excludeDomains pair and a target-level
+      # targetIncludeDomains/targetExcludeDomains pair — which expressed one intent,
+      # and the pair with the obvious name was the weaker of the two.
+      include_domains = try(t.domains.include, [])
+      exclude_domains = try(t.domains.exclude, [])
+      # Optional connector version pin, e.g. "1.2.0". Empty tracks the latest.
       connector_version = try(t.connectorVersion, "")
       # Request-level published-date bounds, inclusive, ISO-8601 UTC.
       published_from = try(t.publishedFrom, "")
@@ -443,10 +443,10 @@ locals {
     for n, t in local.tools : n => merge(
       { type = t.type },
       t.type == "kb" ? { corpora = t.corpora } : {},
+      # NOTE the domain lists are NOT projected to the app. They are applied on the
+      # target, so the runtime neither needs them nor should be able to send one.
       t.type == "websearch" ? merge(
         { maxResults = t.max_results },
-        length(t.include_domains) > 0 ? { includeDomains = t.include_domains } : {},
-        length(t.exclude_domains) > 0 ? { excludeDomains = t.exclude_domains } : {},
         t.published_from != "" ? { publishedFrom = t.published_from } : {},
         t.published_to != "" ? { publishedTo = t.published_to } : {},
       ) : {},
@@ -801,24 +801,24 @@ resource "terraform_data" "workflow_validation" {
 # maintain: the Gateway resolves and authenticates to the AWS-owned backend
 # itself, and queries never leave AWS. The tool surfaces as "<name>___WebSearch".
 #
-# The connector supports TWO layers of domain filtering, and they compose on every
-# request. Both are config in workflow.json:
+# DOMAIN FILTERING IS ONE KEY AND ONE PLACE: `domains: {include, exclude}` in
+# workflow.json, applied on the target below. Hidden from the calling agent and
+# applied by the Gateway to every request, so it is a boundary rather than a
+# preference.
 #
-#   TARGET level  — targetIncludeDomains / targetExcludeDomains. Set on the target
-#                   below, HIDDEN from the calling agent, applied to every request.
-#                   This is the enforceable layer.
-#   REQUEST level — includeDomains / excludeDomains / publishedFrom / publishedTo.
-#                   Sent per call by the app (app/features/gateway/client.py).
-#                   Supplied by the CALLER, so it is scoping, not a boundary.
+# The connector also ACCEPTS a domain filter per request, and this used to expose
+# that as a second pair of keys (includeDomains / excludeDomains) beside a
+# target-level pair (targetIncludeDomains / targetExcludeDomains). Four keys, one
+# intent, and the pair with the obvious name was the weaker one — a request-level
+# filter is caller-supplied, so it is scoping rather than a boundary, and it
+# additionally needs connector v1.2.0+. Since both lists came from the same config
+# file, setting both only ever produced their intersection, which a customer could
+# have written directly. Nothing was lost by removing the request-level pair.
 #
-# Per the docs: a domain is dropped if it appears on EITHER exclude list, and
-# returned only if it appears on EVERY include list that is set. A request-level
-# filter can therefore never override a target-level exclude or widen results
-# beyond a target-level include.
+# publishedFrom / publishedTo stay request-level (app/features/gateway/client.py),
+# because the target has no equivalent — there is no stronger place to put them.
 #
-# maxResults (1-25, default 10) and the request-level filters follow the published
-# WebSearch input schema. Request-level filters need connector v1.2.0 or later —
-# set `connectorVersion` to pin it.
+# maxResults (1-25, default 10) follows the published WebSearch input schema.
 resource "aws_bedrockagentcore_gateway_target" "websearch" {
   for_each           = local.websearch_tools
   gateway_identifier = aws_bedrockagentcore_gateway.mcp[0].gateway_id
@@ -846,23 +846,19 @@ resource "aws_bedrockagentcore_gateway_target" "websearch" {
           # absent rather than its single entry dropped. Verified directly
           # against CreateGatewayTarget: adding "{}" is what makes it count.
           #
-          # TARGET-level domain lists go in here too, and they are the enforceable
-          # form: hidden from the agent and applied to every request. Populated
-          # from targetIncludeDomains / targetExcludeDomains in workflow.json, so
-          # `{}` when neither is set (which is what makes the entry count).
-          parameter_values = jsonencode(merge(
-            length(each.value.target_include_domains) > 0 ? {
-              domainFilter = { include = each.value.target_include_domains }
-            } : {},
-            length(each.value.target_exclude_domains) > 0 ? {
-              domainFilter = merge(
-                length(each.value.target_include_domains) > 0 ? {
-                  include = each.value.target_include_domains
-                } : {},
-                { exclude = each.value.target_exclude_domains },
-              )
-            } : {},
-          ))
+          # The domain filter goes in here, and this is the ONLY place it goes:
+          # applied by the Gateway on every request and invisible to the agent, so a
+          # prompt-injected instruction cannot widen it. Populated from `domains` in
+          # workflow.json, hence `{}` when it is absent (and `{}` is what makes the
+          # entry count, per the note above).
+          parameter_values = jsonencode(
+            length(each.value.include_domains) > 0 || length(each.value.exclude_domains) > 0
+            ? { domainFilter = merge(
+              length(each.value.include_domains) > 0 ? { include = each.value.include_domains } : {},
+              length(each.value.exclude_domains) > 0 ? { exclude = each.value.exclude_domains } : {},
+            ) }
+            : {}
+          )
         }
       }
     }

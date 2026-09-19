@@ -94,6 +94,19 @@ def _property(spec: dict, vocab: dict) -> dict:
     if spec.get("pattern"):
         target = out["items"] if kind == "array" else out
         target["pattern"] = spec["pattern"]
+
+    # An inline object with declared sub-keys, e.g. `domains: {include, exclude}`. Closed
+    # like everything else, so a typo inside it is caught rather than ignored — which is
+    # the whole reason collapsing four flat keys into one nested key is safe.
+    if spec.get("properties"):
+        out["additionalProperties"] = False
+        out["properties"] = {
+            name: ({"type": "array", "items": {"type": sub.get("items", "string")},
+                    "description": sub["doc"]}
+                   if sub.get("type") == "array"
+                   else {"type": sub.get("type", "string"), "description": sub["doc"]})
+            for name, sub in spec["properties"].items()
+        }
     return out
 
 

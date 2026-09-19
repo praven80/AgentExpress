@@ -85,19 +85,52 @@ def test_no_unread_agent_keys():
             f"them up or remove them — see this file's docstring.")
 
 
+def removed_note(block: str, key: str) -> str:
+    """What to write instead of a key that used to be valid, or "".
+
+    Because the key sets are closed, a key from an older version is REJECTED rather than
+    ignored. That is the right behaviour and a confusing message on its own — "nothing
+    reads `includeDomains`" is true and says nothing about the replacement. The spec
+    carries a `$removed` map so the rejection can name it.
+    """
+    return str((SPEC[block].get("$removed") or {}).get(key) or "")
+
+
 def test_no_unread_tool_keys():
     """The `tools` block had NO allow-list at all until the spec was written, so a tool
     key nothing reads passed every test here — the exact hole this module exists to
     close, in the one block it did not cover. `policy` is checked one level down."""
     for name, tool in (wf().get("tools") or {}).items():
         unknown = set(tool) - {k.partition(".")[0] for k in TOOL_KEYS}
+        hints = [f"{k}: {removed_note('tool', k)}" for k in sorted(unknown)
+                 if removed_note("tool", k)]
         assert not unknown, (
             f"tool {name!r} has key(s) nothing reads: {sorted(unknown)}. Either wire "
-            f"them up in app/keys.json or remove them.")
+            f"them up in app/keys.json or remove them."
+            + ("\n  " + "\n  ".join(hints) if hints else ""))
         nested = {f"policy.{k}" for k in (tool.get("policy") or {})}
         assert nested <= set(TOOL_KEYS), (
             f"tool {name!r} policy has key(s) nothing reads: "
             f"{sorted(nested - set(TOOL_KEYS))}")
+
+
+def test_a_removed_key_is_explained_rather_than_just_refused():
+    """A customer upgrading hits the closed key set, not a deprecation warning, so the
+    message is the only thing standing between them and reading a diff."""
+    for block, spec in SPEC.items():
+        if block.startswith("$"):
+            continue
+        for key, note in (spec.get("$removed") or {}).items():
+            if key.startswith("$"):
+                continue
+            assert key not in spec["keys"], f"{block}.{key} is both removed and declared"
+            assert len(note) > 30, f"{block}.{key} has no usable migration note"
+            assert removed_note(block, key) == note
+    # The four websearch keys that became `domains` are the worked example, so a
+    # regression here means the mechanism silently stopped carrying any notes at all.
+    for key in ("includeDomains", "excludeDomains",
+                "targetIncludeDomains", "targetExcludeDomains"):
+        assert "domains" in removed_note("tool", key), key
 
 
 def test_no_unread_step_keys():

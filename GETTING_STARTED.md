@@ -206,8 +206,7 @@ obligation worth understanding:
 | Field | What it does |
 |---|---|
 | `maxResults` | 1–25, default 10. |
-| `targetIncludeDomains` / `targetExcludeDomains` | Set on the Gateway target, **hidden from the agent**, applied to every request. The enforceable layer. |
-| `includeDomains` / `excludeDomains` | Sent per call by the app. Caller-supplied, so scoping — not a security boundary. |
+| `domains` | `{"include": [...], "exclude": [...]}`. Set on the Gateway target, so it is **hidden from the agent** and applied to every request — a boundary, not a preference. One key; it replaced a request-level `includeDomains`/`excludeDomains` pair and a target-level `targetIncludeDomains`/`targetExcludeDomains` pair that said the same thing twice, the weaker layer having the more obvious name. |
 | `publishedFrom` / `publishedTo` | Inclusive ISO-8601 UTC bounds on publication date. |
 | `connectorVersion` | Pins the connector, e.g. `"1.2.0"` (request-level filters need 1.2.0+). **Terraform only** — CloudFormation's connector source accepts just `connectorId`, so CDK rejects this field rather than silently ignoring it. |
 

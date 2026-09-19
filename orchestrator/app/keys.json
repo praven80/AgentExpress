@@ -257,6 +257,13 @@
         "why": "lambdaArn = a function you already own, which the framework only registers. source = one the framework ships and deploys. Same rule, for the same reason, as an a2a agent's agentCard vs source."
       }
     ],
+    "$removed": {
+      "$comment": "Keys that USED to be valid, and what to write instead. Because the key sets are closed, an old key is REJECTED rather than ignored — which is the right behaviour and a confusing message on its own. tests/test_config_keys.py looks here so the rejection can name the replacement instead of only the problem.",
+      "includeDomains": "Use `domains: {\"include\": [...]}`. The old key was applied per REQUEST; `domains` is applied on the Gateway target, which is both enforceable and supported by every connector version.",
+      "excludeDomains": "Use `domains: {\"exclude\": [...]}`. See includeDomains.",
+      "targetIncludeDomains": "Renamed to `domains: {\"include\": [...]}` — target level is now the only level, so the prefix said nothing.",
+      "targetExcludeDomains": "Renamed to `domains: {\"exclude\": [...]}`."
+    },
     "keys": {
       "type": {
         "group": "identity",
@@ -373,37 +380,16 @@
         "doc": "How many results to return — retrieval depth for a kb, page size for websearch. Raising it costs tokens on every call, which is why it is config and not a constant.",
         "reads": "kb: KB_NUM_RESULTS in kb.tf / tool-plane.ts. websearch: TOOLS_JSON -> gateway/client.py"
       },
-      "includeDomains": {
+      "domains": {
         "group": "filter",
-        "type": "array",
-        "items": "string",
+        "type": "object",
         "appliesTo": ["websearch"],
-        "doc": "Restrict results to these domains, per request. A preference, not a control — an agent's own request carries it.",
-        "reads": "TOOLS_JSON -> gateway/client.py filters.domainFilter.include"
-      },
-      "excludeDomains": {
-        "group": "filter",
-        "type": "array",
-        "items": "string",
-        "appliesTo": ["websearch"],
-        "doc": "Drop results from these domains, per request.",
-        "reads": "TOOLS_JSON -> gateway/client.py filters.domainFilter.exclude"
-      },
-      "targetIncludeDomains": {
-        "group": "filter",
-        "type": "array",
-        "items": "string",
-        "appliesTo": ["websearch"],
-        "doc": "The same restriction applied at the TARGET, so an agent cannot widen it. Use this one when the domain list is a rule rather than a preference.",
-        "reads": "tools.tf / tool-plane.ts only — never reaches the agent"
-      },
-      "targetExcludeDomains": {
-        "group": "filter",
-        "type": "array",
-        "items": "string",
-        "appliesTo": ["websearch"],
-        "doc": "Target-level exclusion, enforced by infrastructure rather than by the request.",
-        "reads": "tools.tf / tool-plane.ts only"
+        "properties": {
+          "include": { "type": "array", "items": "string", "doc": "Return results ONLY from these domains." },
+          "exclude": { "type": "array", "items": "string", "doc": "Never return results from these domains." }
+        },
+        "doc": "Which domains web search may return, e.g. {\"include\": [\"docs.aws.amazon.com\"]}. Applied on the Gateway TARGET, so it is hidden from the agent and enforced on every request rather than asked for per call — a prompt-injected instruction cannot widen it.",
+        "reads": "tools.tf / tool-plane.ts, as the target's domainFilter — never sent in a request"
       },
       "publishedFrom": {
         "group": "filter",
