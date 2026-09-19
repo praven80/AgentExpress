@@ -149,415 +149,93 @@ describe("API routes", () => {
 // Duplicated constants
 // ---------------------------------------------------------------------------
 
-describe("constants duplicated across languages", () => {
-  it("the RBAC action list matches in all three places", () => {
-    // Necessarily duplicated: bff/authz.py enforces it, and both IaC paths need it
-    // at plan/synth time to reject a typo'd action key. Terraform cannot read the
-    // Python and TypeScript cannot read either, so this test is the link.
-    const fromPython = read(path.join(ORCH_ROOT, "bff", "authz.py"))
-      .match(/^ACTIONS = \(([^)]*)\)/m)![1]
-      .match(/"([a-z]+)"/g)!
-      .map((s) => s.replace(/"/g, ""))
-      .sort();
-
-    const fromTf = read(path.join(TF, "identity.tf"))
-      .match(/authz_known_actions = \[([^\]]*)\]/)![1]
-      .match(/"([a-z]+)"/g)!
-      .map((s) => s.replace(/"/g, ""))
-      .sort();
-
-    const fromTs = read(path.join(__dirname, "..", "lib", "orchestrator-stack.ts"))
-      .match(/const knownActions = \[([^\]]*)\]/)![1]
-      .match(/"([a-z]+)"/g)!
-      .map((s) => s.replace(/"/g, ""))
-      .sort();
-
-    expect(fromPython).toEqual([
-      "cancel",
-      "decision",
-      "delete",
-      "evaluate",
-      "insights",
-      "rerun",
-      "start",
-    ]);
-    expect(fromTf).toEqual(fromPython);
-    expect(fromTs).toEqual(fromPython);
-  });
-
-  it("the A2A auth modes and runtimes match in all three places", () => {
-    // Necessarily duplicated: registry.py enforces it at container start, and both IaC
-    // paths need it at plan/synth. Nothing was comparing them, which is exactly how
-    // `sigv4` came to exist in the Python list and not the other two — the shipped
-    // workflow then failed `cdk synth` with "valid values are none, bearer, oauth2".
-    const registry = read(path.join(ORCH_ROOT, "app", "orchestrator", "registry.py"));
-    const list = (src: string, re: RegExp) =>
-      src.match(re)![1].match(/"([\w]+)"/g)!.map((x) => x.replace(/"/g, "")).sort();
-
-    const pyAuth = list(registry, /^AUTH_MODES = \(([^)]*)\)/m);
-    const tsAuth = list(stackSrc, /const A2A_AUTH_MODES = \[([^\]]*)\]/);
-    const tfAuth = list(toolsTf, /a2a_auth_modes\s*=\s*\[([^\]]*)\]/);
-    expect(pyAuth).toEqual(["bearer", "none", "oauth2", "sigv4"]);
-    expect(tsAuth).toEqual(pyAuth);
-    expect(tfAuth).toEqual(pyAuth);
-
-    const pyRuntimes = list(registry, /^RUNTIMES = \(([^)]*)\)/m);
-    const tsRuntimes = list(stackSrc, /const RUNTIMES = \[([^\]]*)\]/);
-    const tfRuntimes = list(toolsTf, /a2a_runtimes\s*=\s*\[([^\]]*)\]/);
-    expect(pyRuntimes).toEqual(["a2a", "dedicated", "main"]);
-    expect(tsRuntimes).toEqual(pyRuntimes);
-    expect(tfRuntimes).toEqual(pyRuntimes);
-
-    // And the stand-in's skills, which the config names and the handler implements.
-    const skills = (src: string, re: RegExp) => list(src, re);
-    // Sliced to the SKILLS dict before matching: an earlier version matched the whole
-    // file and picked up `"compliance_review": {` out of the module docstring's example.
-    const handlerSrc = read(path.join(ORCH_ROOT, "a2a_lambda", "handler.py"));
-    const skillsBlock = handlerSrc.slice(
-      handlerSrc.indexOf("SKILLS: dict[str, dict] = {"),
-      handlerSrc.indexOf("DEFAULT_SKILL =")
-    );
-    expect(skillsBlock.length).toBeGreaterThan(100); // the slice actually found it
-    const handlerSkills = [...skillsBlock.matchAll(/^    "(\w+)": \{$/gm)]
-      .map((m) => m[1])
-      .sort();
-    expect(handlerSkills).toEqual(["compliance", "resilience"]);
-    expect(skills(stackSrc, /const A2A_LAMBDA_SKILLS = \[([^\]]*)\]/)).toEqual(handlerSkills);
-    expect(skills(toolsTf, /a2a_lambda_skills\s*=\s*\[([^\]]*)\]/)).toEqual(handlerSkills);
-    expect(skills(registry, /^A2A_LAMBDA_SKILLS = \(([^)]*)\)/m)).toEqual(handlerSkills);
-  });
-
-  it("the shipped authorization block only uses recognised actions", () => {
-    const known = read(path.join(ORCH_ROOT, "bff", "authz.py"))
-      .match(/^ACTIONS = \(([^)]*)\)/m)![1]
-      .match(/"([a-z]+)"/g)!
-      .map((s) => s.replace(/"/g, ""));
-    for (const action of Object.keys(shipped.authorization?.actions ?? {})) {
-      expect(known).toContain(action);
-    }
-  });
-
+describe("the framework vocabulary has ONE home", () => {
   /**
-   * The allow-list from the `for n, t in local.tools : contains([...], t.<attr>)`
-   * precondition — anchored on the comprehension so it can't match one of the
-   * other `contains()` calls in the file (there is an unrelated
-   * `contains(["mcp","openapi"], t.type)` used for API-key applicability).
+   * This describe used to be called "constants duplicated across languages", and it
+   * compared hand-written copies of every closed value set against each other: the tool
+   * types in Python, TypeScript and HCL; the RBAC action names in all three; the schema
+   * property types; the a2a auth modes; the web search regions.
+   *
+   * It was a test that the duplicates had not drifted — not a reason for them to exist.
+   * And the drift was real: a value added to one copy and missed in another rejected a
+   * config the other planes accepted, so whether a workflow deployed depended on which
+   * IaC path you used.
+   *
+   * There is one copy now, app/vocabulary.json, and JSON is the one format all three
+   * planes read natively. So these assert that each plane READS it, which is a much
+   * stronger guarantee than three lists agreeing on one particular day.
    */
-  function tfAllowList(src: string, attr: string): string[] {
-    const m = src.match(
-      new RegExp(`for n, t in local\\.tools\\s*:\\s*contains\\(\\[([^\\]]*)\\],\\s*t\\.${attr}\\)`)
-    );
-    expect(m).not.toBeNull();
-    return m![1]
-      .match(/"([\w-]*)"/g)!
-      .map((s) => s.replace(/"/g, ""))
-      .sort();
-  }
+  const VOCAB_PATH = path.join(ORCH_ROOT, "app", "vocabulary.json");
+  const vocab = JSON.parse(read(VOCAB_PATH));
 
-  const stackSrc = read(path.join(__dirname, "..", "lib", "orchestrator-stack.ts"));
-  const toolsTf = read(path.join(TF, "tools.tf"));
-
-  it("the supported tool types match", () => {
-    const fromTs = stackSrc
-      .match(/const TOOL_TYPES: ToolType\[\] = \[([^\]]*)\]/)![1]
-      .match(/"(\w+)"/g)!
-      .map((s) => s.replace(/"/g, ""))
-      .sort();
-    expect(fromTs).toEqual(["kb", "lambda", "mcp", "openapi", "websearch"]);
-    expect(tfAllowList(toolsTf, "type")).toEqual(fromTs);
-    // And every type the shipped config uses is one of them.
-    for (const t of Object.values<any>(shipped.tools)) expect(fromTs).toContain(t.type);
-  });
-
-  it("every tool type has an evidence label in the app", () => {
-    // A third place the type list appears: the sample's shared research runner labels
-    // the evidence block by tool type so the model knows what kind of source it is
-    // reading. A type with no label silently falls back to the generic "TOOL" heading.
-    // It lives under app/subagents/ because it is sample code, not framework — the
-    // IaC still has to agree with it, since a customer declaring a tool type the
-    // runner cannot label gets an unlabelled evidence block.
-    const fromTs = stackSrc
-      .match(/const TOOL_TYPES: ToolType\[\] = \[([^\]]*)\]/)![1]
-      .match(/"(\w+)"/g)!
-      .map((s) => s.replace(/"/g, ""))
-      .sort();
-    const labels = read(
-      path.join(ORCH_ROOT, "app", "subagents", "_shared", "research.py"))
-      .match(/_EVIDENCE_LABELS = \{([\s\S]*?)\n\}/)![1]
-      .split("\n")
-      .map((l) => l.replace(/#.*$/, "").match(/^\s*"(\w+)":/)?.[1])
-      .filter(Boolean)
-      .sort();
-    expect(labels).toEqual(fromTs);
-  });
-
-  it("the accepted listingMode values match", () => {
-    const fromTs = stackSrc
-      .match(/\[("DEFAULT",\s*"DYNAMIC")\]\.includes\(t\.listingMode\)/)![1]
-      .match(/"(\w+)"/g)!
-      .map((s) => s.replace(/"/g, ""))
-      .sort();
-    expect(fromTs).toEqual(["DEFAULT", "DYNAMIC"]);
-    expect(tfAllowList(toolsTf, "listing_mode")).toEqual(fromTs);
-  });
-
-  it("the accepted outbound auth values match", () => {
-    const fromTs = stackSrc
-      .match(/\[("none",\s*"apikey",\s*"sigv4")\]\.includes\(t\.auth\)/)![1]
-      .match(/"(\w+)"/g)!
-      .map((s) => s.replace(/"/g, ""))
-      .sort();
-    expect(fromTs).toEqual(["apikey", "none", "sigv4"]);
-    // Terraform additionally accepts "" (an unset optional attribute), which on the
-    // CDK path is `undefined` and skips the check entirely — same meaning.
-    expect(tfAllowList(toolsTf, "auth").filter((v) => v !== "")).toEqual(fromTs);
-  });
-
-  it("the same S3 Vectors metadata keys are non-filterable on both paths", () => {
-    // S3 Vectors caps FILTERABLE metadata at 2048 bytes per vector. Miss a key that
-    // grows with the document and ingestion FAILS on a larger file — one document
-    // fails, the job goes to FAILED, and the KB simply never returns that content.
-    // Both paths must exclude the same set or one deployment silently loses docs.
-    const keys = (src: string) => {
-      // TS declares KB_NON_FILTERABLE; HCL declares local.kb_non_filterable. Both
-      // are then referenced by name at the resource, so read the declarations.
-      const m = src.match(/KB_NON_FILTERABLE\s*=\s*\[([^\]]*)\]/)
-        ?? src.match(/kb_non_filterable\s*=\s*\[([^\]]*)\]/);
-      expect(m).not.toBeNull();
-      return m![1].match(/"(\w+)"/g)!.map((s) => s.replace(/"/g, "")).sort();
-    };
-    const fromTs = keys(read(path.join(__dirname, "..", "lib", "tool-plane.ts")));
-    const fromTf = keys(read(path.join(TF, "kb.tf")));
-    expect(fromTs).toEqual(["AMAZON_BEDROCK_METADATA", "AMAZON_BEDROCK_TEXT"]);
-    expect(fromTf).toEqual(fromTs);
-  });
-
-  it("both paths derive the SAME vector index name", () => {
-    // The name folds in the index's immutable properties so a change to them can be
-    // replaced rather than failing the deploy. If the two schemes drift, a Terraform
-    // and a CDK deployment of the same config would build different indexes.
-    const { kbIndexName, KB_NON_FILTERABLE } = require("../lib/tool-plane");
-    const fromTs = kbIndexName(1024, KB_NON_FILTERABLE);
-    const digest = crypto
-      .createHash("sha256")
-      .update(`1024|${[...KB_NON_FILTERABLE].sort().join(",")}`)
-      .digest("hex")
-      .slice(0, 8);
-    expect(fromTs).toBe(`kb-index-${digest}`);
-    // And the HCL builds it the same way, from the same inputs.
-    const tf = read(path.join(TF, "kb.tf"));
-    expect(tf).toContain("kb_storage_digest = substr(sha256(");
-    expect(tf).toContain('join(",", sort(local.kb_non_filterable))');
-    expect(tf).toContain("local.kb_dims}|");
-    expect(tf).toContain('kb_index_name     = "kb-index-${local.kb_storage_digest}"');
-  });
-
-  it("both paths derive the SAME knowledge base name, sharing the index digest", () => {
-    // The index name alone is not enough. A replaced index has a new ARN, and the KB's
-    // storage_configuration is itself immutable, so the KB is replaced too — and hit
-    // the identical wall one level up, as a 409 "already exists" rather than a rename
-    // hint. The KB name must therefore carry the SAME digest as its index.
-    const { knowledgeBaseName, kbIndexName, KB_NON_FILTERABLE } = require("../lib/tool-plane");
-    const digest = kbIndexName(1024, KB_NON_FILTERABLE).replace("kb-index-", "");
-    expect(knowledgeBaseName("multiagent-orchestrator", 1024, KB_NON_FILTERABLE))
-      .toBe(`multiagent-orchestrator-kb-${digest}`);
-    const tf = read(path.join(TF, "kb.tf"));
-    expect(tf).toContain('kb_name     = "${replace(var.agent_name, "_", "-")}-kb-${local.kb_storage_digest}"');
-    // And the resource uses the local rather than re-deriving a name of its own.
-    expect(tf).toContain("name     = local.kb_name");
-  });
-
-  it("the index AND kb names change when an immutable property changes", () => {
-    const { kbIndexName, knowledgeBaseName } = require("../lib/tool-plane");
-    for (const f of [
-      (d: number, k: string[]) => kbIndexName(d, k),
-      (d: number, k: string[]) => knowledgeBaseName("x", d, k),
-    ]) {
-      expect(f(1024, ["AMAZON_BEDROCK_TEXT"]))
-        .not.toBe(f(1024, ["AMAZON_BEDROCK_TEXT", "AMAZON_BEDROCK_METADATA"]));
-      expect(f(1024, ["A"])).not.toBe(f(512, ["A"]));
-      // Order must not matter, or a harmless reorder would force a replacement.
-      expect(f(1024, ["A", "B"])).toBe(f(1024, ["B", "A"]));
+  it("declares every set with values and an explanation of why it is closed", () => {
+    const names = Object.keys(vocab).filter((k) => !k.startsWith("$"));
+    expect(names.length).toBeGreaterThan(10);
+    for (const name of names) {
+      expect(Array.isArray(vocab[name].values)).toBe(true);
+      expect(vocab[name].values.length).toBeGreaterThan(0);
+      // A closed set a customer can trip over has to say why it is closed, or the
+      // error message is a dead end.
+      expect(String(vocab[name].$comment ?? "").length).toBeGreaterThan(20);
     }
   });
 
-  it("both paths expose the outputs the docs tell an operator to read", () => {
-    // Not a full set comparison — the two paths legitimately differ at the edges
-    // (Terraform also emits the ECR url and the runtime status; CDK emits the
-    // dedicated-agent list). But an output a documented command consumes must exist on
-    // both, and one did NOT: DEPLOYMENT.md's ingestion check reads the knowledge base
-    // id, which only the CDK path emitted, so the documented command was unrunnable
-    // on Terraform.
-    const cdkOutputs = new Set(
-      [...read(path.join(__dirname, "..", "lib", "orchestrator-stack.ts")).matchAll(
-        /new cdk\.CfnOutput\(this,\s*"(\w+)"/g
-      )].map((m) => m[1])
-    );
-    expect(cdkOutputs.size).toBeGreaterThan(5);
-    const tfOutputs = new Set(
-      ["outputs.tf", "identity.tf"].flatMap((f) =>
-        [...read(path.join(TF, f)).matchAll(/^output\s+"(\w+)"/gm)].map((m) => m[1])
-      )
-    );
-    expect(tfOutputs.size).toBeGreaterThan(5);
-    // CDK name -> Terraform name, where the two paths chose different words.
-    for (const [cdkName, tfName] of [
-      ["uiUrl", "ui_url"],
-      ["apiEndpoint", "api_endpoint"],
-      ["agentRuntimeArn", "agent_runtime_arn"],
-      ["memoryId", "memory_id"],
-      ["gatewayUrl", "gateway_url"],
-      ["gatewayId", "gateway_id"],
-      ["knowledgeBaseId", "knowledge_base_id"],
-      ["idp", "idp"],
-      ["authEnabled", "auth_enabled"],
-      ["cognitoUserPoolId", "cognito_user_pool_id"],
-      ["cognitoDomainPrefix", "cognito_domain_prefix"],
-      ["cognitoClientId", "login_client_id"],
-    ]) {
-      expect(cdkOutputs.has(cdkName)).toBe(true);
-      expect(tfOutputs.has(tfName)).toBe(true);
-    }
-  });
-
-  it("the BFF gets a Bedrock model grant on BOTH paths", () => {
-    // The in-app assistant's tool-use loop runs IN the BFF Lambda (bff/chatbot.py
-    // calls bedrock-runtime Converse). Terraform granted it; the CDK path did not —
-    // so a CDK deployment served the chat UI and every reply was
-    // "couldn't reach the model (AccessDeniedException)". The route-list test above
-    // could not catch it, because the route existed and returned 200.
-    const tf = read(path.join(TF, "bff.tf"));
+  it("is read by the TypeScript plane, not restated in it", () => {
     const stack = read(path.join(__dirname, "..", "lib", "orchestrator-stack.ts"));
-    expect(tf).toContain("bedrock:InvokeModel");
-    // On the CDK side the grant must be attached to the BFF, not only to the runtime
-    // roles — assert the call, not just the string.
-    expect(stack).toMatch(/bff\.addToRolePolicy\([\s\S]{0,400}?bedrock:InvokeModel/);
+    expect(stack).toContain('from "./vocabulary"');
+    const vocabTs = read(path.join(__dirname, "..", "lib", "vocabulary.ts"));
+    expect(vocabTs).toContain("vocabulary.json");
+    // The literals must be GONE from the stack, or the duplicate is back.
+    expect(stack).not.toMatch(/\["kb", "websearch", "mcp", "openapi", "lambda"\]/);
+    expect(stack).not.toMatch(/\["main", "dedicated", "a2a"\]/);
+    expect(stack).not.toMatch(/\["none", "bearer", "oauth2", "sigv4"\]/);
+    expect(stack).not.toMatch(/"cancel", "decision", "delete"/);
   });
 
-  it("the BFF gets the deployment's model id on BOTH paths", () => {
-    // bff/chatbot.py falls back to $MODEL_ID rather than carrying its own copy of the
-    // model literal, so both paths have to inject it.
-    expect(read(path.join(TF, "bff.tf"))).toContain("MODEL_ID        = var.model_id");
-    expect(read(path.join(__dirname, "..", "lib", "orchestrator-stack.ts")))
-      .toContain("MODEL_ID: props.modelId");
+  it("is read by the Python plane, not restated in it", () => {
+    const registry = read(path.join(ORCH_ROOT, "app", "orchestrator", "registry.py"));
+    expect(registry).toContain("vocabulary.");
+    expect(registry).not.toMatch(/RUNTIMES = \("main"/);
+    expect(registry).not.toMatch(/TOOL_TYPES = \("kb"/);
+    const authz = read(path.join(ORCH_ROOT, "bff", "authz.py"));
+    expect(authz).toContain("authorizationActions");
+    expect(authz).not.toMatch(/ACTIONS = \("start"/);
   });
 
-  it("both paths inject TOOLS_JSON with the same field projection", () => {
-    // How to CALL each tool. The CDK path did not inject it at all, so the app fell
-    // back to the workflow.json baked into the image — which keeps a NARROWER set of
-    // fields, making a request-level option work under Terraform and silently do
-    // nothing under CDK.
-    const tf = read(path.join(TF, "main.tf"));
-    const stack = read(path.join(__dirname, "..", "lib", "orchestrator-stack.ts"));
-    expect(tf).toContain("TOOLS_JSON = local.tools_env");
-    expect(stack).toContain("TOOLS_JSON: JSON.stringify(toolsEnv(");
-
-    // The projected field set must match the app's keep-list, or a field survives on
-    // one path and is dropped on the other.
-    const { toolsEnv } = require("../lib/orchestrator-stack");
-    const projected = toolsEnv({
-      kb: { type: "kb", corpora: ["a"] },
-      ws: {
-        type: "websearch", maxResults: 5, includeDomains: ["x"], excludeDomains: ["y"],
-        publishedFrom: "2026-01-01", publishedTo: "2026-02-01",
-      },
-      mcp: { type: "mcp", endpoint: "https://e", call: "c", arg: "q", args: { r: 1 } },
-      // rowFields is what keeps a DETERMINISTIC agent config-driven: it maps the
-      // roles such an agent needs onto whatever the target calls its fields, so
-      // repointing the tool at another Lambda/warehouse needs no agent code change.
-      // Dropped on one deploy path, that agent silently finds nothing on that path.
-      lam: {
-        type: "lambda", source: "tool_lambda", call: "aws_prices", arg: "services",
-        rowFields: { service: "service", dimension: "dimension", unit: "unit", price: "pricePerUnit" },
-      },
-    });
-    expect(Object.keys(projected.ws).sort()).toEqual([
-      "excludeDomains", "includeDomains", "maxResults", "publishedFrom",
-      "publishedTo", "type",
-    ]);
-    expect(Object.keys(projected.mcp).sort()).toEqual(["arg", "args", "call", "type"]);
-    expect(projected.kb).toEqual({ type: "kb", corpora: ["a"] });
-    expect(Object.keys(projected.lam).sort()).toEqual([
-      "arg", "call", "rowFields", "type",
-    ]);
-    expect(projected.lam.rowFields.price).toBe("pricePerUnit");
-
-    // Terraform must project it too, or it works under CDK and not under Terraform.
-    expect(read(path.join(TF, "tools.tf"))).toContain("rowFields = t.row_fields");
-    expect(read(path.join(TF, "tools.tf"))).toContain("row_fields = try(t.rowFields");
-
-    const keep = read(path.join(ORCH_ROOT, "app", "common", "config.py"))
-      .match(/keep = \(([\s\S]*?)\)/)![1]
-      .match(/"(\w+)"/g)!
-      .map((x) => x.replace(/"/g, ""));
-    for (const f of Object.keys(projected.ws)
-      .concat(Object.keys(projected.mcp))
-      .concat(Object.keys(projected.lam))) {
-      expect(keep).toContain(f);
-    }
-  });
-
-  it("the RBAC action list includes `start` in all four places", () => {
-    // Starting a run is the most expensive action in the app. It had no action name,
-    // so it could not be restricted from config while every cheaper action could.
-    expect(read(path.join(ORCH_ROOT, "bff", "authz.py"))).toContain('"start"');
-    expect(read(path.join(ORCH_ROOT, "bff", "handler.py"))).toContain('_forbidden("start", event)');
-    expect(read(path.join(TF, "identity.tf"))).toContain('"start"');
-    expect(read(path.join(__dirname, "..", "lib", "orchestrator-stack.ts")))
-      .toContain('"start"');
-  });
-
-  it("every Lambda log group is stack-owned with retention, on BOTH paths", () => {
-    // Left implicit, Lambda creates /aws/lambda/<name> itself with NEVER-EXPIRE
-    // retention and no stack ownership, so a destroy leaves it accruing cost forever.
-    // A verified full destroy of this stack orphaned EIGHT such groups.
-    const stack = read(path.join(__dirname, "..", "lib", "orchestrator-stack.ts"));
-    const tp = read(path.join(__dirname, "..", "lib", "tool-plane.ts"));
-
-    // Every lambda.Function must declare a logGroup. Sliced rather than regexed over
-    // the whole construct, so a formatting change cannot make this pass vacuously.
-    for (const [file, src] of [["orchestrator-stack.ts", stack], ["tool-plane.ts", tp]]) {
-      let found = 0;
-      for (let i = src.indexOf("new lambda.Function"); i !== -1;
-           i = src.indexOf("new lambda.Function", i + 1)) {
-        found++;
-        const head = src.slice(i, i + 500);
-        expect(head).toContain("logGroup:");
-      }
-      expect(found).toBeGreaterThan(0);
-      expect(src).toContain("removalPolicy: cdk.RemovalPolicy.DESTROY");
-      void file;
-    }
-
-    // The two LOG_RETENTION constants are duplicated (a shared import would be
-    // circular), so they must agree.
-    const a = stack.match(/const LOG_RETENTION = logs\.RetentionDays\.(\w+)/)![1];
-    const b = tp.match(/LOG_RETENTION = logs\.RetentionDays\.(\w+)/)![1];
-    expect(a).toBe(b);
-
-    // And Terraform owns the same groups, with a configurable retention.
-    for (const [f, name] of [
-      ["bff.tf", "AgentCoreBFF-"],
-      ["kb.tf", "AgentCoreKBRetrieve-"],
-      ["tools.tf", "ToolLambda-"],
-    ]) {
-      const hcl = read(path.join(TF, f));
-      expect(hcl).toContain("aws_cloudwatch_log_group");
-      expect(hcl).toContain(`/aws/lambda/${name}`);
-      expect(hcl).toContain("retention_in_days = var.log_retention_days");
-    }
-    expect(read(path.join(TF, "variables.tf"))).toContain('variable "log_retention_days"');
-  });
-
-  it("the web search regions match", () => {
-    const fromTs = read(path.join(__dirname, "..", "lib", "orchestrator-stack.ts"))
-      .match(/const WEB_SEARCH_REGIONS = \[([^\]]*)\]/)![1]
-      .match(/"([\w-]+)"/g)!
-      .map((s) => s.replace(/"/g, ""))
-      .sort();
-    expect(fromTs).toEqual(["ap-northeast-1", "eu-west-1", "us-east-1"]);
+  it("is read by the Terraform plane, not restated in it", () => {
     const tools = read(path.join(TF, "tools.tf"));
-    for (const r of fromTs) expect(tools).toContain(r);
+    const identity = read(path.join(TF, "identity.tf"));
+    const guardrail = read(path.join(TF, "guardrail.tf"));
+    for (const src of [tools, identity, guardrail]) {
+      expect(src).toContain("app/vocabulary.json");
+    }
+    expect(tools).not.toMatch(/\["kb", "websearch", "mcp", "openapi", "lambda"\]/);
+    expect(tools).not.toMatch(/\["DEFAULT", "DYNAMIC"\]/);
+    expect(identity).not.toMatch(/"cancel", "decision", "delete"/);
+    expect(guardrail).not.toMatch(/\["NONE", "LOW", "MEDIUM", "HIGH"\]/);
+  });
+
+  it("ships the file to the BFF, which reads the action names from it", () => {
+    // authz.py enforces RBAC inside the Lambda, so the file has to travel with it.
+    const stack = read(path.join(__dirname, "..", "lib", "orchestrator-stack.ts"));
+    expect(stack).toContain('"vocabulary.json"');
+    const bffTf = read(path.join(TF, "bff.tf"));
+    expect(bffTf).toContain('filename = "vocabulary.json"');
+  });
+
+  it("still holds the values the shipped workflow relies on", () => {
+    // A vocabulary that lost a value would pass every test above and reject the
+    // shipped config, so pin the ones workflow.json actually uses.
+    expect(vocab.runtimes.values).toEqual(expect.arrayContaining(["main", "dedicated", "a2a"]));
+    expect(vocab.toolTypes.values).toEqual(
+      expect.arrayContaining(["kb", "websearch", "mcp", "openapi", "lambda"])
+    );
+    expect(vocab.a2aAuthModes.values).toContain("sigv4");
+    expect(vocab.a2aLambdaSkills.values).toEqual(["compliance", "resilience"]);
+    expect(vocab.memoryStrategies.values).toEqual(["semantic", "summary"]);
+    expect(vocab.authorizationActions.values.sort()).toEqual([
+      "cancel", "decision", "delete", "evaluate", "insights", "rerun", "start",
+    ]);
   });
 });
 

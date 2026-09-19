@@ -700,7 +700,18 @@
       // legacy rows have a numeric sk that also sorts correctly among themselves.
       const calls = flowCalls.filter((c) => c.agent_id === agentId)
         .sort((a, b) => String(a.sk || a.ts || "").localeCompare(String(b.sk || b.ts || "")));
-      const rate = (c, k) => (c.kind === "llm" && Number(c[k] || 0)) ? "$" + Number(c[k]).toFixed(2) : "—";
+      // A rate is "$x.xx" when it is a real price and "~$x.xx" when pricing.py did not
+      // recognise the model and fell back to a guess (rates_known === false). The
+      // fallback used to be invisible, so a customer on a model the price table has
+      // never heard of read fabricated cost figures as measured ones.
+      const rate = (c, k) => {
+        if (c.kind !== "llm" || !Number(c[k] || 0)) return "—";
+        const guessed = c.rates_known === false;
+        const text = (guessed ? "~$" : "$") + Number(c[k]).toFixed(2);
+        return guessed
+          ? `<span title="estimated: no rate configured for this model — set orchestrator.modelRates in workflow.json">${text}</span>`
+          : text;
+      };
       // System-prompt tokens: exact via Bedrock CountTokens; a "~" marks the rare
       // estimate fallback.
       const sysCell = (c) => {
@@ -860,7 +871,7 @@
     }
     const head = ["agent_id", "kind", "label", "mode", "status", "version", "prompt",
       "input_tokens", "output_tokens", "system_tokens", "system_tokens_exact",
-      "embed_tokens_est", "in_rate", "out_rate", "latency_ms", "cost_usd", "value",
+      "embed_tokens_est", "in_rate", "out_rate", "rates_known", "latency_ms", "cost_usd", "value",
       "eval_label", "namespace", "finish_reason", "ts"];
     // embed_tokens_est = estimated KB-query embedding tokens (tool rows);
     // value = the evaluator score (eval rows); namespace = memory rows.

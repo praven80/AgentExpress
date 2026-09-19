@@ -328,29 +328,40 @@ def test_every_action_name_actually_guards_a_route(monkeypatch):
         f"  enforced but not nameable in workflow.json: {sorted(guarded - set(authz.ACTIONS))}")
 
 
-def test_both_iac_paths_check_against_that_same_list(monkeypatch):
-    """So a typo'd action name fails the deploy rather than silently gating nothing."""
-    import re
+def test_all_three_planes_read_the_action_list_from_one_file(monkeypatch):
+    """So a typo'd action name fails the deploy rather than silently gating nothing —
+    and so the three planes cannot disagree about what a valid action IS.
 
+    This used to scrape the list out of each language and compare the copies. That was a
+    test that three hand-written lists had not drifted, which is weaker than removing the
+    duplicate: a value added to one copy and missed in another rejected a config the
+    other planes accepted, so whether a workflow deployed depended on which IaC path you
+    used. `app/vocabulary.json` is the single home now, and this asserts each plane
+    reads it.
+    """
     from conftest import ORCH_ROOT
 
     authz = load_authz(None, monkeypatch)
-    expected = sorted(authz.ACTIONS)
+    vocab = json.loads((ORCH_ROOT / "app" / "vocabulary.json").read_text())
 
-    # Read the allow-list each IaC path validates against, rather than grepping for
-    # the names anywhere in the file — a name that merely APPEARS somewhere proves
-    # nothing about what the precondition checks.
+    # The enforcing plane and the file agree, and the file is where the names live.
+    assert sorted(authz.ACTIONS) == sorted(vocab["authorizationActions"]["values"])
+
+    # Each plane READS the file rather than restating the names.
     tf = "\n".join(p.read_text() for p in (ORCH_ROOT / "terraform").glob("*.tf"))
-    tf_list = re.search(r"authz_known_actions\s*=\s*\[([^\]]*)\]", tf)
-    assert tf_list, "terraform has no authz_known_actions list to validate against"
-    assert sorted(re.findall(r'"([a-z_]+)"', tf_list.group(1))) == expected, (
-        "terraform's authz_known_actions disagrees with authz.ACTIONS")
+    assert "app/vocabulary.json" in tf
+    assert "authorizationActions.values" in tf, (
+        "terraform no longer takes the action list from the vocabulary file")
 
     cdk = (ORCH_ROOT / "cdk" / "lib" / "orchestrator-stack.ts").read_text()
-    cdk_list = re.search(r"knownActions\s*=\s*\[([^\]]*)\]", cdk)
-    assert cdk_list, "the CDK path has no knownActions list to validate against"
-    assert sorted(re.findall(r'"([a-z_]+)"', cdk_list.group(1))) == expected, (
-        "the CDK path's knownActions disagrees with authz.ACTIONS")
+    assert "vocab.AUTHORIZATION_ACTIONS" in cdk, (
+        "the CDK path no longer takes the action list from the vocabulary file")
+
+    # And the literals are gone, or the duplicate has quietly come back.
+    for plane, src in (("terraform", tf), ("cdk", cdk),
+                       ("bff/authz.py", (ORCH_ROOT / "bff" / "authz.py").read_text())):
+        assert '"cancel", "decision", "delete"' not in src, (
+            f"{plane} has a hand-written copy of the action names again")
 
 
 def test_the_tool_types_are_closed_by_what_the_framework_can_provision():

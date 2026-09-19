@@ -549,6 +549,19 @@ keeps. Every one of those actually shipped at some point. Both suites were
 mutation-checked — each bug was reintroduced and confirmed to turn the suite red —
 rather than merely being green. See the two `README.md` files in those directories.
 
+**The framework's closed value sets live in ONE file**, `orchestrator/app/vocabulary.json`,
+read by all three planes: `app/common/vocabulary.py` via `json`, `cdk/lib/vocabulary.ts` via
+`JSON.parse`, and `terraform/*.tf` via `jsondecode(file(...))`. Runtimes, tool types,
+tool-schema property types, a2a auth modes and sources, memory strategies, the RBAC action
+names, guardrail strengths and PII actions are each declared once, with a comment saying why
+that set is closed.
+
+They used to be written out two or three times — the tool types and the RBAC action names
+existed in all three languages — and a copy that got missed rejected a config the other planes
+accepted, so whether a workflow deployed depended on which IaC path you used. It is
+framework-owned rather than part of `workflow.json` on purpose: a customer's file must not be
+able to widen a set the framework enforces.
+
 The parity suite exists because nothing structural keeps the two IaC paths in step:
 they are independent implementations of the same infrastructure, and the one time they
 drifted it was found by comparing two live deployments. It reads the HCL as text and

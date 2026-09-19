@@ -37,14 +37,24 @@ buys nothing.
 """
 
 import json
+from pathlib import Path
 
 import workflow
+
+# The framework's closed value sets, from app/vocabulary.json — the same file the
+# runtime, the CDK stack and the Terraform preconditions read. This list lived in three
+# places, and a copy that drifted meant an action name one plane accepted and another
+# rejected. Bundled next to this module by both IaC paths (see the BFF package staging).
+_VOCAB_PATH = Path(__file__).resolve().parent / "vocabulary.json"
+if not _VOCAB_PATH.exists():  # a source checkout, where nothing has staged a copy yet
+    _VOCAB_PATH = Path(__file__).resolve().parent.parent / "app" / "vocabulary.json"
+_VOCAB = json.loads(_VOCAB_PATH.read_text())
 
 # The mutating actions this module knows about. Keys are what workflow.json uses.
 # `delete` (removing a completed run and its timeline) is included because it is
 # irreversible; it is not an approval, but leaving it open while gating `cancel`
 # would be inconsistent.
-ACTIONS = ("start", "decision", "rerun", "cancel", "evaluate", "insights", "delete")
+ACTIONS = tuple(_VOCAB["authorizationActions"]["values"])
 
 # From the RAW workflow, not the browser projection: these rules are enforced
 # server-side, and the projection exists to limit what LEAVES the server. Reading

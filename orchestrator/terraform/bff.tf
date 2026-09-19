@@ -35,6 +35,13 @@ data "archive_file" "bff" {
     content  = file("${path.module}/../app/workflow.json")
     filename = "workflow.json"
   }
+
+  # The framework's closed value sets. bff/authz.py reads the RBAC action names from
+  # here rather than keeping a third copy of them.
+  source {
+    content  = file("${path.module}/../app/vocabulary.json")
+    filename = "vocabulary.json"
+  }
 }
 
 resource "aws_iam_role" "bff" {

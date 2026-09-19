@@ -67,6 +67,11 @@ TOP_LEVEL = {
 
 ORCHESTRATOR_KEYS = {
     "defaultModel": "config.py:MODEL_ID fallback",
+    "modelRates": ("config.py:MODEL_RATES -> observability/pricing.py; per-model token "
+                   "rates so a customer's own model is costed correctly without a "
+                   "framework edit. Unknown models are marked rates_known=False"),
+    "insights": ("config.py:INSIGHTS -> features/optimization/insights.py "
+                 "(lookbackHours, pollTimeoutSeconds, pollIntervalSeconds)"),
     "runtimeInvoke": "config.py:RUNTIME_INVOKE -> agentcore_agent._agentcore (SDK retries/timeout)",
     "a2aInvoke": "config.py:A2A_INVOKE -> a2a_agent (request timeout, poll interval, poll budget)",
     "policy": "policy.tf / tool-plane.ts - Cedar engine on/off + mode",
@@ -360,3 +365,94 @@ def test_the_shipped_workflow_passes_feature_validation():
     from app.orchestrator.registry import validate_features
 
     validate_features()
+
+
+# ---------------------------------------------------------------------------
+# The framework vocabulary has ONE home
+# ---------------------------------------------------------------------------
+# Every closed value set used to be written out two or three times — in Python, in
+# cdk/lib/*.ts and in terraform/*.tf. `toolTypes` and the RBAC action names existed in
+# all three. Adding a value meant finding every copy, and a copy that got missed
+# rejected a config the other planes accepted, so whether a workflow deployed depended
+# on which IaC path you used. app/vocabulary.json is the single source now.
+
+def _vocab() -> dict:
+    return json.loads((ORCH_ROOT / "app" / "vocabulary.json").read_text())
+
+
+def test_the_python_plane_reads_the_vocabulary_file():
+    from app.common import vocabulary
+
+    raw = _vocab()
+    assert tuple(raw["runtimes"]["values"]) == vocabulary.RUNTIMES
+    assert tuple(raw["toolTypes"]["values"]) == vocabulary.TOOL_TYPES
+    assert tuple(raw["memoryStrategies"]["values"]) == vocabulary.MEMORY_STRATEGIES
+    assert raw["builtinLambdaSource"]["values"][0] == vocabulary.BUILTIN_LAMBDA_SOURCE
+
+
+def test_the_registry_validates_against_the_file_not_its_own_copy():
+    """A local tuple would pass every other test here while drifting from the IaC."""
+    from app.common import vocabulary
+    from app.orchestrator import registry
+
+    assert registry.RUNTIMES is vocabulary.RUNTIMES
+    assert registry.TOOL_TYPES is vocabulary.TOOL_TYPES
+    assert registry.MEMORY_STRATEGIES is vocabulary.MEMORY_STRATEGIES
+    assert registry.A2A_SOURCES is vocabulary.A2A_SOURCES
+    assert registry.A2A_LAMBDA_SKILLS is vocabulary.A2A_LAMBDA_SKILLS
+    assert registry.AUTH_MODES is vocabulary.A2A_AUTH_MODES
+
+
+def test_an_undeclared_vocabulary_raises_rather_than_returning_an_empty_set():
+    """An empty set would make every value invalid, or every value valid, depending on
+    how the caller uses it. Neither is a safe silent default."""
+    from app.common import vocabulary
+
+    with pytest.raises(KeyError, match="not a vocabulary"):
+        vocabulary.values("thingsThatDoNotExist")
+
+
+def test_every_declared_set_is_non_empty_and_explains_why_it_is_closed():
+    """A closed set a customer can trip over must say WHY, or its error message is a
+    dead end."""
+    for name, block in _vocab().items():
+        if name.startswith("$"):
+            continue
+        assert block.get("values"), f"{name} declares no values"
+        assert len(str(block.get("$comment") or "")) > 20, (
+            f"{name} does not explain why it is closed")
+
+
+def test_the_vocabulary_is_framework_owned_not_customer_owned():
+    """It is deliberately NOT part of workflow.json: a customer's file must not be able
+    to widen a set the framework enforces."""
+    wf = wf_raw = json.loads((ORCH_ROOT / "app" / "workflow.json").read_text())
+    assert "vocabulary" not in wf
+    for key in _vocab():
+        if key.startswith("$"):
+            continue
+        assert key not in wf_raw, f"{key} leaked into the customer's workflow.json"
+    # And it must say so, because it sits next to workflow.json.
+    assert "NOT a file a customer edits" in _vocab()["$comment"]
+
+
+def test_the_shipped_workflow_only_uses_declared_values():
+    """The point of the file: every value the sample uses is in the vocabulary, so all
+    three planes accept it."""
+    from app.common import vocabulary
+
+    w = wf()
+    for aid, agent in w["agents"].items():
+        assert (agent.get("runtime") or "main") in vocabulary.RUNTIMES, aid
+        if agent.get("auth"):
+            assert agent["auth"] in vocabulary.A2A_AUTH_MODES, aid
+        if agent.get("source"):
+            assert agent["source"] in vocabulary.A2A_SOURCES, aid
+        if agent.get("skill"):
+            assert agent["skill"] in vocabulary.A2A_LAMBDA_SKILLS, aid
+        for strategy in ((agent.get("agentcore") or {}).get("memory") or {}).get("longTerm") or []:
+            assert strategy in vocabulary.MEMORY_STRATEGIES, aid
+    for label, tool in (w.get("tools") or {}).items():
+        assert tool["type"] in vocabulary.TOOL_TYPES, label
+    for action in (w.get("authorization") or {}).get("actions") or {}:
+        assert action in vocabulary.AUTHORIZATION_ACTIONS, action

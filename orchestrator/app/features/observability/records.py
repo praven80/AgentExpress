@@ -37,6 +37,12 @@ class CallRecord:
     output_tokens: int = 0         # exact model tokens
     system_tokens: int = 0         # system prompt slice of input (exact via CountTokens, else estimated)
     system_tokens_exact: bool = True   # False when CountTokens was unavailable and we estimated
+    # False when neither `orchestrator.modelRates` nor pricing.py's built-in table knew
+    # this model and the fallback rate was used, so `cost_usd`/`in_rate`/`out_rate` on
+    # this row are a GUESS. Same idea as system_tokens_exact above, applied to prices:
+    # the fallback used to be invisible, so a customer on a model pricing.py has never
+    # heard of read fabricated figures as measured ones.
+    rates_known: bool = True
     embed_tokens_est: int = 0      # estimate: KB query embedding tokens (tool rows)
     latency_ms: int = 0
     cost_usd: Decimal = Decimal(0)

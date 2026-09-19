@@ -540,7 +540,16 @@ export class ToolPlane extends Construct {
         code: lambda.Code.fromAsset(path.join(orchRoot, "kb_lambda")),
         timeout: cdk.Duration.seconds(30),
         memorySize: 256,
-        environment: { KB_ID: kb.attrKnowledgeBaseId },
+        environment: {
+          KB_ID: kb.attrKnowledgeBaseId,
+          // Retrieval depth, from `tools.<kb>.maxResults` in app/workflow.json. It was
+          // a Lambda-only env var that NO IaC set, so depth was frozen at the
+          // handler's default of 5 and the only way to change it was hand-editing a
+          // deployed function — while `tools.<websearch>.maxResults` was a config key.
+          // Same key name on both tool types now. Mirrors local.kb_max_results in
+          // terraform/tools.tf.
+          KB_NUM_RESULTS: String(kbEntry?.[1]?.maxResults ?? 5),
+        },
       });
       kbLambda.addToRolePolicy(
         new iam.PolicyStatement({ actions: ["bedrock:Retrieve"], resources: [kb.attrKnowledgeBaseArn] })

@@ -23,6 +23,7 @@ import os
 import time
 from datetime import UTC
 
+from app.common.config import INSIGHTS as CONFIG_INSIGHTS
 from app.common.config import REGION
 
 _INSIGHTS_TABLE = os.getenv("INSIGHTS_TABLE", "")
@@ -34,9 +35,14 @@ _INSIGHT_IDS = [
     "Builtin.Insight.ExecutionSummary",
 ]
 
-_POLL_TIMEOUT = 900          # insights over many sessions can take several minutes
-_POLL_INTERVAL = 20
-_DEFAULT_LOOKBACK_HOURS = 168  # 7 days of runs
+# Timings, from `orchestrator.insights` in workflow.json. Insights was the ONE feature
+# with no config block at all — evaluations, guardrails, policy, memory and the chatbot
+# all have one — so a customer whose runs take longer than fifteen minutes to analyse,
+# or who wants a different default window, had to edit this file.
+_INSIGHTS_CFG = CONFIG_INSIGHTS
+_POLL_TIMEOUT = int(_INSIGHTS_CFG.get("pollTimeoutSeconds") or 900)
+_POLL_INTERVAL = int(_INSIGHTS_CFG.get("pollIntervalSeconds") or 20)
+_DEFAULT_LOOKBACK_HOURS = int(_INSIGHTS_CFG.get("lookbackHours") or 168)  # 7 days of runs
 _TERMINAL = ("COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "STOPPED")
 
 
@@ -55,14 +61,25 @@ def _now() -> str:
     return clock.now_str()
 
 
-def _store(fields: dict) -> None:
+def _store(fields: dict) -> str:
+    """Persist the latest insights state. Returns "" on success, else the reason.
+
+    RETURNS the failure instead of only printing it. It used to swallow its own write
+    error entirely, so `run_batch` could hand the caller
+    `{"status": "COMPLETED", "findings": {...}}` while the table held nothing at all and
+    `get_latest()` — which the UI reads — reported `{"status": "none"}`. The run looked
+    successful from the API and absent from the panel, with no way to connect the two.
+    """
     if not _INSIGHTS_TABLE:
-        return
+        return "INSIGHTS_TABLE is not set, so there is nowhere to persist findings"
     try:
         item = {"id": _INSIGHTS_KEY, "updated_at": _now(), **fields}
         _table().put_item(Item=item)
     except Exception as e:  # noqa: BLE001
-        print(f"[insights] store failed: {type(e).__name__}: {e}")
+        reason = f"{type(e).__name__}: {e}"
+        print(f"[insights] store failed: {reason}")
+        return reason
+    return ""
 
 
 def _load() -> dict:
@@ -75,15 +92,19 @@ def _load() -> dict:
         return {}
 
 
-def _known_sessions() -> set:
+def _known_sessions() -> set | None:
     """Session ids that still exist in the status table (i.e. still openable in
     the UI). Insights analyzes CloudWatch runtime traces over a window that can
     outlive a run's DynamoDB rows, so some analyzed sessions are no longer
     openable — we flag each session's `available` so the UI can disable dead
-    links instead of opening an empty run view. Best-effort -> empty set."""
+    links instead of opening an empty run view.
+
+    Returns None when we could not find out (no STATUS_TABLE, or the scan failed or was
+    denied), which `_avail` treats differently from an empty set. Returning an empty set
+    for a FAILED scan is what made every link look openable."""
     table = os.getenv("STATUS_TABLE", "")
     if not table:
-        return set()
+        return None
     try:
         import boto3
         t = boto3.resource("dynamodb", region_name=REGION).Table(table)
@@ -100,14 +121,27 @@ def _known_sessions() -> set:
         return out
     except Exception as e:  # noqa: BLE001
         print(f"[insights] known-sessions scan failed: {type(e).__name__}: {e}")
-        return set()
+        # None, not an empty set. "The scan failed" and "there are no runs" are
+        # different facts and _avail has to tell them apart — see below.
+        return None
 
 
-def _avail(sid: str, known: set) -> bool:
-    """Whether a run is still openable in the UI. When `known` is empty we can't
-    tell (no sessions, or the scan failed/was not permitted), so default to
-    available rather than greying out every link."""
-    return (not known) or (sid in known)
+def _avail(sid: str, known: set | None) -> bool:
+    """Whether a run is still openable in the UI.
+
+    `known is None` means we could not find out (no STATUS_TABLE, or the scan failed or
+    was denied), so every link is reported available rather than greying them all out.
+    `known == set()` means we DID find out and there are no runs, so nothing is
+    openable.
+
+    Those two used to collapse into one: the scan returned an empty set on any
+    exception and this returned `not known` — True — so a failed or unauthorised scan
+    reported every findings link as openable, and clicking one opened an empty run view
+    with nothing anywhere to say the availability check had not actually run.
+    """
+    if known is None:
+        return True
+    return sid in known
 
 
 def _short_sid(sid) -> str:
@@ -296,23 +330,56 @@ def run_batch(lookback_hours: int = _DEFAULT_LOOKBACK_HOURS, user: str = "") -> 
             "started_by": user or "", "findings_json": ""})
 
     # Poll to completion (blocking; runs in a worker thread the runtime keeps alive).
+    #
+    # Every way out of this loop is now RECORDED. It used to `break` on a polling
+    # exception and fall through to `status = resp.get("status") or "IN_PROGRESS"`,
+    # which stored IN_PROGRESS with no error — so a run that had actually failed to poll
+    # (or had timed out) sat in the panel as "in progress" forever, and there was
+    # nothing anywhere saying why. The same happened on deadline expiry.
     deadline = time.time() + _POLL_TIMEOUT
     resp: dict = {}
-    while time.time() < deadline:
+    poll_error = ""
+    timed_out = False
+    while True:
+        if time.time() >= deadline:
+            timed_out = True
+            break
         try:
             resp = ac.get_batch_evaluation(batchEvaluationId=batch_id)
         except Exception as e:  # noqa: BLE001
-            print(f"[insights] GetBatchEvaluation failed: {type(e).__name__}: {e}")
+            poll_error = f"{type(e).__name__}: {e}"
+            print(f"[insights] GetBatchEvaluation failed: {poll_error}")
             break
         if resp.get("status") in _TERMINAL:
             break
         time.sleep(_POLL_INTERVAL)
 
     status = resp.get("status") or "IN_PROGRESS"
+    error = ""
+    if poll_error:
+        # The batch may well still be running AWS-side; what failed is our ability to
+        # observe it. Say that, rather than implying the analysis itself failed.
+        error = (f"the analysis was started but its progress could not be read: "
+                 f"{poll_error}. It may still complete — reopen the panel to re-poll.")
+    elif timed_out:
+        error = (f"the analysis did not finish within {_POLL_TIMEOUT}s and is still "
+                 f"running AWS-side. Reopen the panel to re-poll, or raise "
+                 f"orchestrator.insights.pollTimeoutSeconds in workflow.json.")
+
     findings = _findings(resp) if status in ("COMPLETED", "COMPLETED_WITH_ERRORS") else {}
-    _store({"status": status, "batch_id": batch_id, "batch_arn": batch_arn,
-            "started_by": user or "", "findings_json": json.dumps(findings)})
-    return {"status": status, "batch_id": batch_id, "findings": findings}
+    store_error = _store({"status": status, "batch_id": batch_id, "batch_arn": batch_arn,
+                          "started_by": user or "", "error": error,
+                          "findings_json": json.dumps(findings)})
+    result = {"status": status, "batch_id": batch_id, "findings": findings}
+    if error:
+        result["error"] = error
+    if store_error:
+        # Do not report success for findings the UI will never see: get_latest() reads
+        # the table, so a failed write means the panel shows nothing.
+        result["status"] = "error"
+        result["error"] = (f"{error + ' ' if error else ''}the findings could not be "
+                           f"persisted, so the panel will not show them: {store_error}")
+    return result
 
 
 def get_latest() -> dict:

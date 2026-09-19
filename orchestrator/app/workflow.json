@@ -3,6 +3,7 @@
   "orchestrator": {
     "defaultModel": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
     "runtimeInvoke": { "maxAttempts": 1, "readTimeoutSeconds": 120 },
+    "insights": { "lookbackHours": 168, "pollTimeoutSeconds": 900, "pollIntervalSeconds": 20 },
     "policy": { "enabled": true, "mode": "ENFORCE" },
     "chatbot": {
       "enabled": true,
@@ -73,6 +74,7 @@
       "type": "kb",
       "description": "Bedrock Knowledge Base over kb_docs/, on S3 Vectors, via a Gateway Lambda target. Each top-level folder under kb_docs/ is a corpus (doc_type) an agent can be scoped to.",
       "corpora": ["reference"],
+      "maxResults": 5,
       "policy": {
         "tool": "retrieve",
         "restrictTo": {

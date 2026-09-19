@@ -139,10 +139,19 @@ locals {
   # ---- Split by type -----------------------------------------------------
   # The KB is special: it isn't just a target, it provisions a whole Knowledge
   # Base (kb.tf). At most one is supported, so kb.tf keys off this flag.
-  kb_tools     = { for n, t in local.tools : n => t if t.type == "kb" }
+  kb_tools = { for n, t in local.tools : n => t if t.type == "kb" }
+  # The framework's closed value sets, from app/vocabulary.json — the SAME file
+  # app/common/vocabulary.py and cdk/lib/vocabulary.ts read. Every list below used to be
+  # written out here as well as in Python and TypeScript, and a copy that drifted meant a
+  # value one plane accepted and another rejected.
+  vocab = jsondecode(file("${path.module}/../app/vocabulary.json"))
+
   kb_tool_name = length(local.kb_tools) > 0 ? keys(local.kb_tools)[0] : ""
   # The corpora (doc_type tags) the KB agent(s) may retrieve from.
   kb_corpora = local.kb_tool_name != "" ? local.kb_tools[local.kb_tool_name].corpora : []
+  # Retrieval depth for the KB Lambda (KB_NUM_RESULTS in kb.tf). Same `maxResults`
+  # key a websearch tool uses, so the two tool types read the same way.
+  kb_max_results = local.kb_tool_name != "" ? try(local.kb_tools[local.kb_tool_name].maxResults, 5) : 5
 
   websearch_tools = { for n, t in local.tools : n => t if t.type == "websearch" }
   mcp_tools       = { for n, t in local.tools : n => t if t.type == "mcp" }
@@ -180,7 +189,7 @@ locals {
   # present is the only condition needed here.
   keyed_tools = {
     for n, t in local.tools : n => t
-    if t.api_key != "" && contains(["mcp", "openapi"], t.type)
+    if t.api_key != "" && contains(local.vocab.apiKeyToolTypes.values, t.type)
   }
 
   # ---- Cedar policy, generated ------------------------------------------
@@ -450,7 +459,7 @@ resource "terraform_data" "tools_validation" {
   lifecycle {
     precondition {
       condition = alltrue([
-        for n, t in local.tools : contains(["kb", "websearch", "mcp", "openapi", "lambda"], t.type)
+        for n, t in local.tools : contains(local.vocab.toolTypes.values, t.type)
       ])
       error_message = "Each workflow.json tools entry needs \"type\" = kb | websearch | mcp | openapi | lambda."
     }
@@ -506,7 +515,7 @@ resource "terraform_data" "tools_validation" {
       condition = alltrue(flatten([
         for n, t in local.lambda_tools : [
           for s in t.tool_schema : [
-            for p in s.properties : contains(["string", "number", "integer", "boolean", "array", "object"], p.type)
+            for p in s.properties : contains(local.vocab.toolSchemaPropertyTypes.values, p.type)
           ]
         ]
       ]))
@@ -573,11 +582,11 @@ resource "terraform_data" "tools_validation" {
       error_message = "type=\"websearch\" (AgentCore Web Search) is only available in us-east-1, eu-west-1 and ap-northeast-1. Remove the entry or deploy in one of those regions."
     }
     precondition {
-      condition     = alltrue([for n, t in local.tools : contains(["DEFAULT", "DYNAMIC"], t.listing_mode)])
+      condition     = alltrue([for n, t in local.tools : contains(local.vocab.toolListingModes.values, t.listing_mode)])
       error_message = "A tools entry's \"listingMode\" must be \"DEFAULT\" or \"DYNAMIC\"."
     }
     precondition {
-      condition     = alltrue([for n, t in local.tools : contains(["", "none", "apikey", "sigv4"], t.auth)])
+      condition     = alltrue([for n, t in local.tools : contains(local.vocab.toolAuthModes.values, t.auth)])
       error_message = "A tools entry's \"auth\" must be omitted, \"none\", \"apikey\" or \"sigv4\"."
     }
     precondition {
@@ -592,10 +601,10 @@ resource "terraform_data" "tools_validation" {
       # other type the key was accepted, vaulted nowhere, and the endpoint called
       # unauthenticated — a silent security downgrade rather than an error.
       condition = alltrue([
-        for n, t in local.tools : contains(["mcp", "openapi"], t.type)
+        for n, t in local.tools : contains(local.vocab.apiKeyToolTypes.values, t.type)
         if t.auth == "apikey" || t.api_key != ""
       ])
-      error_message = "auth=\"apikey\" (or a key in var.tool_api_keys) is only supported for type=\"mcp\" and type=\"openapi\" — those are the target kinds that get a credential provider. Offending: ${join(", ", [for n, t in local.tools : n if(t.auth == "apikey" || t.api_key != "") && !contains(["mcp", "openapi"], t.type)])}."
+      error_message = "auth=\"apikey\" (or a key in var.tool_api_keys) is only supported for type=\"mcp\" and type=\"openapi\" — those are the target kinds that get a credential provider. Offending: ${join(", ", [for n, t in local.tools : n if(t.auth == "apikey" || t.api_key != "") && !contains(local.vocab.apiKeyToolTypes.values, t.type)])}."
     }
   }
 }

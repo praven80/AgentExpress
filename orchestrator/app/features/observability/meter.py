@@ -78,6 +78,10 @@ def record_llm(*, model: str, input_tokens: int, output_tokens: int,
     try:
         s = get_scope()
         in_rate, out_rate = pricing.model_rates(model)
+        # Whether those rates are a real price or the fallback guess. Carried onto the
+        # row so a reader can tell a measured cost from an estimated one — the fallback
+        # was silent, which made every figure for an unrecognised model look measured.
+        known = pricing.rates_known(model)
         # A failed call ("error") consumed no billable tokens.
         cost = pricing.Decimal("0") if mode == "error" else pricing.model_cost(model, input_tokens, output_tokens)
         sys_tokens, sys_exact = _system_tokens(model, system_text, mode)
@@ -87,7 +91,7 @@ def record_llm(*, model: str, input_tokens: int, output_tokens: int,
             input_tokens=int(input_tokens or 0), output_tokens=int(output_tokens or 0),
             system_tokens=sys_tokens, system_tokens_exact=sys_exact,
             latency_ms=int(latency_ms or 0), cost_usd=cost,
-            in_rate=in_rate, out_rate=out_rate, seq=_next_seq(),
+            in_rate=in_rate, out_rate=out_rate, rates_known=known, seq=_next_seq(),
             temperature=pricing.Decimal(str(temperature or 0)), max_tokens=int(max_tokens or 0),
             finish_reason=finish_reason or "", status=("error" if mode == "error" else "ok"),
             system_prompt=_truncate(system_text), user_input=_truncate(user_input),

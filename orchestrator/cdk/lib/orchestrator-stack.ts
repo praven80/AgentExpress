@@ -19,6 +19,7 @@ import { HttpApi, HttpMethod } from "aws-cdk-lib/aws-apigatewayv2";
 import { HttpLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
 import { HttpJwtAuthorizer } from "aws-cdk-lib/aws-apigatewayv2-authorizers";
 import { ToolPlane, ToolSpec, ToolType } from "./tool-plane";
+import * as vocab from "./vocabulary";
 
 /** Regions where the managed AgentCore Web Search connector is available. */
 /**
@@ -32,14 +33,14 @@ import { ToolPlane, ToolSpec, ToolType } from "./tool-plane";
  */
 const LOG_RETENTION = logs.RetentionDays.ONE_MONTH;
 
-const WEB_SEARCH_REGIONS = ["us-east-1", "eu-west-1", "ap-northeast-1"];
-const TOOL_TYPES: ToolType[] = ["kb", "websearch", "mcp", "openapi", "lambda"];
+const WEB_SEARCH_REGIONS = vocab.WEB_SEARCH_REGIONS;
+const TOOL_TYPES = vocab.TOOL_TYPES as ToolType[];
 /** Property types the AgentCore inline tool schema accepts. */
-const SCHEMA_TYPES = ["string", "number", "integer", "boolean", "array", "object"];
+const SCHEMA_TYPES = vocab.TOOL_SCHEMA_PROPERTY_TYPES;
 const LAMBDA_ARN =
   /^arn:aws[a-z-]*:lambda:[a-z0-9-]+:[0-9]{12}:function:[a-zA-Z0-9-_]+(:[a-zA-Z0-9-_$]+)?$/;
 /** The only value `source` accepts — see the ToolSpec docs for why it is not open. */
-const BUILTIN_LAMBDA_SOURCE = "tool_lambda";
+const BUILTIN_LAMBDA_SOURCE = vocab.BUILTIN_LAMBDA_SOURCE;
 
 /**
  * Validate the `tools` block from workflow.json, mirroring the preconditions in
@@ -160,12 +161,12 @@ export function validateTools(
           `support the pin.`
       );
     }
-    if (t.listingMode && !["DEFAULT", "DYNAMIC"].includes(t.listingMode)) {
+    if (t.listingMode && !vocab.TOOL_LISTING_MODES.includes(t.listingMode)) {
       throw new Error(
         `workflow.json tools.${name} has an invalid "listingMode" (${t.listingMode}); use "DEFAULT" or "DYNAMIC".`
       );
     }
-    if (t.auth && !["none", "apikey", "sigv4"].includes(t.auth)) {
+    if (t.auth && !vocab.TOOL_AUTH_MODES.includes(t.auth)) {
       throw new Error(
         `workflow.json tools.${name} has an invalid "auth" (${t.auth}); use "none", "apikey" or "sigv4".`
       );
@@ -271,13 +272,13 @@ export function a2aLambdaAgents(agents: Record<string, any>): Record<string, str
 }
 
 /** Skills the shipped stand-in publishes (a2a_lambda/handler.py SKILLS). */
-export const A2A_LAMBDA_SKILLS = ["compliance", "resilience"];
+export const A2A_LAMBDA_SKILLS = vocab.A2A_LAMBDA_SKILLS;
 
 /** The only `source` values: stand-ins this repo ships and deploys. */
-export const A2A_SOURCES = ["a2a_lambda"];
+export const A2A_SOURCES = vocab.A2A_SOURCES;
 
-export const RUNTIMES = ["main", "dedicated", "a2a"];
-export const A2A_AUTH_MODES = ["none", "bearer", "oauth2", "sigv4"];
+export const RUNTIMES = vocab.RUNTIMES;
+export const A2A_AUTH_MODES = vocab.A2A_AUTH_MODES;
 
 /**
  * Validate each agent's `runtime` placement, mirroring registry.validate_runtimes
@@ -627,7 +628,7 @@ export function validateWorkflow(workflow: any, orchRoot: string, agentName: str
   }
   // Mirrors ACTIONS in bff/authz.py. A typo'd key looks like a restriction but
   // gates nothing, leaving the real action wide open — so reject it at synth.
-  const knownActions = ["cancel", "decision", "delete", "evaluate", "insights", "rerun", "start"];
+  const knownActions = vocab.AUTHORIZATION_ACTIONS;
   const unknownActions = restricted.filter((a) => !knownActions.includes(a));
   if (unknownActions.length) {
     throw new Error(
@@ -1915,6 +1916,13 @@ export function stageBffPackage(workflow: any, outDir?: string): string {
   // Written from the parsed object rather than copied, so a syntactically broken
   // workflow.json fails here at synth instead of inside the Lambda at run time.
   fs.writeFileSync(path.join(staged, "workflow.json"), JSON.stringify(workflow, null, 2));
+  // The framework's closed value sets. bff/authz.py reads the RBAC action names from
+  // here rather than keeping a third copy of them. Mirrors the archive_file source in
+  // terraform/bff.tf.
+  fs.copyFileSync(
+    path.join(ORCH_ROOT, "app", "vocabulary.json"),
+    path.join(staged, "vocabulary.json")
+  );
   return staged;
 }
 

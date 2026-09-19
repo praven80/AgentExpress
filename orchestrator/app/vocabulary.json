@@ -1,0 +1,78 @@
+{
+  "$comment": "FRAMEWORK VOCABULARY — the closed value sets workflow.json is validated against. NOT a file a customer edits: workflow.json is yours, this is the framework's. It exists because every one of these lists used to be written out two or three times — once in Python, once in cdk/lib/*.ts and once in terraform/*.tf — so adding a value meant finding all the copies, and a copy that got missed rejected a config the other planes accepted. All three planes read THIS file now: app/orchestrator/registry.py and bff/authz.py via json, cdk/lib/vocabulary.ts via require, terraform/tools.tf via jsondecode(file(...)). cdk/test/parity.test.ts asserts they read it rather than that three copies happen to agree.",
+
+  "runtimes": {
+    "$comment": "An agent's `runtime`: where the step runs. Closed by what the framework can place — a fourth value needs framework code by definition.",
+    "values": ["main", "dedicated", "a2a"]
+  },
+
+  "toolTypes": {
+    "$comment": "A `tools` entry's `type`. Each is a different kind of Gateway target with its own infrastructure, so the set is closed by what the framework can provision. To reach anything else, put it behind a Lambda and use type \"lambda\" with \"lambdaArn\".",
+    "values": ["kb", "websearch", "mcp", "openapi", "lambda"]
+  },
+
+  "toolSchemaPropertyTypes": {
+    "$comment": "Property types the AgentCore inline tool schema accepts, for a type=\"lambda\" tool's toolSchema.",
+    "values": ["string", "number", "integer", "boolean", "array", "object"]
+  },
+
+  "toolAuthModes": {
+    "$comment": "A tool target's `auth`. \"\" means unset.",
+    "values": ["", "none", "apikey", "sigv4"]
+  },
+
+  "apiKeyToolTypes": {
+    "$comment": "The only target kinds that get an API-key credential provider.",
+    "values": ["mcp", "openapi"]
+  },
+
+  "toolListingModes": {
+    "$comment": "An MCP target's `listingMode`.",
+    "values": ["DEFAULT", "DYNAMIC"]
+  },
+
+  "a2aAuthModes": {
+    "$comment": "A runtime:\"a2a\" agent's `auth` — how this deployment authenticates TO the remote agent.",
+    "values": ["none", "bearer", "oauth2", "sigv4"]
+  },
+
+  "a2aSources": {
+    "$comment": "The only `source` an a2a agent may name: the stand-in A2A server this repo deploys and injects a URL for. A framework-deployed agent needs infrastructure config cannot express, so this is not an arbitrary string.",
+    "values": ["a2a_lambda"]
+  },
+
+  "a2aLambdaSkills": {
+    "$comment": "Skills the shipped stand-in A2A server publishes (a2a_lambda/handler.py SKILLS). Only meaningful with `source`; an EXTERNAL agent advertises its own skills in its Agent Card.",
+    "values": ["compliance", "resilience"]
+  },
+
+  "memoryStrategies": {
+    "$comment": "Long-term memory strategies an agent may name in agentcore.memory.longTerm. These are the ones the IaC actually provisions and app/common/context.py can build a namespace for — an unrecognised one is searched as its own namespace, which nothing writes to, so recall returns nothing and reports success.",
+    "values": ["semantic", "summary"]
+  },
+
+  "authorizationActions": {
+    "$comment": "The mutating actions authorization.actions may gate. Each one is a route in bff/handler.py that calls _forbidden(<name>). A name with no route would read as a restriction and gate nothing.",
+    "values": ["start", "decision", "rerun", "cancel", "evaluate", "insights", "delete"]
+  },
+
+  "webSearchRegions": {
+    "$comment": "Where the managed AgentCore Web Search connector is available.",
+    "values": ["us-east-1", "eu-west-1", "ap-northeast-1"]
+  },
+
+  "guardrailFilterStrengths": {
+    "$comment": "Strength of a guardrail content filter.",
+    "values": ["NONE", "LOW", "MEDIUM", "HIGH"]
+  },
+
+  "guardrailPiiActions": {
+    "$comment": "What a guardrail does with a detected PII entity.",
+    "values": ["BLOCK", "ANONYMIZE"]
+  },
+
+  "builtinLambdaSource": {
+    "$comment": "The directory name of the demo tool function this repo ships and can deploy for you.",
+    "values": ["tool_lambda"]
+  }
+}

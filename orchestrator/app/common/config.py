@@ -105,6 +105,23 @@ RUNTIME_INVOKE: dict = {**_RUNTIME_INVOKE_DEFAULTS,
 #                       workflow until the runtime's own 8-hour ceiling.
 _A2A_INVOKE_DEFAULTS = {"timeoutSeconds": 30, "pollIntervalSeconds": 2, "maxPollSeconds": 300}
 A2A_INVOKE: dict = {**_A2A_INVOKE_DEFAULTS, **(ORCHESTRATOR.get("a2aInvoke") or {})}
+# Per-model token rates for the cost figures in the observability UI, keyed by a
+# substring of the model id:
+#
+#   "modelRates": { "nova-pro": { "input": 0.80, "output": 3.20 } }
+#
+# OPTIONAL, and the reason it exists is that `defaultModel` and each agent's `model`
+# are config: a customer is invited to choose a model, and
+# app/features/observability/pricing.py only knows a handful of Claude ids. Anything
+# else was priced at a fallback and reported as though measured. Now an unknown model
+# is MARKED on the telemetry row (`rates_known=False`), and this key is how a customer
+# supplies the real numbers — or corrects a price that changed — without editing
+# framework code.
+MODEL_RATES: dict = ORCHESTRATOR.get("modelRates") or {}
+# AgentCore Insights timings (lookbackHours, pollTimeoutSeconds, pollIntervalSeconds).
+# Insights was the one feature with NO config block, so a deployment whose runs take
+# longer to analyse than the built-in fifteen minutes had to edit framework code.
+INSIGHTS: dict = ORCHESTRATOR.get("insights") or {}
 
 
 # Presentation strings (title, the default topic, placeholders). Config rather

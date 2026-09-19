@@ -288,6 +288,12 @@ resource "aws_lambda_function" "kb_retrieve" {
   environment {
     variables = {
       KB_ID = aws_bedrockagent_knowledge_base.kb[0].id
+      # Retrieval depth, from `tools.<kb>.maxResults` in app/workflow.json. It was a
+      # Lambda-only env var that no IaC set, so depth was frozen at the handler's
+      # default of 5 and the only way to change it was to hand-edit a deployed
+      # function — while `tools.<websearch>.maxResults` was a config key. Same key
+      # name on both tool types now.
+      KB_NUM_RESULTS = tostring(local.kb_max_results)
     }
   }
 }

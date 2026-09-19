@@ -11,6 +11,10 @@
 # dynamic blocks below rather than empty lists).
 
 locals {
+  # Closed value sets from app/vocabulary.json, shared with the Python and TypeScript
+  # planes rather than written out a second time here.
+  gr_vocab = jsondecode(file("${path.module}/../app/vocabulary.json"))
+
   gr = try(local.workflow_def.guardrail, {})
 
   # type -> strength, e.g. {"HATE" = "MEDIUM"}. Applied to input AND output.
@@ -35,13 +39,13 @@ resource "terraform_data" "guardrail_validation" {
     precondition {
       condition = alltrue([
         for t, s in local.gr_content_filters :
-        contains(["NONE", "LOW", "MEDIUM", "HIGH"], upper(s))
+        contains(local.gr_vocab.guardrailFilterStrengths.values, upper(s))
       ])
       error_message = "Each workflow.json guardrail.contentFilters strength must be NONE, LOW, MEDIUM or HIGH."
     }
     precondition {
       condition = alltrue([
-        for e, a in local.gr_pii : contains(["BLOCK", "ANONYMIZE"], upper(a))
+        for e, a in local.gr_pii : contains(local.gr_vocab.guardrailPiiActions.values, upper(a))
       ])
       error_message = "Each workflow.json guardrail.piiEntities action must be BLOCK or ANONYMIZE."
     }
