@@ -329,6 +329,24 @@ Or write whatever you like in `run()` — you have `ctx.llm(...)`,
 `ctx.call_tool(label, query)`, `ctx.retrieve(query, doc_type=...)`,
 `ctx.input(other_agent_id)`, `ctx.heartbeat(pct)` and `ctx.log(msg)`.
 
+That includes driving **another agentic framework** inside `run()`, per agent.
+`web_search` reasons inside a Strands agent and `knowledge_research` inside a nested
+LangGraph; the other two research agents use no framework at all, and all four emit
+the same contract. Pass `think=` to `research.synthesize` to swap only the reasoning
+step:
+
+```python
+from app.subagents._shared.strands_bridge import strands_thinker
+
+return await research.synthesize(ctx, system_prompt=SYSTEM_PROMPT,
+                                 think=strands_thinker(ctx))
+```
+
+Keep the model call on `ctx.llm` — that is where guardrails, cost telemetry, memory
+and truncation detection live, and a framework with its own Bedrock client loses
+them silently. See *Author an agent with any agentic framework* in the README for
+the two caveats (no native tool calling, and the image-size bill).
+
 **b) Declare it in `workflow.json`** and put it in the topology:
 
 ```json

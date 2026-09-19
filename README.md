@@ -10,7 +10,7 @@ Memory, Identity, Observability, Guardrails, Evaluations, Policy, Optimization),
 all declared in one `workflow.json`.
 
 This is a **reference pattern**, not a finished product for any one domain. The
-sample topic (`"Design a serverless data pipeline on AWS"`) and the eight agents
+sample topic (`"Design a serverless data pipeline on AWS"`) and the ten agents
 are intentionally generic — swap the prompts, contracts, and Knowledge Base corpus
 for your use case.
 
@@ -190,19 +190,26 @@ Agents are keyed by **semantic ids** in `workflow.json` (e.g. `intake`,
 Each agent entry binds to a data source with one field — `tool` (a key in the
 `tools` block) plus `corpus` for a Knowledge Base tool — and carries declarative
 `access` / `produces` metadata surfaced as chips in the UI, plus the
-`agentcore` block that switches its features on. The eight agents deliberately use
+`agentcore` block that switches its features on. The ten agents deliberately use
 **different** combinations so one deployment exercises the whole surface:
 
-| Agent | Runtime | Tool | Long-term memory | Guardrails | Evaluations | Policy |
-|---|---|---|---|---|---|---|
-| `intake` | main | — | — | input | auto | — |
-| `knowledge_research` | dedicated | `kb` (corpus `reference`) | — | — | on demand | **enabled** |
-| `web_search` | dedicated | `websearch` | — | output | on demand | **enabled** |
-| `documentation_search` | dedicated | `docs` (MCP) | — | output | on demand | **enabled** |
-| `cost_research` | main | `pricing` (**your own Lambda**) | — | — | on demand | **enabled** |
-| `analysis` | main | — | semantic | output | auto | — |
-| `recommendation` | main | — | semantic + summary | output | auto | — |
-| `report` | main | — | — | input + output | auto | — |
+| Agent | Runtime | Tool | Reasons with | Long-term memory | Guardrails | Evaluations | Policy |
+|---|---|---|---|---|---|---|---|
+| `intake` | main | — | `ctx.llm` | — | input | auto | — |
+| `knowledge_research` | dedicated | `kb` (corpus `reference`) | **nested LangGraph** | — | — | on demand | **enabled** |
+| `web_search` | dedicated | `websearch` | **Strands** | — | output | on demand | **enabled** |
+| `documentation_search` | dedicated | `docs` (MCP) | `ctx.llm` | — | output | on demand | **enabled** |
+| `cost_research` | main | `pricing` (**your own Lambda**) | `ctx.llm` + code | — | — | on demand | **enabled** |
+| `compliance_review` | **a2a** | its own | someone else's | — | — | role descriptor | outside ours |
+| `resilience_review` | **a2a** | its own | someone else's | — | — | role descriptor | outside ours |
+| `analysis` | main | — | `ctx.llm` | semantic | output | auto | — |
+| `recommendation` | main | — | `ctx.llm` | semantic + summary | output | auto | — |
+| `report` | main | — | `ctx.llm` | — | input + output | auto | — |
+
+*Reasons with* is the per-agent authoring choice described under
+[Author an agent with any agentic framework](#author-an-agent-with-any-agentic-framework);
+every one of these still reaches the model through `ctx.llm` except the `a2a` pair,
+which is a different deployment entirely.
 
 ### Branching — letting an agent's output choose the next step
 
@@ -506,6 +513,63 @@ when disabled** for that agent, so they are always safe to call. Guardrails and
 long-term memory are already applied automatically by the node wrapper, so you
 only need the explicit calls for extra checks (see
 `app/subagents/knowledge_research/agent.py` for the `policy_check` example).
+
+### Author an agent with any agentic framework
+
+`run()` is a plain `async def`. Whatever happens inside it is yours, including
+driving another agentic framework — **per agent**, so one agent can be a Strands
+agent and the next a CrewAI crew and the next neither. Two of the four research
+agents shipped here do exactly that, so the pattern is demonstrated rather than
+asserted:
+
+| Agent | Reasons inside | Why it is interesting |
+|---|---|---|
+| `web_search` | a **Strands** agent | Strands' agent loop and prompt handling, over this repo's model call |
+| `knowledge_research` | a **nested LangGraph** | a graph inside one node of the outer graph, with a conditional edge that gives an unparseable draft one repair attempt |
+| `documentation_search` | nothing — one `ctx.llm` call | the control, so the comparison means something |
+| `cost_research` | nothing, and its own `run()` | model decides *which* services, code does the arithmetic |
+
+All four bind their data source in `workflow.json` and emit the same
+`ResearchOutput` contract. The framework is an authoring choice; it does not change
+what an agent produces, so nothing downstream can tell which is which.
+
+**The one rule: the model call goes through `ctx.llm`.** Guardrails, cost and token
+telemetry, long-term memory injection, truncation detection and cancellation all
+live there. A framework holding its own Bedrock client loses every one of them
+*and still reports success* — no error, just an agent that has quietly left the
+cost panel and the guardrail behind. `app/subagents/_shared/strands_bridge.py` is
+~200 lines showing how to satisfy a framework's model-provider interface with
+`ctx.llm`; a CrewAI `BaseLLM` or a LangChain `BaseChatModel` is the same shape.
+
+For an evidence-gathering agent there is a ready-made seam — pass `think=` to
+`research.synthesize` and the evidence gathering and contract assembly around it
+stay put:
+
+```python
+from app.subagents._shared import research
+from app.subagents._shared.strands_bridge import strands_thinker
+
+async def run(self, ctx):
+    return await research.synthesize(ctx, system_prompt=SYSTEM_PROMPT,
+                                     think=strands_thinker(ctx))
+```
+
+Two things to know before you reach for one:
+
+- **No native tool calling.** `ctx.llm` returns text, so it cannot carry a
+  `toolUse` block and a framework's own `@tool` would never be invoked. The
+  bridges **raise** if a framework offers them tools, because a dropped tool
+  produces a plausible-looking answer and no way to notice. Data access is
+  declared in `workflow.json` and called with `ctx.call_tool` / `ctx.retrieve`
+  before the model call — which is what keeps a data source swappable without a
+  code change.
+- **Budget for the dependency.** There is **one container image for every agent**,
+  so every agent pays for every framework in it. Measured on Python 3.13
+  site-packages: this repo's `requirements.txt` is 153 MB, `+ strands-agents` is
+  166 MB, and `+ crewai` was 804 MB — a 5× image (pyarrow, lancedb, onnxruntime,
+  chromadb, kubernetes, grpc, numpy, openai) which also caps the project at Python
+  <3.14. That is why CrewAI is documented here and not shipped. LangGraph costs
+  nothing extra: it is already the outer orchestrator.
 
 ## Run locally
 

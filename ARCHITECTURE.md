@@ -225,6 +225,27 @@ different boundaries, both config-driven.
   `app/subagents/_shared/synthesis.py` (gather approved upstream assets → structured
   JSON → validated contract). Both live under `subagents/` on purpose: they are this
   SAMPLE's editorial choices, not framework, and a customer replaces them.
+- **The agentic framework inside an agent is per-agent and is the author's choice.**
+  `run()` is a plain `async def`, so an agent may drive Strands, CrewAI, LlamaIndex,
+  a graph of its own, or nothing. `research.synthesize` exposes this as a `think`
+  hook — evidence gathering and contract assembly stay put and only the reasoning
+  step changes. Shipped: `web_search` reasons inside a **Strands** agent
+  (`app/subagents/_shared/strands_bridge.py`), `knowledge_research` inside a
+  **nested LangGraph** with a conditional edge that gives an unparseable draft one
+  bounded repair attempt, and `documentation_search`/`cost_research` inside no
+  framework at all. All four emit the same contract, so the choice is invisible
+  downstream.
+  The invariant that makes this safe is that **the model call goes through
+  `ctx.llm`**: guardrails, cost/token telemetry, memory injection, truncation
+  detection and cancellation live there, and a framework holding its own Bedrock
+  client would lose all of them while the run still reported success. The
+  consequence is that a framework's *native* tool loop is unavailable (`ctx.llm`
+  returns text, so it cannot carry a `toolUse` block) — the bridge raises rather
+  than dropping tools, and data access stays declared in `workflow.json` and called
+  through `ctx.call_tool`/`ctx.retrieve`. The other cost is the image: one container
+  serves every agent, so every agent pays for every framework in it (measured:
+  `+ strands-agents` 153 → 166 MB; `+ crewai` 804 MB, which is why CrewAI is
+  documented and not shipped).
 
 ### Agent runtime placement — in-process, dedicated, or not yours at all
 - `runtime: "main"` — the agent runs in-process as a LangGraph node inside the
@@ -234,7 +255,7 @@ different boundaries, both config-driven.
   The orchestrator's node body (`AgentCoreRuntimeAgent`) calls `InvokeAgentRuntime`
   with the same inputs an in-process agent would read, and returns the output. Same
   `Agent` interface either way, so the graph wiring is identical — placement is
-  config only. This sample ships three of its eight agents as `dedicated`
+  config only. This sample ships three of its ten agents as `dedicated`
   (`knowledge_research`, `web_search`, `documentation_search`); the rest are `main`.
 - `runtime: "a2a"` is the third value, and it is not a placement of your code — it is a
   **trust boundary**. The step is run by an agent you do not operate, reached over the

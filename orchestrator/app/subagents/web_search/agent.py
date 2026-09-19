@@ -6,10 +6,20 @@ endpoint, no schema: the connector is AWS-operated and queries never leave AWS.
 
 Nothing about the search is coded here — `maxResults` and any domain filters come
 from the tool's entry in workflow.json.
+
+AUTHORED WITH STRANDS AGENTS. This is the demonstration that the agentic framework
+inside an agent is YOUR choice: the reasoning step runs in a `strands.Agent`, while
+the three sibling research agents use CrewAI, a nested LangGraph, and no framework
+at all. All four gather evidence the same declared way and emit the same
+ResearchOutput contract, so the choice changes nothing outside this file.
+
+The one rule is that the model call goes through `ctx.llm` — see
+app/subagents/_shared/strands_bridge.py for what that buys and what it costs.
 """
 from app.common.base import Agent
 from app.common.context import AgentContext
 from app.subagents._shared import research
+from app.subagents._shared.strands_bridge import strands_thinker
 
 from .prompts import SYSTEM_PROMPT
 
@@ -18,7 +28,11 @@ class WebSearchAgent(Agent):
     system_prompt = SYSTEM_PROMPT
 
     async def run(self, ctx: AgentContext) -> str:
-        return await research.synthesize(ctx, system_prompt=SYSTEM_PROMPT)
+        # `think` replaces the default single ctx.llm call with a Strands agent
+        # loop. Evidence gathering (the websearch tool) and asset assembly are
+        # unchanged and still live in the shared runner.
+        return await research.synthesize(ctx, system_prompt=SYSTEM_PROMPT,
+                                         think=strands_thinker(ctx))
 
 
 agent = WebSearchAgent()

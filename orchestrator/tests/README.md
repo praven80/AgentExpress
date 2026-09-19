@@ -44,6 +44,7 @@ keep that promise honest.
 | `test_config_keys.py` | Every key in `workflow.json` is one something reads — a CLOSED allow-list, so an unwired key fails here |
 | `test_foreign_use_case.py` | The framework names no shipped agent id (AST-checked), and a workflow from another domain entirely still builds |
 | `test_cost_research.py` | The deterministic agent: unit rates read as DATA rows via `rowFields`, never paraphrased, and never totalled |
+| `test_frameworks.py` | An agent authored with an agentic framework still cannot dodge governance — every framework's model call arrives at `ctx.llm`, named, with the agent's own prompt intact; the truncation flag survives the round trip; a model failure is not turned into placeholder text; offering the framework its own tools raises rather than being dropped; and Strands, a nested LangGraph and no-framework all emit the same contract |
 | `test_tool_lambda.py` | The shipped `type: "lambda"` demo — the Price List query shaping and its unresolved-service reporting |
 | `test_memory_insight.py` | What long-term memory stores and recalls, and the on-topic filter that stops cross-subject bleed |
 | `test_truncation.py` | An answer cut off at `maxTokens` is SURFACED, not silently accepted |

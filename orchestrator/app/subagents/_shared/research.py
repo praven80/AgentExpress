@@ -6,18 +6,36 @@ from — the difference is one line of config (its `tool`), not code:
   1. take the approved request brief (from the intake agent upstream),
   2. gather grounding evidence from the tool the agent is bound to (Knowledge
      Base, Web Search, a remote MCP server, or a REST API), or none at all,
-  3. ask the model for a structured analysis with every finding classified by
-     evidence type and every data limitation named,
+  3. reason over that evidence and produce a structured analysis with every
+     finding classified by evidence type and every data limitation named,
   4. assemble and validate a ResearchOutput asset (contract-adherent).
 
+Step 3 is the only one an agent may replace, through the `think` hook on
+`synthesize`. Its default is a single `ctx.llm` call; the shipped agents use it
+to show that the reasoning step can be authored with whatever agentic framework
+you prefer without disturbing steps 1, 2 and 4:
+
+  documentation_search  plain ctx.llm — no framework at all
+  cost_research         plain ctx.llm, and its own run() rather than this runner
+  web_search            Strands Agents
+  knowledge_research    a nested LangGraph subgraph
+
+All four still bind their data source in workflow.json and still emit the same
+ResearchOutput contract, so the framework is an authoring choice and nothing more.
+Anything with a `think` hook works here — CrewAI, LlamaIndex, your own loop — as
+long as it reaches the model through `ctx.llm`. Only Strands is in
+requirements.txt, because every agent shares one container image and so pays for
+every framework in it; see the note there before adding a second.
+
 This is framework plumbing (like ctx.llm); each agent keeps only its own
-identity — its prompt and its data source.
+identity — its prompt, its data source, and how it likes to reason.
 """
 
 from __future__ import annotations
 
 import json
 import re
+from collections.abc import Awaitable, Callable
 
 from app.common import assets, clock
 from app.common.config import TOOLS
@@ -166,8 +184,15 @@ def _findings(payload: dict, evidence: str = "") -> list[Finding]:
     return out
 
 
+#: Signature of the `think` hook below: given the system prompt and the assembled
+#: user prompt, return the model's answer. `ctx.llm` already has this shape, which
+#: is why the default needs no adapter.
+Think = Callable[[str, str], Awaitable[str]]
+
+
 async def synthesize(ctx, *, system_prompt: str,
-                     instructions: str = RESEARCH_INSTRUCTIONS) -> str:
+                     instructions: str = RESEARCH_INSTRUCTIONS,
+                     think: Think | None = None) -> str:
     """Run the evidence-gathering flow and return a validated ResearchOutput as JSON.
 
     Data access is entirely CONFIG-driven: the agent's `tool` field in
@@ -186,6 +211,22 @@ async def synthesize(ctx, *, system_prompt: str,
       * `system_prompt`  — who the agent is (app/subagents/<id>/prompts.py)
       * `instructions`   — how it should use the inputs; defaults to the
                            domain-neutral RESEARCH_INSTRUCTIONS above
+      * `think`          — WHO DOES THE REASONING. Defaults to `ctx.llm`, a single
+                           model call. Pass your own to author the reasoning step
+                           with an agentic framework of your choice — Strands,
+                           CrewAI, LangGraph, anything — while the evidence
+                           gathering above and the contract below stay put. See
+                           strands_bridge.py / crewai_bridge.py in this folder for
+                           two worked examples, and the three research agents for
+                           how they are wired.
+
+                           WHATEVER YOU PASS MUST REACH THE MODEL THROUGH
+                           `ctx.llm`. That is not a style rule: guardrails, cost
+                           and token telemetry, long-term memory injection,
+                           truncation detection and cancellation all live in
+                           `ctx.llm`, so a framework holding its own Bedrock
+                           client silently loses every one of them and the run
+                           still reports success.
     What you cannot vary here is the OUTPUT SHAPE, which is the ResearchOutput
     contract. To emit something else, write your own `run()` and return your own
     contract — this runner is a convenience, not a requirement.
@@ -236,7 +277,13 @@ async def synthesize(ctx, *, system_prompt: str,
     # structured JSON — summary + several classified findings + sources +
     # limitations — so too small a budget truncates it mid-JSON and it fails to
     # parse. Raise that agent's maxTokens rather than editing this line.
-    payload = assets.extract_json(await ctx.llm(system_prompt, user)) or {}
+    #
+    # `think` is the seam an agent uses to do this reasoning with a framework of
+    # its own choosing; the default is one `ctx.llm` call. Everything after this
+    # line is contract assembly and is identical either way, which is the point —
+    # the framework is an authoring choice, not a change to what the agent emits.
+    reason = think or ctx.llm
+    payload = assets.extract_json(await reason(system_prompt, user)) or {}
 
     findings = _findings(payload, evidence)
     # `evidence` is passed so a citation URL can be verified against what the model

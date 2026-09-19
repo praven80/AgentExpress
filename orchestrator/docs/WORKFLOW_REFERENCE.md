@@ -39,6 +39,7 @@ code have been moved so they don't:
 |---|---|
 | An agent's identity and behaviour | `app/subagents/<id>/prompts.py` and `agent.py` |
 | How an evidence-gathering agent should use its inputs | pass `instructions=` to `research.synthesize` from your `agent.py` |
+| Which agentic framework an agent reasons with | pass `think=` to `research.synthesize`, or just write it in `run()`. Per agent — `web_search` uses Strands, `knowledge_research` a nested LangGraph, the others none. Route the model call through `ctx.llm` or you lose guardrails, cost telemetry, memory and truncation detection silently; see the README |
 | Your terminal asset's sections | a `SECTIONS` tuple in that agent's `prompts.py` — it builds the prompt, the schema and the completeness check |
 | Your own asset shape | a Pydantic model in your agent's folder. `assetType`, `sourceType` and `sectionType` are open strings, so your vocabulary survives into the UI |
 

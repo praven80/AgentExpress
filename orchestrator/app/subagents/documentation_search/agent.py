@@ -4,8 +4,11 @@ This agent exists to demonstrate the BRING-YOUR-OWN-MCP-SERVER path. It is bound
 by workflow.json to a tool of type="mcp"; to point it at your own server, change
 that tool's `endpoint` and nothing else.
 
-The agent itself is deliberately identical in shape to the other two research
-agents — proof that swapping a data source is config, not code.
+It is also the plainest of the four research agents: one model call through
+`ctx.llm`, no agentic framework inside it. `web_search` does the same job with a
+Strands agent and `knowledge_research` with a nested LangGraph, which is what makes
+this one worth reading first — the framework is an authoring choice, and this is
+what the choice looks like when you decline it.
 """
 from app.common.base import Agent
 from app.common.context import AgentContext
