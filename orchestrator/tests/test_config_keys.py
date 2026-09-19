@@ -29,7 +29,9 @@ AGENT_KEYS = {
     "name": "registry.py -> agent.name; UI node title",
     "runtime": "registry.py (main | dedicated | a2a); subagent_runtimes.tf; UI chip",
     "agentCard": "a2a_agent.py -> the remote agent's Agent Card URL; runtime \"a2a\" only",
-    "auth": "a2a_agent.py -> none | bearer | oauth2; runtime \"a2a\" only",
+    "auth": "a2a_agent.py -> none | bearer | oauth2 | sigv4; runtime \"a2a\" only",
+    "source": ("registry.py A2A_SOURCES -> the stand-in A2A server the IaC deploys "
+               "and injects a URL for; runtime \"a2a\" only, exclusive with agentCard"),
     "model": "registry.py -> agent.model (omit to use orchestrator.defaultModel)",
     "maxTokens": "registry.py -> agent.max_tokens, the model output budget",
     "temperature": "registry.py -> agent.temperature",
@@ -219,12 +221,14 @@ def test_remote_agent_keys_appear_only_on_a_remote_agent():
     registry.validate_runtimes; asserted here against the shipped file."""
     for aid, a in wf()["agents"].items():
         remote = str(a.get("runtime") or "main") == "a2a"
-        for key in ("agentCard", "auth"):
+        for key in ("agentCard", "auth", "source"):
             if key in a:
                 assert remote, (
                     f"agent {aid!r} sets {key!r} but is not runtime \"a2a\"; nothing reads it")
         if remote:
-            assert a.get("agentCard"), f"agent {aid!r} is runtime \"a2a\" with no agentCard"
+            assert bool(a.get("agentCard")) != bool(a.get("source")), (
+                f"agent {aid!r} is runtime \"a2a\" and needs exactly one of agentCard (an agent "
+                f"that already exists) or source (the stand-in this repo deploys)")
             for key in ("model", "temperature", "maxTokens", "tool", "corpus"):
                 assert key not in a, (
                     f"agent {aid!r} is runtime \"a2a\" and also sets {key!r}; a remote agent "
