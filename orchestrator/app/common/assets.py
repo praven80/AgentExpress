@@ -170,12 +170,26 @@ def brief_query(b: dict, fallback: str) -> str:
 
 
 def prior_version(ctx) -> int:
-    """This agent's own previous output version + 1 (for the revise cycle)."""
+    """The version this agent's asset should carry: 1 on the first run, then the
+    previous asset's version + 1 for each revise / re-run.
+
+    THE EMPTY CASE HAS TO BE HANDLED SEPARATELY. It used to be
+    `int(prev.get("version", 1)) + 1` with no check, and on a first run `prev` is
+    `{}`, so the default 1 was incremented to 2 — every asset in a fresh run was
+    stamped `"version": 2` while the timeline said "complete (v1)". Two numbers for
+    the same thing, disagreeing, in front of the reviewer: observed across all 24
+    assets of three live runs with one history entry each and no revise.
+
+    A previous asset whose own `version` is missing or unreadable still means THIS
+    run is a re-run, so it counts from that asset rather than restarting at 1.
+    """
     prev = parse(ctx.input(ctx.agent_id))
+    if not prev:
+        return 1
     try:
         return int(prev.get("version", 1)) + 1
     except (TypeError, ValueError):
-        return 1
+        return 2
 
 
 def build_sources(payload: dict, *, verify_urls_against: str = "") -> list[Source]:

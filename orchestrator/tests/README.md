@@ -37,6 +37,7 @@ keep that promise honest.
 | `test_tool_calls.py` | `_tool_arguments` (the argument shape, per tool type), `_select_tool` (Gateway naming), `_extract_chunks` (evidence + citations) |
 | `test_citations.py` | URL verification against the evidence; downgrading a `sourced-fact` that rested on an invented link |
 | `test_contracts.py` | Open `assetType` / `sectionType`, the strict envelope, report-section ordering |
+| `test_asset_versioning.py` | An asset's own `version` agrees with the run count the timeline shows (a first run said v1 in one place and 2 in the other) |
 | `test_authz.py` | `bff/authz.py` semantics and claim shapes; the assistant's action-tool filtering |
 | `test_bff_routes.py` | Each gated mutating BFF route actually returns 403 for a caller without the group |
 | `test_config_keys.py` | Every key in `workflow.json` is one something reads — a CLOSED allow-list, so an unwired key fails here |
