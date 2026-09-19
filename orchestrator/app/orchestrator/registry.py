@@ -277,6 +277,53 @@ def validate_runtimes() -> None:
                 f"auth \"bearer\" with a token injected by the IaC.")
 
 
+#: What a folder under app/subagents/<id>/ must provide. THE WHOLE AUTHORING CONTRACT
+#: for an agent whose code you ship, and it is deliberately three lines long: a package
+#: that exports `agent`, an Agent subclass, and a `run()`. Everything else about the
+#: folder — how many files, which helpers, whether it drives Strands or a nested graph —
+#: is the author's business, because that is where a customer's actual work lives.
+AGENT_MODULE_CONTRACT = (
+    'app/subagents/<id>/__init__.py must contain `from .agent import agent`; '
+    'app/subagents/<id>/agent.py must define a subclass of app.common.base.Agent that '
+    'overrides `async def run(self, ctx) -> str` and assign `agent = YourAgent()`.'
+)
+
+
+def check_agent_module(agent_id: str, module) -> Agent:
+    """The folder contract, checked on an imported agent package.
+
+    Every failure here used to surface as something else. A missing `agent` export was
+    `AttributeError: module 'app.subagents.x' has no attribute 'agent'` — true, and no
+    help about what to add. Worse, a class that forgot to override `run` produced NO
+    error at import: `Agent.run` raises NotImplementedError, so the agent loaded
+    cleanly, configured cleanly, appeared on the diagram, and failed the instant the run
+    reached it.
+
+    Called from `build_agent_module`, so it runs wherever an agent's real code is loaded
+    — in the orchestrator for a `main` agent, and inside its own container for a
+    `dedicated` one. `tests/test_subagents.py` and both IaC planes make the same check
+    STATICALLY, which is where a customer should normally meet it: at `pytest`,
+    `terraform plan` or `cdk synth`, before anything is deployed.
+    """
+    where = f"app/subagents/{agent_id}/"
+    instance = getattr(module, "agent", None)
+    if instance is None:
+        raise ValueError(
+            f"agent {agent_id!r}: {where}__init__.py does not export `agent`. "
+            f"{AGENT_MODULE_CONTRACT}")
+    if not isinstance(instance, Agent):
+        raise ValueError(
+            f"agent {agent_id!r}: {where} exports `agent` as {type(instance).__name__}, "
+            f"which is not an app.common.base.Agent. {AGENT_MODULE_CONTRACT}")
+    if type(instance).run is Agent.run:
+        raise ValueError(
+            f"agent {agent_id!r}: {type(instance).__name__} in {where}agent.py does not "
+            f"override `run`, so this step would raise NotImplementedError the moment the run "
+            f"reached it — after every agent before it had finished and been billed. "
+            f"{AGENT_MODULE_CONTRACT}")
+    return instance
+
+
 def build_agent_module(agent_id: str) -> Agent:
     """Import and configure an agent's REAL in-process implementation, ignoring
     its runtime placement. Used by the per-agent runtime (subagent_runtime) to
@@ -286,8 +333,20 @@ def build_agent_module(agent_id: str) -> Agent:
     agent key in workflow.json maps to app/subagents/<that key>/, so adding an
     agent is a config entry plus a folder, and nothing has to name it twice."""
     spec = AGENTS[agent_id]
-    module = importlib.import_module(f"app.subagents.{agent_id}")
-    return _configure(module.agent, agent_id, spec)
+    try:
+        module = importlib.import_module(f"app.subagents.{agent_id}")
+    except ModuleNotFoundError as e:
+        # The bare ModuleNotFoundError names the dotted path and nothing else, which
+        # reads like a broken framework rather than a missing folder — and it is the
+        # error a misspelled `runtime` produces too, so it needs to say which of the two
+        # this is.
+        raise ValueError(
+            f"agent {agent_id!r} has runtime {spec.get('runtime') or 'main'!r}, so its code "
+            f"ships in this repo — but app/subagents/{agent_id}/ could not be imported: {e}. "
+            f"The agent id IS the package name. Create the folder with `python3 scaffold.py "
+            f"agent {agent_id}`, or set runtime \"a2a\" if the agent is somebody else's "
+            f"service.") from e
+    return _configure(check_agent_module(agent_id, module), agent_id, spec)
 
 
 def load_agents() -> dict[str, Agent]:

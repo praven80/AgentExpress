@@ -309,6 +309,14 @@ export function validateRuntimes(agents: Record<string, any>): void {
           );
         }
       }
+      // NOT checked here: that app/subagents/<id>/ exists. It was, briefly, and it made
+      // ten honest tests of this function fail for the wrong reason — `validateRuntimes`
+      // is a pure CONFIG validator, unit-tested against fabricated workflows whose agent
+      // ids deliberately have no folders, and a filesystem check does not belong in it.
+      // Folder existence is a property of the REPO rather than of a config, so it is
+      // asserted by tests/test_subagents.py (which runs in CI and in a customer's own
+      // `pytest`), and `registry.build_agent_module` reports it with the fix named if it
+      // ever reaches a container.
       continue;
     }
     const card = String(a.agentCard ?? "");

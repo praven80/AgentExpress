@@ -347,6 +347,15 @@ locals {
   a2a_agent_ids = [
     for id, a in local.workflow_def.agents : id if try(a.runtime, "main") == "a2a"
   ]
+  # Deliberately NOT validated here: that app/subagents/<id>/ exists for every agent whose
+  # code ships in this repo. Terraform could do it cheaply with fileexists(), and the CDK
+  # plane cannot without breaking its own unit tests of the equivalent validator - which
+  # are run against fabricated workflows whose agent ids have no folders on purpose. A
+  # check one plane enforces and the other does not is the exact drift app/vocabulary.json
+  # exists to prevent, and folder existence is a property of the REPO rather than of a
+  # config. So it is asserted by tests/test_subagents.py, which runs in CI and in a
+  # customer's own `pytest`, and registry.build_agent_module names the fix if it ever
+  # reaches a container.
   # `agentCard`/`auth` on any other placement read as settings and control nothing.
   a2a_keys_on_local_agents = [
     for id, a in local.workflow_def.agents : id

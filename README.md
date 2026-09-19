@@ -20,7 +20,7 @@ for your use case.
 > | You edit | For |
 > |---|---|
 > | `orchestrator/app/workflow.json` | agents, topology, tools, HITL gates, RBAC, guardrail policy, UI strings |
-> | `orchestrator/app/subagents/<id>/` | one folder per agent — its prompt, its contract, its `run()` |
+> | `orchestrator/app/subagents/<id>/` | one folder per agent — its prompt, its contract, its `run()`. `python3 scaffold.py agent <id>` writes both this and the config entry |
 > | `orchestrator/kb_docs/` | your documents; each top-level folder becomes a corpus |
 > | `terraform/terraform.tfvars` | deploy-time only: region, login, model, Gateway on/off (copy from `.example`) |
 >
@@ -467,6 +467,8 @@ orchestrator/
 ├── app/workflow.schema.json    # GENERATED from those two — what your editor validates against
 ├── format_workflow.py          # canonical key order + readable formatting (--check for CI)
 ├── build_schema.py             # regenerate workflow.schema.json (--check for CI)
+├── scaffold.py                 # `scaffold.py agent <id>` — writes the workflow.json entry AND
+│                               #   the app/subagents/<id>/ folder, in the canonical shape
 ├── docs/WORKFLOW_REFERENCE.md  # every workflow.json key, what reads it, what it does
 ├── kb_docs/reference/          # sample Knowledge Base corpus (replace with your own)
 ├── tests/                      # config-plane test suite (pytest; no AWS, no model, ~1s)
@@ -501,8 +503,23 @@ orchestrator/
 ## Add or change an agent
 
 An agent's `workflow.json` key IS its module name (the package under
-`app/subagents/<id>/`); a `runtime` field decides *where* it runs. Both modes use
-the same `Agent` interface, so the graph wiring is identical.
+`app/subagents/<id>/`); a `runtime` field decides *where* it runs. All three
+placements use the same `Agent` interface, so the graph wiring is identical.
+
+**The short way** — writes the config entry and the folder together, in the canonical
+shape, and prints the one decision it will not make for you:
+
+```bash
+cd orchestrator
+python3 scaffold.py agent triage --tool kb        # --dry-run to preview
+```
+
+What it generates is complete rather than a stub: the `run()` really calls the model and
+returns its answer, so you can deploy it and *then* make it yours. It deliberately does
+not put the agent in `steps`, because where a step belongs depends on what it consumes,
+and a guess would teach that ordering does not matter.
+
+**The long way**, if you would rather see the parts:
 
 1. Create `orchestrator/app/subagents/<id>/agent.py` (and a `prompts.py`):
    ```python
@@ -516,6 +533,19 @@ the same `Agent` interface, so the graph wiring is identical.
    agent = MyAgent()
    ```
    and `orchestrator/app/subagents/<id>/__init__.py` with `from .agent import agent`.
+
+   **That is the whole contract** — a package that exports `agent`, an `Agent`
+   subclass, a `run()` — and `registry.check_agent_module` enforces exactly those
+   three, naming the file and the fix when one is missing. The case worth knowing
+   about: `Agent.run` raises `NotImplementedError`, so an agent folder that was started
+   and never finished imports cleanly, configures cleanly, appears on the diagram and
+   fails the instant the run reaches it. `tests/test_subagents.py` catches that at
+   `pytest`, before a deploy.
+
+   Everything else about the folder is yours. Keeping the prompt in `prompts.py` and
+   the logic in `agent.py` is convention, asserted over the six shipped agents so they
+   stay worth copying, and not imposed on you — an agent that makes no model call has no
+   use for a prompt file.
 2. Add it to `orchestrator/app/workflow.json` under `agents` and place it in `steps`
    (a single step, in a `parallel` group, in a `sequence` group, and/or with
    `"hitl": true`).

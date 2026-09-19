@@ -293,7 +293,20 @@ for `lambdaArn` and the framework stops deploying anything.
 
 ## 3. Add your own agent
 
-Two steps.
+Two steps, and one command does both:
+
+```bash
+cd orchestrator
+python3 scaffold.py agent contract_review --tool contracts_kb   # --dry-run to preview
+```
+
+That writes the `workflow.json` entry (in the canonical key order) and the folder, and
+what it generates is complete rather than a stub — the `run()` really calls the model, so
+you can deploy and then make it yours. The one thing it leaves you is placing the agent
+in `steps`, because that depends on what it consumes.
+
+The rest of this section is what the command writes, for when you want to write it
+yourself.
 
 **a) Create the folder.** The folder name IS the agent id.
 
@@ -303,6 +316,15 @@ orchestrator/app/subagents/contract_review/
 ├── agent.py
 └── prompts.py
 ```
+
+**The contract is three lines long**, and it is all the framework asks: a package that
+exports `agent`, a subclass of `Agent`, and a `run()`. Miss one and
+`registry.check_agent_module` says which file and what to add — including the quiet case,
+a class that never overrode `run()`, which otherwise imports fine, appears on the diagram
+and fails the instant the run reaches it. `pytest` catches that before you deploy.
+
+Everything else here is yours. Three files and prompts in `prompts.py` is convention, held
+to by the shipped agents so they stay worth copying, not enforced on you.
 
 ```python
 # agent.py
