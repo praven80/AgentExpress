@@ -417,7 +417,15 @@ class A2AAgent(Agent):
             token = ""
 
         url = await asyncio.to_thread(self._endpoint, token)
-        await ctx.log(f"Delegating '{self.id}' to remote A2A agent at {url}")
+        # The recollection count is ON THE TIMELINE, not just in the telemetry, because
+        # this is the one step where a reviewer cannot look at the prompt to see what the
+        # agent was told. Long-term memory leaving this deployment is also exactly the
+        # kind of thing an operator should be able to SEE happening rather than infer
+        # from the fact that the config asks for it.
+        carried = self._recalled(ctx)
+        await ctx.log(
+            f"Delegating '{self.id}' to remote A2A agent at {url}"
+            + (f", carrying {len(carried['items'])} recalled insight(s)" if carried else ""))
         result = await asyncio.to_thread(self._send, url, ctx, token)
 
         task_id = result.get("id") if isinstance(result, dict) else None

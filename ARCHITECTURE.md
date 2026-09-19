@@ -587,6 +587,20 @@ keeps. Every one of those actually shipped at some point. Both suites were
 mutation-checked — each bug was reintroduced and confirmed to turn the suite red —
 rather than merely being green. See the two `README.md` files in those directories.
 
+**The config surface is described once and consumed four ways.**
+`orchestrator/app/keys.json` holds every key `workflow.json` may contain, which
+placement or tool type each is legal for, whether it is required, and what reads it.
+Four consumers: the allow-list tests, `format_workflow.py` for the **canonical key
+order** every agent/tool/step is written in, `build_schema.py` which generates
+`app/workflow.schema.json`, and the reference doc. `workflow.json` points at that
+schema with `$schema`, so an editor completes the legal keys for the `runtime` you
+chose, enumerates allowed values and explains each key on hover — the questions a
+customer has *before* a deploy, answered where they are asking them. The schema is
+generated rather than written because it would otherwise be a fourth encoding of rules
+that already exist in Python, CDK and Terraform, and a schema that disagreed with the
+validators is worse than none: a test asserts it rejects all 29 mistakes those
+validators reject.
+
 **The framework's closed value sets live in ONE file**, `orchestrator/app/vocabulary.json`,
 read by all three planes: `app/common/vocabulary.py` via `json`, `cdk/lib/vocabulary.ts` via
 `JSON.parse`, and `terraform/*.tf` via `jsondecode(file(...))`. Runtimes, tool types,

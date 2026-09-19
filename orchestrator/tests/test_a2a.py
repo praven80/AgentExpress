@@ -968,6 +968,47 @@ def test_a_remote_agents_asset_validates_against_the_contract_it_produces(
     assert asset.source_asset_ids == ["asset-brief-x-v1"]
 
 
+@pytest.mark.parametrize("skill,contract", [("analysis", "Analysis"),
+                                            ("recommendation", "Recommendation")])
+def test_the_shape_a_contract_skill_asks_for_is_one_the_contract_accepts(skill, contract):
+    """Checks the REQUEST, where the test above checks a reply.
+
+    An agent answers the shape it was given, so a shape naming a field the contract
+    forbids produces an invalid asset every single time — and nothing on the client side
+    notices, because the framework has no contract class for a remote agent and does not
+    validate. That is the documented cost of the boundary, and it makes this the only
+    place the mismatch can be caught: at the point where we WRITE the shape down.
+
+    It found a live one from the other direction too. `extra="forbid"` on these contracts
+    means a remote agent inventing one field invalidates the whole asset: observed on a
+    real run, one claim out of twenty-one carried its own `rationale`. A shape cannot
+    stop that on its own, so rule 10 in the prompt says so explicitly — but it can at
+    least guarantee that an agent which follows the shape EXACTLY produces something
+    valid, and that is what this asserts.
+    """
+    import importlib
+
+    contracts = importlib.import_module("app.subagents._shared.contracts")
+    model = getattr(contracts, contract)
+
+    def aliases(m):
+        return {f.alias or name for name, f in m.model_fields.items()}
+
+    def check(node, m, path):
+        unknown = set(node) - aliases(m)
+        assert not unknown, f"{path}: {sorted(unknown)} not in {m.__name__}"
+        for key, value in node.items():
+            field = next((f for n, f in m.model_fields.items() if (f.alias or n) == key), None)
+            # Descend into a nested contract: `claims: list[TracedClaim]`,
+            # `items: list[RecommendationItem]`, `sources: list[Source]`.
+            inner = getattr(field.annotation, "__args__", ())
+            nested = next((a for a in inner if hasattr(a, "model_fields")), None)
+            if nested and isinstance(value, list) and value and isinstance(value[0], dict):
+                check(value[0], nested, f"{path}.{key}[]")
+
+    check(json.loads(a2a_server().SKILLS[skill]["shape"]), model, skill)
+
+
 def test_a_card_the_server_generates_is_one_the_client_can_follow():
     """The regression this file exists for. Asserted on the URL the client would
     build from the card, because that is where a query string breaks and a path

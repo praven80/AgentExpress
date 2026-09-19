@@ -1,0 +1,615 @@
+{
+  "$comment": "FRAMEWORK KEY SPEC — every key workflow.json may contain, what reads it, and where it belongs. NOT a file a customer edits: workflow.json is yours, this is the framework's, exactly like app/vocabulary.json next to it (that one closes the VALUES, this one closes the KEYS). It exists because the answer to \"which keys may this agent have?\" used to live in three unconnected places — an allow-list inside tests/test_config_keys.py, prose tables in docs/WORKFLOW_REFERENCE.md, and validators in Python/CDK/Terraform — so a customer had to read a test file to find out, and the three could disagree. Four consumers read THIS file now: format_workflow.py (canonical key ORDER), tests/test_config_keys.py (the allow-lists), build_schema.py (generates app/workflow.schema.json, which is what makes an editor autocomplete and validate as you type), and docs generation. THE KEY ORDER IN THIS FILE IS THE CANONICAL ORDER: format_workflow.py rewrites every agent, tool and step to match it, and `--check` fails CI if a hand edit drifts. So `name` comes before `runtime` here because that is how it should read in every agent entry.",
+
+  "$notation": {
+    "group": "Which block of related keys this belongs to. Groups are emitted in the order they appear in `$groups`, keys in the order they appear in `keys` — that is what makes every agent and every tool read the same way top to bottom.",
+    "appliesTo": "\"*\" means every entry of this kind. A list names the variants (an agent's `runtime`, a tool's `type`) it is read for. A key used OUTSIDE its variants is rejected: not ignored, because a key that looks like a setting and controls nothing is worse than an absent one.",
+    "required": "true when an entry of this kind cannot work without it.",
+    "requiredFor": "Required only for these variants.",
+    "type": "JSON type, for the generated schema.",
+    "vocabulary": "The closed value set in app/vocabulary.json that constrains this value — or, for an array, each of its items.",
+    "keyVocabulary": "For a MAP: the closed set its property NAMES come from. `authorization.actions` is keyed by action name.",
+    "valueVocabulary": "For a MAP: the closed set its VALUES come from. `guardrail.contentFilters` is keyed by an AWS filter type, and each value is a strength.",
+    "itemRequired": "For an array of objects: the fields each entry must carry.",
+    "enum": "A closed value set that is NOT in vocabulary.json, because only one plane reads it.",
+    "doc": "What it does, in one line. This is the text an editor shows on hover, so it is written for whoever is editing the file, not for whoever wrote the framework.",
+    "reads": "The code that consumes it. A key with no reader must not exist — that rule is the reason this file does."
+  },
+
+  "agent": {
+    "$comment": "One entry per agent, keyed by agent id, which must match ^[a-zA-Z][a-zA-Z0-9_]*$ (no hyphens — the id becomes part of an AgentCore Runtime name). For `main` and `dedicated` the id is also the folder name under app/subagents/. FOUR KEYS ARE ON EVERY AGENT regardless of placement — name, kind, runtime, produces — and everything after them depends on `runtime`: a local agent has the model group, a remote one has the remote group, and neither has the other's. That is deliberate rather than untidy. A remote agent's `maxTokens` would read as governing its cost while doing nothing, because the model call happens on the far side of a trust boundary.",
+    "$path": "agents.<id>",
+    "$variantKey": "runtime",
+    "$variantDefault": "main",
+    "$variantAliases": { "local": ["main", "dedicated"] },
+    "$ordered": true,
+    "$groups": {
+      "identity": "Who this agent is and what it produces. On every agent.",
+      "model": "How it reasons. Local placements only — a remote agent chooses its own model.",
+      "remote": "Where it lives and how we authenticate to it. `runtime: \"a2a\"` only.",
+      "data": "What it may read. Local placements only — a remote agent reaches its own sources.",
+      "features": "Which AgentCore capabilities the framework wraps around it."
+    },
+    "$exactlyOne": [
+      {
+        "keys": ["agentCard", "source"],
+        "appliesTo": ["a2a"],
+        "why": "A remote agent's URL is either a stable value you write down (an external partner's card) or one the deploy generates (the stand-in's Function URL) and therefore cannot be committed. Both set is ambiguous; neither leaves the agent with nowhere to call."
+      }
+    ],
+    "keys": {
+      "name": {
+        "group": "identity",
+        "type": "string",
+        "appliesTo": "*",
+        "required": true,
+        "doc": "Display name, shown on the diagram, in the timeline and on a review gate.",
+        "reads": "registry.py -> agent.name; bff/workflow.py; the UI node title"
+      },
+      "kind": {
+        "group": "identity",
+        "type": "string",
+        "appliesTo": "*",
+        "enum": ["sync", "async"],
+        "doc": "Whether the step completes inline or is long-running. Presentation only today: the UI shows a chip when it is not \"sync\".",
+        "reads": "registry.py -> agent.kind; bff/workflow.py ships it; index.html renders the chip"
+      },
+      "runtime": {
+        "group": "identity",
+        "type": "string",
+        "appliesTo": "*",
+        "vocabulary": "runtimes",
+        "doc": "Where the step runs. \"main\" = in-process; \"dedicated\" = its own AgentCore Runtime; \"a2a\" = an agent you do NOT operate, reached over the Agent2Agent protocol. Defaults to \"main\".",
+        "reads": "registry.py, subagent_runtimes.tf / orchestrator-stack.ts; the UI chip"
+      },
+      "produces": {
+        "group": "identity",
+        "type": "string",
+        "appliesTo": "*",
+        "doc": "The name of this agent's deliverable, e.g. \"claim-decision\". Names the asset type, is injected into the task prompt, and is what the framework stamps as `assetType` on the asset.",
+        "reads": "nodes.py task prompt; a2a_agent.py _as_asset (the envelope on a remote reply)"
+      },
+      "model": {
+        "group": "model",
+        "type": "string",
+        "appliesTo": ["main", "dedicated"],
+        "doc": "Bedrock model id for THIS agent. Omit to use orchestrator.defaultModel — no shipped agent sets it; the mechanism is here for when one step needs a bigger model.",
+        "reads": "registry.py -> agent.model -> ctx.llm"
+      },
+      "temperature": {
+        "group": "model",
+        "type": "number",
+        "appliesTo": ["main", "dedicated"],
+        "doc": "Sampling temperature. Defaults to 0, which is what you want for an agent that emits a structured asset.",
+        "reads": "registry.py -> agent.temperature"
+      },
+      "maxTokens": {
+        "group": "model",
+        "type": "integer",
+        "appliesTo": ["main", "dedicated"],
+        "requiredFor": ["main", "dedicated"],
+        "doc": "Output token budget. Required, because too low does not surface as \"budget exceeded\" — it surfaces as an unparseable asset, so the number belongs in front of you rather than defaulted in code.",
+        "reads": "registry.py -> agent.max_tokens"
+      },
+      "source": {
+        "group": "remote",
+        "type": "string",
+        "appliesTo": ["a2a"],
+        "vocabulary": "a2aSources",
+        "doc": "Reach the A2A server this framework deploys for you, instead of an external URL. The deploy injects its endpoint, so there is nothing to commit. Exclusive with agentCard.",
+        "reads": "registry.py A2A_SOURCES; a2a.tf / orchestrator-stack.ts inject A2A_ENDPOINTS"
+      },
+      "agentCard": {
+        "group": "remote",
+        "type": "string",
+        "appliesTo": ["a2a"],
+        "doc": "An external agent's base URL or Agent Card URL. Must be https:// — the request may carry a bearer token. Exclusive with source.",
+        "reads": "a2a_agent.py; validated in all three planes"
+      },
+      "skill": {
+        "group": "remote",
+        "type": "string",
+        "appliesTo": ["a2a"],
+        "vocabulary": "a2aLambdaSkills",
+        "doc": "Which of the shipped stand-in's skills this agent is. Only meaningful with `source`: an external agent advertises its own skills in its Agent Card.",
+        "reads": "a2a.tf / orchestrator-stack.ts, as the path segment of the injected endpoint"
+      },
+      "auth": {
+        "group": "remote",
+        "type": "string",
+        "appliesTo": ["a2a"],
+        "vocabulary": "a2aAuthModes",
+        "doc": "How this deployment authenticates TO the remote agent. Must be \"sigv4\" with `source`, because that endpoint is IAM-authed. A bearer token never goes here — it is injected by the IaC, keyed by agent id.",
+        "reads": "a2a_agent.py; validated in all three planes"
+      },
+      "tool": {
+        "group": "data",
+        "type": "string",
+        "appliesTo": ["main", "dedicated"],
+        "doc": "A key in the `tools` block. Validated — a name that does not resolve fails at plan/synth, not at run time. Omit and the agent reasons purely over upstream outputs.",
+        "reads": "registry.py -> agent.tool -> ctx.call_tool / ctx.retrieve"
+      },
+      "corpus": {
+        "group": "data",
+        "type": "string",
+        "appliesTo": ["main", "dedicated"],
+        "doc": "For a type=\"kb\" tool: which corpus to retrieve from. Must be one of that tool's declared `corpora`, and the Cedar permit is narrowed to it.",
+        "reads": "registry.py -> agent.corpus -> ctx.retrieve(doc_type=)"
+      },
+      "access": {
+        "group": "data",
+        "type": "array",
+        "items": "string",
+        "appliesTo": ["main", "dedicated"],
+        "doc": "A short human label for the data source, for the UI chip. ONLY read when the agent has no `tool` — with a tool the chip comes from the tool's type, so setting both means this is never shown.",
+        "reads": "bff/workflow.py data_source -> the UI chip"
+      },
+      "agentcore": {
+        "group": "features",
+        "type": "object",
+        "appliesTo": "*",
+        "doc": "The AgentCore feature switches: memory, guardrails, evaluations, identity, policy. Omit a block to leave that capability off. See the `agentcore` spec.",
+        "reads": "context.py, evaluations/service.py, nodes.py"
+      }
+    }
+  },
+
+  "agentcore": {
+    "$comment": "The per-agent feature block, `agents.<id>.agentcore`. Dotted keys, because these are two levels deep. Every one of these is applied by the framework AROUND the agent's run(), so turning a capability on is a config change and no agent code. The block is closed for a reason worth knowing: it used to carry agentcore.gateway.targets (looked like a per-agent tool allow-list), agentcore.observability.enabled (looked like an off switch; telemetry is always captured) and agentcore.memory.shortTerm (looked per-agent; the checkpointer is deployment-wide). All three read like switches and did nothing.",
+    "$path": "agents.<id>.agentcore",
+    "$ordered": true,
+    "$groups": {
+      "memory": "What this agent remembers across runs.",
+      "guardrails": "Bedrock Guardrail application.",
+      "evaluations": "AgentCore Evaluations (LLM-as-judge).",
+      "identity": "Outbound OAuth, for an API this agent calls directly.",
+      "policy": "An app-level Cedar check."
+    },
+    "keys": {
+      "memory.longTerm": {
+        "group": "memory",
+        "type": "array",
+        "items": "string",
+        "appliesTo": "*",
+        "vocabulary": "memoryStrategies",
+        "doc": "Long-term memory strategies: \"semantic\" extracts discrete insights across runs, \"summary\" keeps a running session summary. The framework recalls before run() and stores after. `true` is shorthand for [\"semantic\"].",
+        "reads": "context.py _longterm_strategies; validated by registry.validate_features"
+      },
+      "guardrails.input": {
+        "group": "guardrails",
+        "type": "boolean",
+        "appliesTo": "*",
+        "doc": "Screen this agent's input before the model sees it. Use on any agent that reads text a human typed.",
+        "reads": "context.py guardrail(\"INPUT\")"
+      },
+      "guardrails.output": {
+        "group": "guardrails",
+        "type": "boolean",
+        "appliesTo": "*",
+        "doc": "Screen this agent's output. Use on any agent handling untrusted text.",
+        "reads": "context.py guardrail(\"OUTPUT\")"
+      },
+      "guardrails.guardrailId": {
+        "group": "guardrails",
+        "type": "string",
+        "appliesTo": "*",
+        "doc": "Use a DIFFERENT guardrail for this one agent, instead of the deployment's own. For a step whose content policy genuinely differs — a medical or legal stage inside a general pipeline. Omit and the deployment guardrail applies.",
+        "reads": "context.py guardrail() -> the GuardrailIdentifier on the Bedrock call"
+      },
+      "evaluations.enabled": {
+        "group": "evaluations",
+        "type": "boolean",
+        "appliesTo": "*",
+        "doc": "Turn on AgentCore Evaluations for this agent and show its Evaluate button.",
+        "reads": "evaluations/service.py is_enabled; bff/workflow.py evalAgents"
+      },
+      "evaluations.auto": {
+        "group": "evaluations",
+        "type": "boolean",
+        "appliesTo": "*",
+        "doc": "true scores the agent automatically when the run completes; false means on demand only. Each evaluator is a billed model call, so false is the cheaper default.",
+        "reads": "evaluations/service.py is_auto"
+      },
+      "evaluations.evaluators": {
+        "group": "evaluations",
+        "type": "array",
+        "items": "string",
+        "appliesTo": "*",
+        "pattern": "^(Builtin|Custom)\\.[A-Za-z][A-Za-z0-9]*$",
+        "doc": "Which judges to run, as Builtin.<Name> or Custom.<Name> — e.g. Builtin.Faithfulness, Builtin.Coherence. Validated on SHAPE, not against a fixed list, so an evaluator AWS adds later needs no framework edit.",
+        "reads": "evaluations/service.py evaluators_for; shape-checked by registry.validate_features"
+      },
+      "identity.outbound": {
+        "group": "identity",
+        "type": "array",
+        "items": "string",
+        "appliesTo": "*",
+        "doc": "Credential providers this agent may mint an OAuth token from, to call an external API DIRECTLY. Not needed for anything reached through the Gateway. Required when a remote agent's `auth` is \"oauth2\".",
+        "reads": "context.py get_identity_token"
+      },
+      "policy.enabled": {
+        "group": "policy",
+        "type": "boolean",
+        "appliesTo": "*",
+        "doc": "An app-level Cedar check via ctx.policy_check. Secondary — tool calls through the Gateway are already authorized server-side by the attached engine.",
+        "reads": "context.py policy_check"
+      }
+    }
+  },
+
+  "tool": {
+    "$comment": "One entry per data source, keyed by the tool's label. THE KEY IS BOTH the Gateway target name AND what an agent binds to with its `tool` field, so the two can never drift. Every tool has `type` and `description`; after that the keys depend on the type, because each type is a different kind of Gateway target with different infrastructure. The `call` group is shared by every target that publishes more than one tool. To reach something none of the five types covers — a warehouse, an RDBMS, a VPC service — put it behind a Lambda and use type=\"lambda\": that is the escape hatch, and it needs no framework change.",
+    "$path": "tools.<name>",
+    "$variantKey": "type",
+    "$ordered": true,
+    "$groups": {
+      "identity": "What kind of source this is. On every tool.",
+      "target": "Where it lives. Type-specific.",
+      "call": "How an agent invokes it and what comes back.",
+      "filter": "Narrowing applied to results.",
+      "auth": "How the Gateway authenticates to it.",
+      "policy": "The Cedar permit generated for it."
+    },
+    "$exactlyOne": [
+      {
+        "keys": ["lambdaArn", "source"],
+        "appliesTo": ["lambda"],
+        "why": "lambdaArn = a function you already own, which the framework only registers. source = one the framework ships and deploys. Same rule, for the same reason, as an a2a agent's agentCard vs source."
+      }
+    ],
+    "keys": {
+      "type": {
+        "group": "identity",
+        "type": "string",
+        "appliesTo": "*",
+        "required": true,
+        "vocabulary": "toolTypes",
+        "doc": "The kind of Gateway target to create. Closed by what the framework can provision — anything else goes behind a Lambda with type=\"lambda\".",
+        "reads": "tools.tf, tool-plane.ts, registry.validate_tool_types, gateway/client.py, the UI chip"
+      },
+      "description": {
+        "group": "identity",
+        "type": "string",
+        "appliesTo": "*",
+        "doc": "Becomes the Gateway target's description. Truncated to 190 characters on deploy.",
+        "reads": "tools.tf, tool-plane.ts"
+      },
+      "corpora": {
+        "group": "target",
+        "type": "array",
+        "items": "string",
+        "appliesTo": ["kb"],
+        "requiredFor": ["kb"],
+        "doc": "The corpora an agent may retrieve from — one per top-level folder under kb_docs/. An agent scopes itself to one with its `corpus` key.",
+        "reads": "tools.tf kb_corpora, kb.tf, tool-plane.ts, TOOLS_JSON"
+      },
+      "endpoint": {
+        "group": "target",
+        "type": "string",
+        "appliesTo": ["mcp"],
+        "requiredFor": ["mcp"],
+        "doc": "The remote MCP server's Streamable HTTP URL.",
+        "reads": "tools.tf, tool-plane.ts"
+      },
+      "schemaS3Uri": {
+        "group": "target",
+        "type": "string",
+        "appliesTo": ["openapi"],
+        "requiredFor": ["openapi"],
+        "doc": "s3:// URI of the OpenAPI schema describing the REST API to expose.",
+        "reads": "tools.tf, tool-plane.ts"
+      },
+      "lambdaArn": {
+        "group": "target",
+        "type": "string",
+        "appliesTo": ["lambda"],
+        "doc": "ARN of a function YOU deployed. The framework registers it and grants the Gateway permission to invoke it; it does not manage its code or its role.",
+        "reads": "tools.tf external_lambda_tools, tool-plane.ts"
+      },
+      "source": {
+        "group": "target",
+        "type": "string",
+        "appliesTo": ["lambda"],
+        "vocabulary": "builtinLambdaSource",
+        "doc": "Deploy the demo function this repo ships instead of naming your own ARN. Deliberately not a general \"deploy any directory\" option: a framework-deployed function needs an execution role config cannot express.",
+        "reads": "tools.tf builtin_lambda_tools, tool-plane.ts"
+      },
+      "connectorVersion": {
+        "group": "target",
+        "type": "string",
+        "appliesTo": ["websearch"],
+        "doc": "Pin the managed web-search connector's version. Omit to take the current one.",
+        "reads": "tools.tf, tool-plane.ts"
+      },
+      "listingMode": {
+        "group": "target",
+        "type": "string",
+        "appliesTo": ["mcp"],
+        "vocabulary": "toolListingModes",
+        "doc": "How the Gateway discovers the server's tools: DEFAULT caches the catalogue at creation (needed for semantic tool search), DYNAMIC forwards tools/list at invocation time and so never goes stale.",
+        "reads": "tools.tf, tool-plane.ts"
+      },
+      "call": {
+        "group": "call",
+        "type": "string",
+        "appliesTo": ["mcp", "openapi", "lambda"],
+        "doc": "Which tool on the target to invoke. REQUIRED when the target publishes more than one — the app refuses to guess, because calling the wrong tool returns real-looking data for a question nobody asked.",
+        "reads": "TOOLS_JSON -> gateway/client.py _select_tool"
+      },
+      "arg": {
+        "group": "call",
+        "type": "string",
+        "appliesTo": ["mcp", "openapi", "lambda"],
+        "doc": "The parameter an agent's query goes into. Defaults to \"query\". This one key is what makes an arbitrary MCP server reachable from config, because every server names its parameters differently.",
+        "reads": "TOOLS_JSON -> gateway/client.py _tool_arguments; the Cedar `context.input has <arg>` condition"
+      },
+      "args": {
+        "group": "call",
+        "type": "object",
+        "appliesTo": ["mcp", "openapi", "lambda"],
+        "doc": "Fixed extra arguments sent on every call, e.g. a page size.",
+        "reads": "TOOLS_JSON -> gateway/client.py"
+      },
+      "rowFields": {
+        "group": "call",
+        "type": "object",
+        "appliesTo": ["mcp", "openapi", "lambda"],
+        "doc": "Maps the roles an agent needs onto the field names YOUR payload actually uses, so an agent that COMPUTES from tool output stays config-driven instead of hardcoding your schema.",
+        "reads": "TOOLS_JSON -> ctx.call_tool_rows / extract_rows"
+      },
+      "toolSchema": {
+        "group": "call",
+        "type": "array",
+        "items": "object",
+        "appliesTo": ["lambda"],
+        "requiredFor": ["lambda"],
+        "doc": "The tools your function publishes, inline: one entry per tool with `name`, an optional `description`, and `properties` mapping each parameter to {type, required, description}. The Gateway has no other way to learn a plain Lambda's interface.",
+        "reads": "tools.tf, tool-plane.ts"
+      },
+      "maxResults": {
+        "group": "filter",
+        "type": "integer",
+        "appliesTo": ["kb", "websearch"],
+        "doc": "How many results to return — retrieval depth for a kb, page size for websearch. Raising it costs tokens on every call, which is why it is config and not a constant.",
+        "reads": "kb: KB_NUM_RESULTS in kb.tf / tool-plane.ts. websearch: TOOLS_JSON -> gateway/client.py"
+      },
+      "includeDomains": {
+        "group": "filter",
+        "type": "array",
+        "items": "string",
+        "appliesTo": ["websearch"],
+        "doc": "Restrict results to these domains, per request. A preference, not a control — an agent's own request carries it.",
+        "reads": "TOOLS_JSON -> gateway/client.py filters.domainFilter.include"
+      },
+      "excludeDomains": {
+        "group": "filter",
+        "type": "array",
+        "items": "string",
+        "appliesTo": ["websearch"],
+        "doc": "Drop results from these domains, per request.",
+        "reads": "TOOLS_JSON -> gateway/client.py filters.domainFilter.exclude"
+      },
+      "targetIncludeDomains": {
+        "group": "filter",
+        "type": "array",
+        "items": "string",
+        "appliesTo": ["websearch"],
+        "doc": "The same restriction applied at the TARGET, so an agent cannot widen it. Use this one when the domain list is a rule rather than a preference.",
+        "reads": "tools.tf / tool-plane.ts only — never reaches the agent"
+      },
+      "targetExcludeDomains": {
+        "group": "filter",
+        "type": "array",
+        "items": "string",
+        "appliesTo": ["websearch"],
+        "doc": "Target-level exclusion, enforced by infrastructure rather than by the request.",
+        "reads": "tools.tf / tool-plane.ts only"
+      },
+      "publishedFrom": {
+        "group": "filter",
+        "type": "string",
+        "appliesTo": ["websearch"],
+        "doc": "Ignore results published before this ISO-8601 date — for a question where stale guidance is worse than no guidance.",
+        "reads": "tools.tf, TOOLS_JSON -> gateway/client.py publishedDateFilter.from"
+      },
+      "publishedTo": {
+        "group": "filter",
+        "type": "string",
+        "appliesTo": ["websearch"],
+        "doc": "Ignore results published after this ISO-8601 date.",
+        "reads": "tools.tf, TOOLS_JSON -> gateway/client.py publishedDateFilter.to"
+      },
+      "auth": {
+        "group": "auth",
+        "type": "string",
+        "appliesTo": ["mcp", "openapi"],
+        "vocabulary": "toolAuthModes",
+        "doc": "Outbound auth from the Gateway to the endpoint: \"apikey\" is vaulted and sent as X-API-Key, \"sigv4\" signs with the Gateway's own role so there is no secret at all. The key itself goes in tool_api_keys, never here.",
+        "reads": "tools.tf, tool-plane.ts"
+      },
+      "service": {
+        "group": "auth",
+        "type": "string",
+        "appliesTo": ["mcp", "openapi"],
+        "doc": "The AWS service name to sign for when auth is \"sigv4\". Auto-detected from the endpoint; set it only when that guess is wrong.",
+        "reads": "tools.tf auth_service, tool-plane.ts"
+      },
+      "policy.tool": {
+        "group": "policy",
+        "type": "string",
+        "appliesTo": "*",
+        "doc": "Narrow the generated Cedar permit to ONE tool name. Omit for a target-level permit, which is what a remote MCP server needs, since its tool names are not known at deploy time.",
+        "reads": "tools.tf policy_tool, tool-plane.ts"
+      },
+      "policy.restrictTo": {
+        "group": "policy",
+        "type": "object",
+        "appliesTo": "*",
+        "doc": "Argument allow-lists, e.g. {\"filter\": [\"reference\"]}. Enforced AT THE GATEWAY, so a prompt-injected attempt to widen access is refused by infrastructure rather than by prompt wording.",
+        "reads": "tools.tf policy_restrict -> the Cedar `when` clause, tool-plane.ts"
+      },
+      "policy.permit": {
+        "group": "policy",
+        "type": "boolean",
+        "appliesTo": "*",
+        "doc": "false registers the target but deliberately does NOT permit it — useful for proving default-deny. Defaults to true.",
+        "reads": "tools.tf permitted_tools, tool-plane.ts"
+      }
+    }
+  },
+
+  "step": {
+    "$comment": "The topology, in order. Each step runs one agent, a `parallel` group (concurrently, joined at one gate) or a `sequence` group (one after another, one gate after both). Add `hitl` for a human review gate, `branch` to let the step's OWN OUTPUT choose what runs next. A step has no `type` discriminator, so every key here applies to every step — but three of them are mutually exclusive and two only mean anything on a group.",
+    "$path": "steps[]",
+    "$ordered": true,
+    "$groups": {
+      "body": "What runs. Exactly one of these three.",
+      "gate": "The human review gate after it.",
+      "route": "Letting the output choose the next step."
+    },
+    "$exactlyOne": [
+      {
+        "keys": ["agent", "parallel", "sequence"],
+        "appliesTo": "*",
+        "why": "A step runs one agent, a concurrent group or a chained group. Anything else has no meaning, and both the graph builder and the topology derivation assume exactly one."
+      }
+    ],
+    "keys": {
+      "agent": {
+        "group": "body",
+        "type": "string",
+        "appliesTo": "*",
+        "doc": "Run this one agent. The id must exist in the `agents` block.",
+        "reads": "config.step_agents, graph_builder"
+      },
+      "parallel": {
+        "group": "body",
+        "type": "array",
+        "items": "string",
+        "appliesTo": "*",
+        "doc": "Run these agents CONCURRENTLY and join. `branch` is rejected on a parallel step, because there is no single decider.",
+        "reads": "config.step_agents, graph_builder"
+      },
+      "sequence": {
+        "group": "body",
+        "type": "array",
+        "items": "string",
+        "appliesTo": "*",
+        "doc": "Run these agents one after another, with one gate after all of them — so a revise re-runs the whole chain.",
+        "reads": "config.step_agents, graph_builder"
+      },
+      "hitl": {
+        "group": "gate",
+        "type": "boolean",
+        "appliesTo": "*",
+        "doc": "Pause after this step for a human to approve, revise or deny. Revise re-runs the step with the reviewer's comment as feedback.",
+        "reads": "graph_builder gate nodes and routers"
+      },
+      "gateId": {
+        "group": "gate",
+        "type": "string",
+        "appliesTo": "*",
+        "doc": "A name for a GROUP step's gate, which is also the name a `branch` uses to route to this step. Defaults to group<i>. Inert on a single-agent step, whose gate is always <agent>_gate.",
+        "reads": "graph_builder _gate_id / _step_name; index.html"
+      },
+      "gateName": {
+        "group": "gate",
+        "type": "string",
+        "appliesTo": "*",
+        "doc": "The gate's display name, shown to the reviewer. Falls back to gateId.",
+        "reads": "graph_builder group/sequence gate nodes; index.html"
+      },
+      "branch": {
+        "group": "route",
+        "type": "object",
+        "appliesTo": "*",
+        "doc": "Let this step's output pick the next step: {\"when\": [rules], \"default\": \"<step>\"}. Each rule needs `goto` plus at least one comparison, and may name a `field` (a dot path into the output JSON) or omit it to match the raw text. Rejected on a parallel step and on the last step.",
+        "reads": "graph_builder validate_branches / make_branch_node; branching.py"
+      }
+    }
+  },
+
+  "orchestrator": {
+    "$comment": "Engine-wide settings. Not an agent — it has no model or prompt of its own. Not reordered by the formatter: there is only ONE of these blocks, so there is no second one to read consistently against.",
+    "$path": "orchestrator",
+    "$ordered": false,
+    "keys": {
+      "defaultModel": {
+        "type": "string",
+        "doc": "Model for any agent that does not name its own. BEDROCK_MODEL_ID overrides it.",
+        "reads": "config.py MODEL_ID"
+      },
+      "runtimeInvoke": {
+        "type": "object",
+        "doc": "Calling a `dedicated` agent's runtime: maxAttempts (total, default 1 — InvokeAgentRuntime is not idempotent, so a retry bills a second model call and returns whichever answered last) and readTimeoutSeconds (default 120).",
+        "reads": "config.py RUNTIME_INVOKE -> agentcore_agent"
+      },
+      "a2aInvoke": {
+        "type": "object",
+        "doc": "Calling a `runtime: \"a2a\"` agent: timeoutSeconds per request (default 30 — keep it ABOVE the remote agent's own timeout so the side that gives up first can say why), pollIntervalSeconds (2) and maxPollSeconds (300) for a task that is still working.",
+        "reads": "config.py A2A_INVOKE -> a2a_agent"
+      },
+      "insights": {
+        "type": "object",
+        "doc": "AgentCore Insights timings: lookbackHours (168), pollTimeoutSeconds (900), pollIntervalSeconds (20).",
+        "reads": "config.py INSIGHTS -> features/optimization/insights.py"
+      },
+      "modelRates": {
+        "type": "object",
+        "doc": "Per-model token rates keyed by a substring of the model id, e.g. {\"nova-pro\": {\"input\": 0.80, \"output\": 3.20}} in USD per million. Set this for your own model — an unknown one is priced at a fallback and the telemetry row is marked rates_known=false.",
+        "reads": "config.py MODEL_RATES -> observability/pricing.py"
+      },
+      "policy": {
+        "type": "object",
+        "doc": "The Cedar policy engine: enabled, and mode ENFORCE (a DENY blocks the call) or LOG_ONLY (evaluate and log — the safe way to roll out).",
+        "reads": "policy.tf / orchestrator-stack.ts; mode reaches the app as GATEWAY_POLICY_MODE"
+      },
+      "chatbot": {
+        "type": "object",
+        "doc": "The in-app assistant: enabled, model, greeting, placeholder, and a `tools` map of per-capability flags (anything unlisted defaults to ON).",
+        "reads": "bff/chatbot.py and the bff/workflow.py projection to the browser"
+      }
+    }
+  },
+
+  "ui": {
+    "$comment": "Every user-facing string in the shell, so re-branding is a config edit rather than an index.html edit. All optional — the page has a neutral fallback for each — and all guarded: a `ui` key nothing renders fails the suite, because a presentation key that does nothing is worse than an absent one (you edit it and see no change, with nothing to tell you why).",
+    "$path": "ui",
+    "$ordered": false,
+    "keys": {
+      "title": { "type": "string", "doc": "Browser tab title.", "reads": "index.html applyUiConfig -> document.title" },
+      "heading": { "type": "string", "doc": "The header, top left.", "reads": "index.html applyUiConfig -> header h1" },
+      "defaultTopic": { "type": "string", "doc": "Pre-filled topic, AND the server-side default when a run is started with no topic.", "reads": "config.py DEFAULT_TOPIC, bff/handler.py, applyUiConfig" },
+      "topicPlaceholder": { "type": "string", "doc": "The topic input's placeholder and accessible name.", "reads": "index.html applyUiConfig" },
+      "subjectPlaceholder": { "type": "string", "doc": "The subject input's placeholder and accessible name.", "reads": "index.html applyUiConfig" },
+      "subjectHint": { "type": "string", "doc": "The subject input's tooltip.", "reads": "index.html applyUiConfig" },
+      "assistantTitle": { "type": "string", "doc": "The assistant panel's title.", "reads": "index.html initChatbot" },
+      "assistantSubtitle": { "type": "string", "doc": "The line under it.", "reads": "index.html initChatbot" }
+    }
+  },
+
+  "guardrail": {
+    "$comment": "The Bedrock Guardrail POLICY — what is enforced. Which agents it is applied to is per agent, in agentcore.guardrails. Omit any key and that policy block is not created at all; omit the whole block for an empty guardrail. Read only by the IaC: the app just gets a GUARDRAIL_ID.",
+    "$path": "guardrail",
+    "$ordered": false,
+    "keys": {
+      "contentFilters": { "type": "object", "valueVocabulary": "guardrailFilterStrengths", "doc": "Filter type -> strength, applied to input and output. PROMPT_ATTACK is input-only, so its output strength is forced to NONE.", "reads": "guardrail.tf, orchestrator-stack.ts buildGuardrail" },
+      "deniedWords": { "type": "array", "items": "string", "doc": "Exact custom terms to block.", "reads": "guardrail.tf, buildGuardrail" },
+      "managedWordLists": { "type": "array", "items": "string", "doc": "AWS-managed lists, e.g. PROFANITY.", "reads": "guardrail.tf, buildGuardrail" },
+      "deniedTopics": { "type": "array", "items": "object", "itemRequired": ["name", "definition"], "doc": "Topics to refuse. Each needs a `name` and a `definition` — a definition is what Bedrock actually matches on, so one without it silently blocks nothing. `examples` optional.", "reads": "guardrail.tf, buildGuardrail" },
+      "piiEntities": { "type": "object", "valueVocabulary": "guardrailPiiActions", "doc": "Bedrock PII entity type -> BLOCK or ANONYMIZE.", "reads": "guardrail.tf, buildGuardrail" },
+      "blockedInputMessage": { "type": "string", "doc": "What the user sees when their input is blocked.", "reads": "guardrail.tf, buildGuardrail" },
+      "blockedOutputMessage": { "type": "string", "doc": "What the user sees when generated content is blocked.", "reads": "guardrail.tf, buildGuardrail" }
+    }
+  },
+
+  "authorization": {
+    "$comment": "Who may act on a run. An action ABSENT from the `actions` map is unrestricted, so this block is an opt-in list of restrictions rather than a full policy. Enforced in the BFF, and projected to the UI so it can disable a control it knows will 403 instead of offering it and failing.",
+    "$path": "authorization",
+    "$ordered": false,
+    "keys": {
+      "groupsClaim": { "type": "string", "doc": "The JWT claim holding the caller's groups. Defaults to \"cognito:groups\".", "reads": "bff/authz.py" },
+      "actions": { "type": "object", "keyVocabulary": "authorizationActions", "doc": "Action -> the group names allowed to take it. Each action name is a route in bff/handler.py; one with no route would read as a restriction and gate nothing. An action you omit is UNRESTRICTED.", "reads": "bff/authz.py; bff/workflow.py projects it to the UI" }
+    }
+  }
+}

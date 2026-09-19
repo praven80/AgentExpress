@@ -457,6 +457,74 @@ def test_recalled_insights_reach_the_remote_agent_with_their_caveat():
     assert task["recalledContext"]["caveat"] == RECALL_CAVEAT
 
 
+def test_the_timeline_says_how_many_recollections_left_the_deployment():
+    """Visible, not inferred. This is the one step where a reviewer cannot read the
+    prompt to see what the agent was told — and recollections crossing a trust boundary
+    is something an operator should be able to watch happen rather than deduce from the
+    config asking for it."""
+    import asyncio
+    import json
+    from types import SimpleNamespace
+
+    from conftest import workflow
+
+    defn = {
+        "orchestrator": {"a2aInvoke": {"timeoutSeconds": 5, "pollIntervalSeconds": 0,
+                                       "maxPollSeconds": 1}},
+        "tools": {},
+        "agents": {
+            "intake": {"name": "Intake", "runtime": "dedicated", "maxTokens": 100},
+            "partner": {"name": "Partner", "runtime": "a2a",
+                        "agentCard": "https://agents.partner.example"},
+        },
+        "steps": [{"agent": "intake"}, {"agent": "partner"}],
+    }
+    logs: list[str] = []
+    ctx = SimpleNamespace(
+        topic="t", session_id="s1", agent_id="partner", state={"outputs": {}},
+        feedback="", recalled_memory=["one", "two"],
+        log=lambda m: (logs.append(m), asyncio.sleep(0))[1])
+
+    class Resp:
+        def __init__(self, payload):
+            self._b = json.dumps(payload).encode()
+
+        def read(self):
+            return self._b
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def urlopen(request, timeout=None):
+        if request.data:
+            body = json.loads(request.data)
+            return Resp({"jsonrpc": "2.0", "id": body["id"], "result": {
+                "id": "t1", "status": {"state": "completed"},
+                "artifacts": [{"parts": [{"kind": "text", "text": "done"}]}]}})
+        return Resp({"url": "https://agents.partner.example/rpc"})
+
+    with workflow(defn) as imp:
+        mod = imp("app.common.a2a_agent")
+        mod.urllib.request.urlopen = urlopen
+        asyncio.run(imp("app.orchestrator.registry").load_agents()["partner"].run(ctx))
+
+    assert any("carrying 2 recalled insight(s)" in m for m in logs), logs
+
+    # And an agent with no memory configured says nothing about it, rather than
+    # "carrying 0", which would read as memory having run and found nothing.
+    logs.clear()
+    ctx.recalled_memory = []
+    with workflow(defn) as imp:
+        mod = imp("app.common.a2a_agent")
+        mod.urllib.request.urlopen = urlopen
+        asyncio.run(imp("app.orchestrator.registry").load_agents()["partner"].run(ctx))
+    assert any("Delegating 'partner'" in m for m in logs)
+    assert not any("recalled insight" in m for m in logs), logs
+
+
 def test_no_recalled_insights_means_no_key_at_all():
     """Rather than an empty list, which reads as "memory ran and found nothing" when
     what happened is that memory is not configured for this agent."""

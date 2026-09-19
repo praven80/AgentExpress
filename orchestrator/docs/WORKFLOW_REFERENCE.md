@@ -8,7 +8,41 @@ explanation so `workflow.json` can stay short enough to read as configuration.
 accumulated keys that looked like switches and did nothing, which is worse than no
 key at all, since a reader believes them.
 
-After editing, run `python3 format_workflow.py` (add `--check` in CI).
+## Before you read any of this: your editor already knows
+
+`workflow.json` starts with `"$schema": "./workflow.schema.json"`, so any mainstream
+editor will, as you type, complete the keys legal **for the `runtime` or `type` you
+chose**, underline a value outside its allowed set and list the alternatives, mark a
+missing required key, and show on hover both what a key does and which code reads it.
+Most of what follows is the same information in prose, for when you want the reasoning
+rather than the rule.
+
+Three framework-owned files sit behind that, none of which you edit:
+
+| File | Holds |
+|---|---|
+| `app/keys.json` | which keys exist, where each one is legal, and what reads it |
+| `app/vocabulary.json` | the closed value sets (`runtime`, tool `type`, auth modes, …) |
+| `app/workflow.schema.json` | **generated** from the two above — what your editor uses |
+
+## Two commands
+
+```bash
+python3 format_workflow.py    # canonical key order + readable formatting (--check in CI)
+python3 build_schema.py       # regenerate the schema after a framework upgrade (--check in CI)
+```
+
+**Every agent, tool and step is written in the same key order**, and the formatter is
+what guarantees it rather than your discipline. An agent reads: who it is (`name`,
+`kind`, `runtime`, `produces`) → how it reasons (`model`, `temperature`, `maxTokens`)
+*or*, for `runtime: "a2a"`, where it lives (`source`/`agentCard`, `skill`, `auth`) →
+what it may read (`tool`, `corpus`, `access`) → `agentcore`. A tool reads: `type`,
+`description` → where it lives → how it is called → filters → `auth` → `policy`. Hand
+edits are re-ordered on the next format, and `--check` fails CI if one drifts, so the
+shape is learned once instead of re-read per entry.
+
+An unrecognised key is **kept**, not silently dropped — it has to survive to the
+validator that can name it.
 
 ---
 
@@ -317,8 +351,17 @@ Current values: `intake` 3000, the three evidence-gathering research agents 4000
 `cost_research` 1500 (it emits a small rates table, not prose), `report` 8000.
 
 `analysis` and `recommendation` have none, because they are `runtime: "a2a"` and a remote
-agent's budget is its own — for the shipped stand-in it is 6000 each, declared per skill
-in `a2a_lambda/handler.py`.
+agent's budget is its own — for the shipped stand-in it is 8000 each, declared per skill
+in `a2a_lambda/handler.py`, with the reviewer skills left on the 2000 default.
+
+Across the A2A boundary this number matters more than it does locally, and in a different
+way. A local agent that runs out of room repairs the JSON and stamps a `limitations`
+entry, so the asset is usable and the reviewer is told. The remote agent cannot tell you
+that — from the client's side a cut-off reply is just a reply — so the shipped stand-in
+**refuses** a truncated answer as a failed task instead, and the run stops with the skill
+and the budget named in the error. Correct, but it means the budget wants headroom rather
+than a fit: 6000 was enough for these two until one prompt change asked each item to
+carry an extra assetId, and the next run failed.
 
 These were literals buried at each call site until they were moved here. Nothing in
 `app/subagents/` passes `max_tokens` any more, and a test enforces that — otherwise

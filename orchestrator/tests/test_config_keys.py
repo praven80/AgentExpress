@@ -14,10 +14,21 @@ did nothing:
                                      is deployment-wide
 
 A config key that appears to control something and doesn't is worse than no key at
-all, because a reader will believe it. So the allow-lists below are deliberately
-CLOSED: adding a key to workflow.json without wiring it up fails here.
+all, because a reader will believe it. So the allow-lists are deliberately CLOSED:
+adding a key to workflow.json without wiring it up fails here.
 
-If you add a real key, add it here and note where it is read.
+WHERE THE ALLOW-LISTS LIVE, AND WHY THEY MOVED
+They used to be four dicts at the top of this file. That worked, and it put the
+answer to "which keys may an agent have?" inside a TEST — so a customer had to read
+the test suite to find out, docs/WORKFLOW_REFERENCE.md restated it in prose, and an
+editor could not help at all. Three copies of one fact, one of them in a file nobody
+adopting the framework would think to open.
+
+They live in `app/keys.json` now, beside `app/vocabulary.json`: that file closes the
+VALUES, this one closes the KEYS. Four consumers read it — this module,
+`format_workflow.py` for the canonical key order, `build_schema.py` for the JSON
+Schema an editor validates against as you type, and the reference doc. The tests
+below still do the enforcing; they no longer own the list.
 """
 
 import json
@@ -25,73 +36,31 @@ import json
 import pytest
 from conftest import ORCH_ROOT
 
-# Agent-level keys, each with the module that reads it.
-AGENT_KEYS = {
-    "name": "registry.py -> agent.name; UI node title",
-    "kind": ("registry.py:34 -> agent.kind (\"sync\" | \"async\"); bff/workflow.py ships it; "
-             "index.html renders it as a chip when it is not \"sync\""),
-    "runtime": "registry.py (main | dedicated | a2a); subagent_runtimes.tf; UI chip",
-    "agentCard": "a2a_agent.py -> the remote agent's Agent Card URL; runtime \"a2a\" only",
-    "auth": "a2a_agent.py -> none | bearer | oauth2 | sigv4; runtime \"a2a\" only",
-    "source": ("registry.py A2A_SOURCES -> the stand-in A2A server the IaC deploys "
-               "and injects a URL for; runtime \"a2a\" only, exclusive with agentCard"),
-    "skill": ("a2a.tf / orchestrator-stack.ts -> the path segment of the injected "
-              "endpoint, selecting which of the stand-in's reviewers this agent is; "
-              "only with `source`"),
-    "model": "registry.py -> agent.model (omit to use orchestrator.defaultModel)",
-    "maxTokens": "registry.py -> agent.max_tokens, the model output budget",
-    "temperature": "registry.py -> agent.temperature",
-    "tool": "registry.py -> agent.tool; validated against the tools block",
-    "corpus": "registry.py -> agent.corpus; validated against tools.<kb>.corpora",
-    "produces": "nodes.py, injected into the agent's task prompt",
-    "access": "UI data-source chip, ONLY for an agent with no `tool`",
-    "agentcore": "the feature block, keys below",
-}
+SPEC = json.loads((ORCH_ROOT / "app" / "keys.json").read_text())
 
-# agentcore.* keys, dotted, each with its reader.
-AGENTCORE_KEYS = {
-    "memory.longTerm": "context.py:200 - recall/store across runs",
-    "identity.outbound": "context.py:272 - OAuth providers ctx.get_identity_token may use",
-    "guardrails.input": "context.py:146 - Bedrock guardrail before the model call",
-    "guardrails.output": "context.py:146 - Bedrock guardrail after the model call",
-    "evaluations.enabled": "evaluations/service.py:is_enabled",
-    "evaluations.auto": "evaluations/service.py:is_auto",
-    "evaluations.evaluators": "evaluations/service.py:evaluators_for",
-    "policy.enabled": "context.py:policy_check",
-}
 
-TOP_LEVEL = {
-    "$comment", "orchestrator", "ui", "guardrail", "authorization", "tools",
-    "agents", "steps",
-}
+def _keys(block: str) -> dict:
+    """One block's key -> reader map, from the spec."""
+    return {k: v["reads"] for k, v in SPEC[block]["keys"].items()}
 
-ORCHESTRATOR_KEYS = {
-    "defaultModel": "config.py:MODEL_ID fallback",
-    "modelRates": ("config.py:MODEL_RATES -> observability/pricing.py; per-model token "
-                   "rates so a customer's own model is costed correctly without a "
-                   "framework edit. Unknown models are marked rates_known=False"),
-    "insights": ("config.py:INSIGHTS -> features/optimization/insights.py "
-                 "(lookbackHours, pollTimeoutSeconds, pollIntervalSeconds)"),
-    "runtimeInvoke": "config.py:RUNTIME_INVOKE -> agentcore_agent._agentcore (SDK retries/timeout)",
-    "a2aInvoke": "config.py:A2A_INVOKE -> a2a_agent (request timeout, poll interval, poll budget)",
-    "policy": "policy.tf / tool-plane.ts - Cedar engine on/off + mode",
-    "chatbot": "bff/chatbot.py + the UI gate",
-}
-# Presentation strings. Every one must have a reader, for the same reason as the
-# rest: `chatbot.greeting` and `chatbot.placeholder` sat in this file for a while
-# WITHOUT being shipped in the BFF projection, so a customer could edit them and the
-# UI would keep showing its own hardcoded copy. That is the failure mode this whole
-# module exists to catch, and `ui` was the one block it did not cover.
-UI_KEYS = {
-    "title": "index.html:applyUiConfig -> document.title",
-    "heading": "index.html:applyUiConfig -> header h1",
-    "defaultTopic": "config.py:DEFAULT_TOPIC, bff/handler.py:DEFAULT_TOPIC, applyUiConfig",
-    "topicPlaceholder": "index.html:applyUiConfig -> #topic placeholder + aria-label",
-    "subjectPlaceholder": "index.html:applyUiConfig -> #subject placeholder + aria-label",
-    "subjectHint": "index.html:applyUiConfig -> #subject title",
-    "assistantTitle": "index.html:initChatbot -> assistant panel title",
-    "assistantSubtitle": "index.html:initChatbot -> assistant panel subtitle",
-}
+
+AGENT_KEYS = _keys("agent")
+AGENTCORE_KEYS = _keys("agentcore")
+TOOL_KEYS = _keys("tool")
+STEP_KEYS = _keys("step")
+ORCHESTRATOR_KEYS = _keys("orchestrator")
+UI_KEYS = _keys("ui")
+GUARDRAIL_KEYS = _keys("guardrail")
+AUTHORIZATION_KEYS = _keys("authorization")
+
+# The top-level blocks, derived from each spec block's `$path` rather than listed, so a
+# block cannot be added to the spec and forgotten here. `agent` describes one entry of
+# `agents`, so the container name is what the path's first segment says.
+# `$comment` is for whoever opens the file; `$schema` is what points their editor at
+# app/workflow.schema.json, which is where the autocomplete comes from.
+TOP_LEVEL = {"$comment", "$schema"} | {
+    SPEC[b]["$path"].split(".")[0].removesuffix("[]") for b in SPEC
+    if not b.startswith("$")}
 
 
 def wf() -> dict:
@@ -114,6 +83,35 @@ def test_no_unread_agent_keys():
         assert not unknown, (
             f"agent {aid!r} has key(s) nothing reads: {sorted(unknown)}. Either wire "
             f"them up or remove them — see this file's docstring.")
+
+
+def test_no_unread_tool_keys():
+    """The `tools` block had NO allow-list at all until the spec was written, so a tool
+    key nothing reads passed every test here — the exact hole this module exists to
+    close, in the one block it did not cover. `policy` is checked one level down."""
+    for name, tool in (wf().get("tools") or {}).items():
+        unknown = set(tool) - {k.partition(".")[0] for k in TOOL_KEYS}
+        assert not unknown, (
+            f"tool {name!r} has key(s) nothing reads: {sorted(unknown)}. Either wire "
+            f"them up in app/keys.json or remove them.")
+        nested = {f"policy.{k}" for k in (tool.get("policy") or {})}
+        assert nested <= set(TOOL_KEYS), (
+            f"tool {name!r} policy has key(s) nothing reads: "
+            f"{sorted(nested - set(TOOL_KEYS))}")
+
+
+def test_no_unread_step_keys():
+    for i, step in enumerate(wf().get("steps") or []):
+        unknown = set(step) - set(STEP_KEYS)
+        assert not unknown, f"steps[{i}] has key(s) nothing reads: {sorted(unknown)}"
+
+
+def test_no_unread_top_level_block_keys():
+    """`guardrail` and `authorization` are read only by the IaC, which made them the
+    easiest place for a key to rot unnoticed — nothing in the app would ever touch it."""
+    for block, allowed in (("guardrail", GUARDRAIL_KEYS), ("authorization", AUTHORIZATION_KEYS)):
+        unknown = set(wf().get(block) or {}) - set(allowed)
+        assert not unknown, f"{block} has key(s) nothing reads: {sorted(unknown)}"
 
 
 def test_no_unread_agentcore_keys():

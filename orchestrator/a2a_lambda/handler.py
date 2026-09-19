@@ -172,9 +172,17 @@ SKILLS: dict[str, dict] = {
                        "it.",
         "tags": ["analysis", "synthesis", "provenance"],
         # An analysis over four research findings does not fit in the reviewers' budget.
-        # Declared per skill rather than raised for everyone, because a compliance
-        # review that is given 6000 tokens does not get better, it gets longer.
-        "maxTokens": 6000,
+        # Declared per skill rather than raised for everyone, because a compliance review
+        # given 8000 tokens does not get better, it gets longer.
+        #
+        # 8000 and not 6000, which is what the local versions of these agents used. 6000
+        # turned out to be the edge rather than the fit: a measured run produced 21.4 KB
+        # of recommendation JSON and the NEXT run failed outright, because asking each
+        # item to carry the analysis assetId alongside its research ids (see the prompt)
+        # added enough to cross the ceiling. That failure was correct and legible — the
+        # stand-in refuses a cut-off answer and names the budget — but a budget that a
+        # normal run sits on the edge of is a budget that is too small.
+        "maxTokens": 8000,
         "prompt": (
             "You are an independent analysis agent. Synthesize the request and the approved "
             "research findings you are given into ONE cohesive analysis.\n\n"
@@ -208,7 +216,13 @@ SKILLS: dict[str, dict] = {
             "7. If an input says something is unavailable, that is a limitation, not a "
             "finding.\n"
             "8. Counts must match the lists they count.\n"
-            "9. No preamble about being an AI, and no commentary on the request's quality."
+            "9. No preamble about being an AI, and no commentary on the request's quality.\n"
+            "10. RETURN EXACTLY THE FIELDS IN THE SHAPE AND NO OTHERS, at every level "
+            "including inside each claim. The caller feeds this into a strict contract that "
+            "rejects an unknown field, and it has no way to tell a useful addition from a "
+            "typo. Observed live: one claim out of twenty-one carried its own `rationale`, "
+            "which invalidated the whole asset. If you have per-claim reasoning to give, it "
+            "belongs in the top-level `rationale`, which is FOR that."
         ),
         # The CONTENT of app/subagents/_shared/contracts/analysis.py. No envelope
         # fields: the orchestrator stamps assetId/version/status/createdAt/
@@ -233,14 +247,25 @@ SKILLS: dict[str, dict] = {
         "description": "Turns an approved analysis into a prioritized set of recommended "
                        "actions, each traced to the asset that justifies it.",
         "tags": ["recommendation", "prioritization", "provenance"],
-        "maxTokens": 6000,
+        # See the note on the analysis skill: 6000 was the ceiling this one actually hit.
+        "maxTokens": 8000,
         "prompt": (
             "You are an independent recommendation agent. Turn the approved analysis you are "
             "given into a prioritized set of actionable recommendations.\n\n"
             "The inputs arrive as JSON: `request` is what the run is for, `upstreamOutputs` "
             "holds the approved assets from earlier steps, and `reviewerFeedback` — when "
-            "present — is a human's instruction for THIS revision, which takes precedence. "
-            "Trace each item to the `assetId`s that justify it.\n\n"
+            "present — is a human's instruction for THIS revision, which takes precedence.\n\n"
+            "THE ANALYSIS IS YOUR PRIMARY INPUT, AND EVERY ITEM MUST TRACE TO IT. "
+            "`upstreamOutputs` carries the whole run, including the raw research the analysis "
+            "was built FROM — so it is easy to reach past the analysis and cite the research "
+            "directly. Do not. Your job is to act on the analysis's conclusions, not to redo "
+            "them, and an item that cites only research assets is doing the previous agent's "
+            "work again while hiding whether its analysis was used at all. Put the `assetId` of "
+            "the asset whose `assetType` is \"analysis\" in every item's `tracedToAssetIds`, "
+            "and add a research `assetId` ALONGSIDE it when a specific figure or citation in "
+            "that item comes from one. Measured on a live run before this paragraph existed: "
+            "seven items out of seven cited research only, and the analysis appeared nowhere "
+            "except in `sources`.\n\n"
             "ONE DECISION, ONE ITEM. Before you answer, read your own list and merge every "
             "item that rests on the SAME missing input or the SAME underlying decision. "
             "Measured on the in-house version of this agent: four separate items — defer the "
@@ -271,15 +296,20 @@ SKILLS: dict[str, dict] = {
             "that is the one item above and `assumptions`.\n"
             "4. If an input says something is unavailable, it cannot become an action. Name "
             "the gap and what closing it would unblock.\n"
-            "5. No preamble about being an AI, and no commentary on the request's quality."
+            "5. No preamble about being an AI, and no commentary on the request's quality.\n"
+            "6. RETURN EXACTLY THE FIELDS IN THE SHAPE AND NO OTHERS, at every level "
+            "including inside each item. The caller feeds this into a strict contract that "
+            "rejects an unknown field, and it has no way to tell a useful addition from a "
+            "typo."
         ),
         # The CONTENT of app/subagents/_shared/contracts/recommendation.py.
         "shape": ('{"executiveSummary": "1-2 sentences on the SUBJECT, for a reviewer", '
                   '"summary": "overview of the recommendations", '
                   '"items": [{"title": "the recommended action", "detail": "what to do", '
                   '"priority": "high|medium|low", '
-                  '"rationale": "why, grounded in the upstream assets", '
-                  '"tracedToAssetIds": ["the asset-... ids that support it"]}], '
+                  '"rationale": "why, grounded in the analysis", '
+                  '"tracedToAssetIds": ["the analysis asset-... id, ALWAYS, plus any research '
+                  'asset-... id a specific figure in this item came from"]}], '
                   '"risks": ["risks to weigh, or []"], "assumptions": ["...", "or []"], '
                   '"sources": [{"sourceId": "s1", '
                   '"sourceType": "analysis|request-brief|other", '

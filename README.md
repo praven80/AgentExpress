@@ -31,11 +31,22 @@ for your use case.
 > `workflow.json` fails at `terraform plan` / `cdk synth` with a message naming the
 > offending entry, rather than at deploy or at run time.
 >
+> **And `workflow.json` explains itself as you type.** It carries
+> `"$schema": "./workflow.schema.json"`, so your editor completes only the keys legal
+> for the `runtime` or tool `type` you chose, enumerates the allowed values for each,
+> flags a missing required key, and shows on hover what a key does *and* which code
+> reads it. Every agent, tool and step is written in the same key order — an agent goes
+> identity → how it reasons → what it may read → features — and `python3
+> format_workflow.py` enforces that rather than your discipline. The schema is
+> generated from `app/keys.json` + `app/vocabulary.json`, so it cannot drift from what
+> the three planes actually enforce; a test asserts it rejects all 29 mistakes they
+> reject.
+>
 > Verified rather than asserted. Two checks are run against this repo: swapping in a
 > different 4-agent workflow in another domain — renamed agents, a different topology,
 > its own tool, guardrail and branding — and separately renaming a shipped agent by
 > touching only `workflow.json` and its own folder. Both compile the graph and pass
-> the full suite (652 Python + 132 TypeScript), `terraform validate` and `cdk synth`
+> the full suite (704 Python + 132 TypeScript), `terraform validate` and `cdk synth`
 > with no other change.
 >
 > Four couplings remain, none of which blocks a typical use case: the five tool
@@ -450,7 +461,12 @@ orchestrator/
 ├── tool_lambda/handler.py      # the built-in `type: "lambda"` demo function (source: "tool_lambda"):
 │                               #   publishes `aws_prices` — real AWS on-demand unit rates from the
 │                               #   Price List Query API (rates only, never a total)
-├── format_workflow.py          # reformat app/workflow.json for reading (--check for CI)
+├── app/keys.json               # FRAMEWORK-OWNED: which keys workflow.json may contain, where each
+│                               #   is legal, and what reads it. Its key order IS the canonical order
+├── app/vocabulary.json         # FRAMEWORK-OWNED: the closed VALUE sets, read by all three planes
+├── app/workflow.schema.json    # GENERATED from those two — what your editor validates against
+├── format_workflow.py          # canonical key order + readable formatting (--check for CI)
+├── build_schema.py             # regenerate workflow.schema.json (--check for CI)
 ├── docs/WORKFLOW_REFERENCE.md  # every workflow.json key, what reads it, what it does
 ├── kb_docs/reference/          # sample Knowledge Base corpus (replace with your own)
 ├── tests/                      # config-plane test suite (pytest; no AWS, no model, ~1s)
