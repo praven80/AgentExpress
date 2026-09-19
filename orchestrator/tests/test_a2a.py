@@ -253,9 +253,15 @@ def test_source_is_a_closed_list_not_an_arbitrary_string():
         imp("app.orchestrator.registry").load_agents()
 
 
-def test_a_source_agent_takes_its_endpoint_from_the_injected_map():
+def test_a_source_agent_takes_its_endpoint_from_the_injected_map(fake_aws_credentials):
     """The URL the IaC discovered at deploy time, delivered the same way the dedicated
-    runtime ARNs are."""
+    runtime ARNs are.
+
+    Takes `fake_aws_credentials` because `source: a2a_lambda` REQUIRES auth "sigv4"
+    (registry.validate_runtimes), so reaching the endpoint means signing. Without the
+    fixture this passed only while the developer happened to hold live credentials and
+    failed the moment they expired — which is exactly what the fixture's own docstring
+    warns about, and it was missing here."""
     defn = remote_wf(source="a2a_lambda", auth="sigv4")
     del defn["agents"]["partner"]["agentCard"]
     with workflow(defn) as imp:
@@ -268,7 +274,7 @@ def test_a_source_agent_takes_its_endpoint_from_the_injected_map():
         "https://fn.lambda-url.us-east-1.on.aws/.well-known/agent-card.json")
 
 
-def test_a_source_agent_with_no_injected_endpoint_says_so():
+def test_a_source_agent_with_no_injected_endpoint_says_so(fake_aws_credentials):
     """Which is what a customer sees if they add the agent but skip the deploy that
     creates it — a clearer failure than a request to the empty string."""
     defn = remote_wf(source="a2a_lambda", auth="sigv4")
