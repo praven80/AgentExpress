@@ -190,6 +190,13 @@ def _t_run_eval(args, ctx, si):
     sid, aid = _sid(args, ctx), args.get("agent_id", "")
     if not sid or not aid:
         return {"error": "session_id and agent_id required"}, None
+    # Never tell the user "Started evaluation" for an agent that has not enabled it.
+    # The runtime declines it (the gate is in evaluations.evaluate_agent), so without
+    # this the assistant confidently reported starting work that never ran.
+    if aid not in (WORKFLOW.get("evalAgents") or []):
+        return ({"error": f"evaluations are not enabled for {aid}",
+                 "hint": "agentcore.evaluations.enabled in workflow.json"},
+                None)
     si({"action": "evaluate", "session_id": sid, "agent_id": aid, "prompt": args.get("prompt", "")})
     return {"status": "started", "agent_id": aid}, f"Started evaluation for {aid}"
 

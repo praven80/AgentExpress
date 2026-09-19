@@ -284,9 +284,11 @@ async def _run_eval(session_id: str, agent_id: str, user: str = "", prompt: str 
             "log": f"Evaluating {agent_id}{(' · ' + prompt) if prompt else ''} (AgentCore Evaluations)"})
         summaries = await asyncio.to_thread(eval_service.evaluate_agent, session_id, agent_id,
                                            user, None, prompt or None)
-        if not summaries:
-            await emit(session_id, {"type": "log",
-                                    "log": f"Evaluation: nothing scorable found for {agent_id}"})
+        # One line when nothing was scored, and it must say WHICH kind of nothing —
+        # "you have not enabled this" is not "enabled, but nothing scorable was found".
+        no_scores = eval_service.outcome_log(agent_id, summaries)
+        if no_scores:
+            await emit(session_id, {"type": "log", "log": no_scores})
         for s in (summaries or []):
             if s.get("status") == "ok":
                 await emit(session_id, {

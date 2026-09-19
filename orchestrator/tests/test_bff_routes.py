@@ -29,7 +29,13 @@ RULES = {
     },
 }
 
-WORKFLOW = {"agents": {"a": {"name": "A"}, "b": {"name": "B"}},
+# Agent "a" enables evaluations so the /evaluate route has a legitimate target. These
+# tests are about AUTHORIZATION; the route additionally refuses an agent that has not
+# enabled evaluations (its own test is below), and without this the two concerns would
+# be tangled.
+WORKFLOW = {"agents": {"a": {"name": "A",
+                             "agentcore": {"evaluations": {"enabled": True}}},
+                       "b": {"name": "B"}},
             "steps": [{"agent": "a"}, {"agent": "b"}],
             "authorization": RULES}
 
@@ -218,3 +224,62 @@ def test_api_me_reports_authz_disabled(open_bff):
     assert body["authzEnabled"] is False
     assert body["permittedActions"] == [
         "start", "decision", "rerun", "cancel", "evaluate", "insights", "delete"]
+
+
+# --- evaluations.enabled is ENFORCED, not just reflected in the UI ----------
+# `agentcore.evaluations.enabled` had exactly one reader: web/observability.js, which
+# hides the Evaluate button. A client-side gate is not enforcement. `is_enabled()`
+# existed in app/features/evaluations/service.py with ZERO callers, so anyone hitting
+# the route or asking the assistant had the agent scored and BILLED, with a
+# kind="eval" row written, under a default evaluator it never declared.
+#
+# The load-bearing gate is in evaluate_agent — the chokepoint every path shares, pinned
+# in tests/test_evaluations_gate.py. These cover the two entry points that can answer
+# the caller directly rather than leaving it to the timeline.
+
+def test_the_evaluate_route_refuses_an_agent_that_has_not_enabled_evaluations(bff):
+    status, resp = call(bff, "POST", "/api/sessions/s1/evaluate",
+                        groups=["operators"], body={"agentId": "b"},
+                        params={"id": "s1"})
+    assert status == 400, resp
+    assert "not enabled" in resp["error"]
+    assert "workflow.json" in resp["error"]
+    # And it must not have queued the work.
+    assert not [p for p in bff._test_invoked if p.get("action") == "evaluate"]
+
+
+def test_the_evaluate_route_still_accepts_an_agent_that_has(bff):
+    status, resp = call(bff, "POST", "/api/sessions/s1/evaluate",
+                        groups=["operators"], body={"agentId": "a"},
+                        params={"id": "s1"})
+    assert status == 200, resp
+    assert [p for p in bff._test_invoked if p.get("action") == "evaluate"]
+
+
+def test_authorization_is_checked_before_enablement(bff):
+    """Order matters: an unauthorised caller must not learn which agents have
+    evaluations configured."""
+    status, resp = call(bff, "POST", "/api/sessions/s1/evaluate",
+                        groups=["interns"], body={"agentId": "b"},
+                        params={"id": "s1"})
+    assert status == 403, resp
+    assert "not enabled" not in resp["error"]
+
+
+def test_the_assistant_does_not_claim_to_have_started_a_disabled_evaluation(bff):
+    """It used to answer "Started evaluation for b" for an agent the runtime then
+    declined — a confident report of work that never ran."""
+    import chatbot
+
+    sent: list[dict] = []
+    result, line = chatbot._t_run_eval({"session_id": "s1", "agent_id": "b"},
+                                       {"session_id": "s1"}, sent.append)
+    assert "error" in result and "not enabled" in result["error"]
+    assert line is None
+    assert sent == [], "the assistant queued an evaluation the runtime would refuse"
+
+    ok, ok_line = chatbot._t_run_eval({"session_id": "s1", "agent_id": "a"},
+                                      {"session_id": "s1"}, sent.append)
+    assert ok["status"] == "started"
+    assert ok_line and "a" in ok_line
+    assert len(sent) == 1

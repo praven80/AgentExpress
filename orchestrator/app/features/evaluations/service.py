@@ -439,6 +439,27 @@ def evaluate_agent(session_id: str, agent_id: str, user: str = "",
     """
     from app.features.observability.scope import set_scope
 
+    # THE GATE, and it belongs here because this is the only chokepoint every caller
+    # passes through: the UI's Evaluate button and the REST route (runtime._run_eval),
+    # the in-app assistant's run_evaluation tool, and auto_evaluate_session.
+    #
+    # It was missing entirely. `is_enabled()` existed and had ZERO callers, so
+    # `"evaluations": {"enabled": false}` only hid the button in web/observability.js
+    # — a client-side gate, which is not enforcement. Anyone calling the route or
+    # asking the assistant still had the agent scored and BILLED, with a kind="eval"
+    # row written, under `_DEFAULT_EVALUATORS` it never declared. That is the
+    # "config key that reads like a switch and controls nothing" failure this repo
+    # polices everywhere else (see tests/test_config_keys.py).
+    #
+    # Returned rather than raised, so the caller can tell "you have not enabled this"
+    # apart from "enabled, but there was nothing scorable" — two very different
+    # answers that both used to arrive as an empty list.
+    if not is_enabled(agent_id):
+        return [{"agent_id": agent_id, "status": "disabled", "evaluator": None,
+                 "reason": f"evaluations are not enabled for {agent_id!r}; set "
+                           f"agentcore.evaluations.enabled on that agent in "
+                           f"workflow.json"}]
+
     evaluators = evaluators or evaluators_for(agent_id)
     version = _agent_version(session_id, agent_id)
     # tag recorded rows with the agent + the version this eval scored
@@ -468,6 +489,25 @@ def evaluate_agent(session_id: str, agent_id: str, user: str = "",
         span = _synth_span(session_id, agent_id, io[0], io[1])
         summaries += _score_spans(ac, evaluators, [span], agent_id, pname)
     return summaries
+
+
+def outcome_log(agent_id: str, summaries: list[dict] | None) -> str | None:
+    """The timeline line owed to a reader when an evaluation produced no scores.
+
+    Returns None when there ARE scores — the caller reports those individually.
+
+    Lives here, not at the call site, because the three outcomes are an evaluations
+    concern and telling two of them apart is the whole point: "you have not enabled
+    this" and "enabled, but nothing scorable was found" used to arrive identically as
+    an empty list, so a config mistake was reported as missing telemetry and sent the
+    reader looking in the wrong place.
+    """
+    refused = next((s for s in (summaries or []) if s.get("status") == "disabled"), None)
+    if refused:
+        return f"Evaluation skipped: {refused['reason']}"
+    if not summaries:
+        return f"Evaluation: nothing scorable found for {agent_id}"
+    return None
 
 
 def auto_evaluate_session(session_id: str, user: str = "") -> None:

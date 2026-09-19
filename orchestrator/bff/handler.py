@@ -499,6 +499,15 @@ def _api(event: dict, context) -> dict:
         agent_id = body.get("agentId") or body.get("agent_id")
         if not agent_id:
             return _resp(400, {"error": "agentId is required"})
+        # Answer NOW for an agent that has not enabled evaluations, rather than
+        # accepting the request and having the runtime decline it where only the
+        # timeline would show it. The runtime enforces this too (the gate lives in
+        # evaluations.evaluate_agent, which every path goes through); this is the
+        # layer that can still return a status code.
+        if agent_id not in (WORKFLOW.get("evalAgents") or []):
+            return _resp(400, {"error": f"evaluations are not enabled for '{agent_id}'; "
+                                        f"set agentcore.evaluations.enabled on that agent "
+                                        f"in workflow.json"})
         _self_invoke(context.function_name,
                      {"action": "evaluate", "session_id": sid, "agent_id": agent_id,
                       "prompt": body.get("prompt", ""), "user": _session_user(sid)})
