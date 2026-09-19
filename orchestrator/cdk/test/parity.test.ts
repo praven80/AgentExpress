@@ -50,10 +50,17 @@ const agentWithToolType = (t: string): string =>
   Object.entries<any>(shipped.agents).find(
     ([, a]) => a.tool && shipped.tools[a.tool]?.type === t
   )?.[0] ?? "";
-/** The first agent that has no tool and reads its upstream peers. */
+/**
+ * The first agent that has no tool and reads its upstream peers.
+ *
+ * `runtime: "a2a"` is excluded: a remote agent also has no tool, but its label comes
+ * from the A2A branch of the projection, not from `access`. Without that exclusion this
+ * resolved to a remote agent as soon as the sample gained one, and the assertion about
+ * the "Upstream agent outputs" label started checking the wrong branch.
+ */
 const upstreamAgent: string =
   Object.entries<any>(shipped.agents).find(
-    ([id, a]) => !a.tool && id !== firstAgent
+    ([id, a]) => !a.tool && id !== firstAgent && (a.runtime ?? "main") !== "a2a"
   )?.[0] ?? "";
 
 /** Balance braces from the `{` at or after `from`, returning the body between them. */

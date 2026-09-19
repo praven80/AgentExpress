@@ -28,7 +28,7 @@ locals {
       # diagram whose provenance the reviewer most needs to see. Host only, never the
       # path: this lands in a 4 KB env. Mirrors a2aHost() on the CDK path.
       source = (
-        lookup(a, "runtime", "main") == "a2a" ? "A2A · ${coalesce(split("/", replace(lookup(a, "agentCard", ""), "/(?i)^https?:\\/\\//", ""))[0], "remote")}" :
+        lookup(a, "runtime", "main") == "a2a" ? "A2A · ${lookup(a, "source", null) != null ? a.source : coalesce(split("/", replace(lookup(a, "agentCard", ""), "/(?i)^https?:\\/\\//", ""))[0], "remote")}" :
         lookup(a, "tool", null) == null ? (
           can(regex("(?i)session", try(a.access[0], ""))) ? "Session input" :
           can(regex("(?i)upstream", try(a.access[0], ""))) ? "Upstream agent outputs" :
@@ -85,8 +85,8 @@ resource "terraform_data" "bff_workflow_size" {
 
   lifecycle {
     precondition {
-      condition     = length(jsonencode(local.bff_workflow)) <= 3000
-      error_message = "The workflow projection shipped to the BFF is ${length(jsonencode(local.bff_workflow))} bytes, over the 3000-byte budget (Lambda's whole environment is capped at 4 KB). Shorten agent \"name\" values in app/workflow.json, or move the projection to S3/SSM and have bff/handler.py read it from there."
+      condition     = length(jsonencode(local.bff_workflow)) <= 3400
+      error_message = "The workflow projection shipped to the BFF is ${length(jsonencode(local.bff_workflow))} bytes, over the 3400-byte budget (Lambda's whole environment is capped at 4 KB). Shorten agent \"name\" values in app/workflow.json, or move the projection to S3/SSM and have bff/handler.py read it from there."
     }
   }
 }

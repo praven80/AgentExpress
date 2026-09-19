@@ -212,6 +212,20 @@
         "policy": { "enabled": true }
       }
     },
+    "compliance_review": {
+      "name": "Compliance Review",
+      "runtime": "a2a",
+      "source": "a2a_lambda",
+      "skill": "compliance",
+      "produces": "compliance-review"
+    },
+    "resilience_review": {
+      "name": "Resilience Review",
+      "runtime": "a2a",
+      "source": "a2a_lambda",
+      "skill": "resilience",
+      "produces": "resilience-review"
+    },
     "analysis": {
       "name": "Analysis",
       "runtime": "main",
@@ -280,6 +294,12 @@
       "hitl": true,
       "gateId": "research",
       "gateName": "Research"
+    },
+    {
+      "parallel": ["compliance_review", "resilience_review"],
+      "hitl": true,
+      "gateId": "external_review",
+      "gateName": "External Review (A2A)"
     },
     {
       "sequence": ["analysis", "recommendation"],

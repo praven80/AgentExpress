@@ -32,6 +32,9 @@ AGENT_KEYS = {
     "auth": "a2a_agent.py -> none | bearer | oauth2 | sigv4; runtime \"a2a\" only",
     "source": ("registry.py A2A_SOURCES -> the stand-in A2A server the IaC deploys "
                "and injects a URL for; runtime \"a2a\" only, exclusive with agentCard"),
+    "skill": ("a2a.tf / orchestrator-stack.ts -> the path segment of the injected "
+              "endpoint, selecting which of the stand-in's reviewers this agent is; "
+              "only with `source`"),
     "model": "registry.py -> agent.model (omit to use orchestrator.defaultModel)",
     "maxTokens": "registry.py -> agent.max_tokens, the model output budget",
     "temperature": "registry.py -> agent.temperature",

@@ -18,7 +18,7 @@ import * as cdk from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import * as path from "path";
 
-import { buildBffWorkflow, OrchestratorStack } from "../lib/orchestrator-stack";
+import { a2aLambdaAgents, buildBffWorkflow, OrchestratorStack } from "../lib/orchestrator-stack";
 
 const ORCH_ROOT = path.join(__dirname, "..", "..");
 const shipped = require(`${ORCH_ROOT}/app/workflow.json`);
@@ -311,5 +311,79 @@ describe("a remote (a2a) agent", () => {
       /declare auth "bearer" but no token was supplied for them: partner_check/
     );
     expect(() => synth({ workflow: bearer, a2aTokens: { partner_check: "t0k" } })).not.toThrow();
+  });
+});
+
+describe("the stand-in A2A agent", () => {
+  // The shipped workflow points two agents at it via `source`, so the default template
+  // must contain it. These assert the security posture and the wiring, because both are
+  // easy to get subtly wrong: a Function URL defaults to being PUBLIC, and an endpoint
+  // map that is absent or misassembled fails only at run time, on the partner's side of
+  // a boundary where the error is hardest to read.
+
+  it("deploys one Lambda behind an IAM-authed Function URL", () => {
+    const names = Object.values<any>(template.findResources("AWS::Lambda::Function"))
+      .map((f) => f.Properties.FunctionName)
+      .filter(Boolean);
+    expect(names).toContain("A2AAgent-multiagent_orchestrator");
+
+    const urls = Object.values<any>(template.findResources("AWS::Lambda::Url"));
+    expect(urls).toHaveLength(1);
+    // NEVER "NONE". The client's whole `auth: "sigv4"` mode exists so this endpoint can
+    // require a signature instead of a shared token.
+    expect(urls[0].Properties.AuthType).toBe("AWS_IAM");
+  });
+
+  it("gives the orchestrator the only permission to call it", () => {
+    expect(JSON.stringify(template.findResources("AWS::IAM::Policy")))
+      .toContain("lambda:InvokeFunctionUrl");
+  });
+
+  it("injects one endpoint per remote agent, with the skill as a path segment", () => {
+    const orchestrator = Object.values<any>(
+      template.findResources("AWS::BedrockAgentCore::Runtime")
+    ).find((r) => r.Properties.AgentRuntimeName === "multiagent_orchestrator");
+    // A CloudFormation token, so assert on the assembled pieces rather than a string.
+    const endpoints = JSON.stringify(orchestrator.Properties.EnvironmentVariables.A2A_ENDPOINTS);
+    for (const [id, skill] of Object.entries(a2aLambdaAgents(shipped.agents))) {
+      expect(endpoints).toContain(id);
+      // A path, not `?skill=`: a client appends /.well-known/agent-card.json to this.
+      expect(endpoints).toContain(`/${skill}`);
+    }
+    expect(endpoints).not.toContain("?skill=");
+  });
+
+  it("gives the remote agents no runtime of their own", () => {
+    // They are somebody else's service. A runtime created for one would be a container
+    // that boots, finds no module under app/subagents/, and crash-loops — while the run
+    // succeeded, so nothing would point at the waste.
+    const runtimes = Object.values<any>(
+      template.findResources("AWS::BedrockAgentCore::Runtime")
+    ).map((r) => r.Properties.AgentRuntimeName);
+    for (const id of Object.keys(a2aLambdaAgents(shipped.agents))) {
+      expect(runtimes.join(" ")).not.toContain(id);
+    }
+  });
+
+  it("is not deployed at all when no agent asks for it", () => {
+    // Point the agents at a real partner and none of this infrastructure exists — the
+    // same deal a `tools` entry gets from lambdaArn vs source.
+    const external = {
+      ...shipped,
+      agents: Object.fromEntries(
+        Object.entries<any>(shipped.agents).map(([id, a]) =>
+          a.source === "a2a_lambda"
+            ? [id, { ...a, source: undefined, skill: undefined,
+                     agentCard: "https://agents.partner.example/x" }]
+            : [id, a]
+        )
+      ),
+    };
+    const t = synth({ workflow: JSON.parse(JSON.stringify(external)) });
+    expect(Object.values<any>(t.findResources("AWS::Lambda::Url"))).toHaveLength(0);
+    const names = Object.values<any>(t.findResources("AWS::Lambda::Function"))
+      .map((f) => f.Properties.FunctionName)
+      .filter(Boolean);
+    expect(names).not.toContain("A2AAgent-multiagent_orchestrator");
   });
 });

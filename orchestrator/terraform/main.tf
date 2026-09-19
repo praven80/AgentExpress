@@ -335,6 +335,10 @@ resource "awscc_bedrockagentcore_runtime" "orchestrator" {
       for id in local.a2a_agent_ids : id => var.a2a_tokens[id]
       if lower(try(local.workflow_def.agents[id].auth, "none")) == "bearer"
     })
+    # Map of agent_id -> endpoint, for a `runtime = "a2a"` agent whose URL only exists
+    # AFTER a deploy (the stand-in's Function URL). Injected rather than committed, for
+    # the same reason AGENT_RUNTIME_ARNS is. Empty when no agent uses `source`.
+    A2A_ENDPOINTS = jsonencode(local.a2a_endpoints)
 
     # Gateway-backed MCP access (agent -> Gateway via IdP client-credentials).
     # Empty when var.enable_gateway is false, in which case an agent with a `tool`
