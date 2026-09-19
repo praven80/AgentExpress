@@ -252,11 +252,6 @@ export function a2aTokenEnv(
   return out;
 }
 
-/** The host of an Agent Card URL, for the UI chip. Mirrors the regex in terraform/bff.tf. */
-export function a2aHost(card: string): string {
-  return String(card ?? "").replace(/^https?:\/\//i, "").split("/")[0] || "remote";
-}
-
 /**
  * Agents that want the stand-in A2A server, mapped to the skill each one is.
  *
@@ -1452,26 +1447,6 @@ export class OrchestratorStack extends cdk.Stack {
     // Constructed ARN (not bff.functionArn) so the self-invoke policy below does not
     // create a function -> role-policy -> function circular dependency.
     const bffArn = `arn:aws:lambda:${this.region}:${this.account}:function:${bffFunctionName}`;
-    // Lambda caps the TOTAL environment at 4 KB. The other variables are ARNs and
-    // table names (~1 KB together), so fail at SYNTH with an actionable message
-    // rather than letting a large workflow.json surface as an opaque Lambda error
-    // ten minutes into a deploy. Terraform has the same guard in bff.tf.
-    const workflowJson = JSON.stringify(buildBffWorkflow(workflow));
-    // MEASURED, not guessed. Lambda caps the WHOLE environment at 4096 bytes. The
-    // other five vars this function gets (the three table names, the runtime ARN and
-    // the model id) come to ~300 bytes at realistic lengths, so 3400 leaves ~640 bytes
-    // of genuine headroom. It was an unexplained 3000 until two A2A agents pushed the
-    // projection to 3154 and the number had to be justified rather than nudged.
-    // Terraform enforces the same value; parity.test.ts asserts the two agree.
-    const WORKFLOW_JSON_MAX = 3400;
-    if (workflowJson.length > WORKFLOW_JSON_MAX) {
-      throw new Error(
-        `The workflow projection shipped to the BFF is ${workflowJson.length} bytes, over the ` +
-          `${WORKFLOW_JSON_MAX}-byte budget (Lambda's whole environment is capped at 4 KB). ` +
-          `Shorten agent "name" values in workflow.json, or move the projection to S3/SSM ` +
-          `and have bff/handler.py read it from there.`
-      );
-    }
     // Own every Lambda log group explicitly. Left implicit, Lambda creates
     // /aws/lambda/<name> itself with NEVER-EXPIRE retention and no stack ownership,
     // so `cdk destroy` leaves it behind accruing cost forever — verified: a full
@@ -1489,7 +1464,7 @@ export class OrchestratorStack extends cdk.Stack {
       logGroup: lambdaLogGroup("BffLogGroup", bffFunctionName),
       runtime: lambda.Runtime.PYTHON_3_13,
       handler: "handler.handler",
-      code: lambda.Code.fromAsset(path.join(ORCH_ROOT, "bff")),
+      code: lambda.Code.fromAsset(stageBffPackage(workflow)),
       timeout: cdk.Duration.seconds(60),
       memorySize: 256,
       environment: {
@@ -1497,7 +1472,9 @@ export class OrchestratorStack extends cdk.Stack {
         EVENTS_TABLE: eventsTable.tableName,
         TELEMETRY_TABLE: telemetryTable.tableName,
         RUNTIME_ARN: orchestratorArn,
-        WORKFLOW_JSON: workflowJson,
+        // No WORKFLOW_JSON: the workflow travels IN the package (stageBffPackage)
+        // because Lambda's whole environment is capped at 4 KB, which held about
+        // eleven agents' worth of the old projection.
         // The assistant's tool-use loop runs in this Lambda, so it needs the
         // deployment's model rather than its own copy of the id.
         MODEL_ID: props.modelId,
@@ -1893,99 +1870,52 @@ export function buildGuardrail(workflow: any): {
 }
 
 /**
- * Trim workflow.json to what the BFF and UI need, mirroring the Terraform
- * `local.bff_workflow` in terraform/bff.tf EXACTLY. Shipped as WORKFLOW_JSON.
+ * Stage the BFF's deployment package: bff/*.py PLUS app/workflow.json, so the API
+ * reads the same file the customer edits and the same file the runtime reads.
  *
- * Keep the two in step. This projection previously emitted `mcp`/`rag`, which
- * workflow.json renamed to `tool`/`corpus`, and omitted `evalAgents`/`chatbot`
- * altogether — so CDK deployments silently lost the data-source chips, the
- * Evaluate buttons and the in-app assistant while Terraform ones kept them.
+ * WHY THERE IS A STAGING STEP AT ALL. `lambda.Code.fromAsset` takes one directory,
+ * and the two inputs live in different ones. The alternative was what this code used
+ * to do: build a trimmed PROJECTION of the workflow here in TypeScript, build the
+ * same projection a second time in HCL for the Terraform path, and ship the result
+ * in a `WORKFLOW_JSON` environment variable.
  *
- * Trimmed and compact because it travels in a Lambda env var, which is capped at
- * 4 KB for the whole environment (see the size guard in the caller).
+ * Both halves of that were wrong. The two projections drifted silently — the
+ * TypeScript one once emitted `mcp`/`rag` after workflow.json had renamed them to
+ * `tool`/`corpus`, and omitted `evalAgents` and `chatbot` entirely, so CDK
+ * deployments quietly lost the data-source chips, the Evaluate buttons and the
+ * assistant. And the environment variable was a CEILING: Lambda caps the whole
+ * environment at 4 KB and the quota cannot be raised, so both paths carried a
+ * 3400-byte guard, the shipped ten-agent workflow measured 3153 bytes, and a
+ * customer's twelfth agent failed the deploy.
+ *
+ * `bff/workflow.py` now does the projection once, in Python, at request time. This
+ * function's only job is to put the file where that module can read it.
+ *
+ * Staged under cdk.out so it is a build artifact, never a mutation of the source
+ * tree, and so CDK's own asset hashing sees a stable directory.
  */
-export function buildBffWorkflow(workflow: any): any {
-  // tool name -> declared type, for the UI's data-source chip. Read from the raw
-  // tools block so the label is right even when the Gateway is disabled.
-  const toolTypes: Record<string, string> = {};
-  for (const [n, t] of Object.entries<any>(workflow.tools ?? {})) {
-    toolTypes[n] = String(t?.type ?? "mcp").toLowerCase();
+export function stageBffPackage(workflow: any, outDir?: string): string {
+  const staged = outDir ?? path.join(ORCH_ROOT, "cdk", "cdk.out", "bff-package");
+  fs.rmSync(staged, { recursive: true, force: true });
+  fs.mkdirSync(staged, { recursive: true });
+  // Only .py, and NOT __pycache__: `fromAsset` on bff/ used to ship every stale .pyc
+  // in the working tree, including ones built by a different Python minor version.
+  const src = path.join(ORCH_ROOT, "bff");
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    if (entry.isFile() && entry.name.endsWith(".py")) {
+      fs.copyFileSync(path.join(src, entry.name), path.join(staged, entry.name));
+    } else if (entry.isDirectory() && entry.name !== "__pycache__") {
+      // A subpackage. Mirrors `**/*.py` in the Terraform archive_file.
+      fs.cpSync(path.join(src, entry.name), path.join(staged, entry.name), {
+        recursive: true,
+        filter: (s) => !s.includes("__pycache__"),
+      });
+    }
   }
-
-  const agentsOut: Record<string, any> = {};
-  for (const [id, a] of Object.entries<any>(workflow.agents)) {
-    const access0: string = Array.isArray(a.access) && a.access[0] ? a.access[0] : "";
-    const tool: string | null = a.tool ?? null;
-    const corpus: string | null = a.corpus ?? null;
-    // Display-ready label, derived from the tool's declared TYPE so a new tool
-    // type gets a sensible chip with no UI change.
-    let source = "\u2014";
-    // A remote agent has no `tool` by construction (it reaches its own data sources),
-    // so without this it would render as an em dash — the one agent on the diagram
-    // whose provenance the reviewer most needs to see. Host only, never the path: the
-    // label lands in a 4 KB env and a full URL is mostly noise on a chip.
-    if (String(a.runtime ?? "main") === "a2a") {
-      // An external agent is labelled by its host; a framework-deployed one by its
-      // `source`, because its URL is a deploy-time token and there is no host to show
-      // at synth. Labelling that one "remote" said nothing.
-      source = `A2A \u00b7 ${a.source ? String(a.source) : a2aHost(a.agentCard)}`;
-    } else if (tool) {
-      const ty = toolTypes[tool];
-      if (ty === "kb") source = `Knowledge Base \u00b7 ${corpus ?? "all"}`;
-      else if (ty === "websearch") source = "Web Search";
-      else if (ty === "openapi") source = `REST API \u00b7 ${tool}`;
-      else if (ty === "lambda") source = `Function \u00b7 ${tool}`;
-      else source = `MCP \u00b7 ${tool}`;
-    } else if (/session/i.test(access0)) source = "Session input";
-    else if (/upstream/i.test(access0)) source = "Upstream agent outputs";
-
-    agentsOut[id] = {
-      name: a.name,
-      kind: a.kind ?? "sync",
-      runtime: a.runtime ?? "main",
-      tool,
-      corpus,
-      model: a.model ?? null,
-      source,
-    };
-  }
-
-  // Which agents show an "Evaluate" button (short id array, to stay under 4 KB).
-  const evalAgents = Object.entries<any>(workflow.agents)
-    .filter(([, a]) => a?.agentcore?.evaluations?.enabled === true)
-    .map(([id]) => id);
-
-  // In-app assistant. Lean: enabled + model + greeting/placeholder + only the
-  // DISABLED tool flags (the backend defaults any tool it isn't told about to ON).
-  // greeting/placeholder ARE shipped — they were not, which made those two
-  // workflow.json keys decorative: a customer edited them and the UI kept showing
-  // its own hardcoded strings. Mirrors terraform/bff.tf.
-  const cb = workflow.orchestrator?.chatbot;
-  const chatbot =
-    cb?.enabled === undefined
-      ? null
-      : {
-          enabled: cb.enabled,
-          model: cb.model ?? null,
-          greeting: cb.greeting ?? null,
-          placeholder: cb.placeholder ?? null,
-          tools: Object.fromEntries(
-            Object.entries<any>(cb.tools ?? {}).filter(([, v]) => v === false)
-          ),
-        };
-
-  // Presentation strings, so branding is config rather than an index.html edit.
-  const ui = workflow.ui ? stripForEnv(workflow.ui) : null;
-
-  // RBAC rules for bff/authz.py. Only shipped when something is actually
-  // restricted — with no `actions` map the module is a no-op, and omitting it
-  // keeps those bytes out of the 4 KB Lambda env.
-  const actions = workflow.authorization?.actions ?? {};
-  const authorization = Object.keys(actions).length
-    ? { groupsClaim: workflow.authorization.groupsClaim ?? null, actions }
-    : null;
-
-  return { agents: agentsOut, steps: workflow.steps, evalAgents, chatbot, ui, authorization };
+  // Written from the parsed object rather than copied, so a syntactically broken
+  // workflow.json fails here at synth instead of inside the Lambda at run time.
+  fs.writeFileSync(path.join(staged, "workflow.json"), JSON.stringify(workflow, null, 2));
+  return staged;
 }
 
 /**
@@ -2022,15 +1952,3 @@ export function toolsEnv(tools: Record<string, ToolSpec>): Record<string, any> {
   return out;
 }
 
-/**
- * Drop empty values and the explanatory `*Note` keys before shipping to the 4 KB
- * Lambda env. The Notes are for whoever edits workflow.json, not for the runtime;
- * terraform/bff.tf drops them the same way.
- */
-export function stripForEnv(o: Record<string, any>): Record<string, any> {
-  return Object.fromEntries(
-    Object.entries(o).filter(
-      ([k, v]) => !k.endsWith("Note") && v !== undefined && v !== null && v !== ""
-    )
-  );
-}

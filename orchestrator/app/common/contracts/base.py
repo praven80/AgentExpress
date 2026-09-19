@@ -57,16 +57,24 @@ class AssetStatus(StrEnum):
     FINAL = "final"
 
 
-# Kept as constrained strings rather than Enums: new artifact/source kinds are
-# likely to appear over time.
-ArtifactType = Literal[
-    "chart",
-    "document",
-    "link",
-    "pdf",
-    "table",
-]
+# Deliberately `str`, for exactly the reason given for SourceType below. As a closed
+# Literal this listed five kinds a DOCUMENT-PRODUCING pipeline happens to emit —
+# chart, document, link, pdf, table — and anything else failed validation outright,
+# because `extra="forbid"` above makes the envelope strict. A customer whose workflow
+# attaches an audio file, a spreadsheet, a CAD drawing, a DICOM study or a signed
+# claim form had to edit THIS framework file to describe their own output, which is
+# precisely the coupling the rest of this module was cleaned up to remove.
+#
+# The five names above are this sample's vocabulary and now live with the sample, in
+# app/subagents/_shared/contracts/types.py, where a customer replaces them. Your own
+# contract can still narrow it — declare `artifact_type: Literal["dicom-study"]` on
+# your model and pydantic enforces YOUR list, which is the useful place to be strict.
+ArtifactType = str
 
+# Still closed, and for a different reason: these two values are not domain
+# vocabulary, they are how the ORCHESTRATOR reads an artifact. "final" is what the UI
+# surfaces as the run's deliverable and what a terminal asset is checked against, so
+# a third value here would not describe anything — it would just fail to be either.
 ArtifactRole = Literal["final", "supporting-artifact"]
 
 # Deliberately `str`, not a closed Literal. As a Literal this listed THIS sample's

@@ -17,17 +17,20 @@ another agent: it answers ABOUT runs and must stay available while a run is
 paused, so it does not depend on the orchestrator runtime being warm.
 """
 
-import json
 import os
 import time
 from decimal import Decimal
 
 import boto3
+import workflow
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
 REGION = os.environ.get("AWS_REGION", "us-east-1")
-WORKFLOW = json.loads(os.environ.get("WORKFLOW_JSON", "{}"))
+# The projection, not the raw workflow: the assistant answers questions a UI user
+# asks, so it should see exactly what that user's page sees and nothing more. See
+# bff/workflow.py.
+WORKFLOW = workflow.VIEW
 CHATBOT = WORKFLOW.get("chatbot") or {}
 AGENTS = WORKFLOW.get("agents") or {}
 TOOLS_CFG = CHATBOT.get("tools") or {}

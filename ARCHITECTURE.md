@@ -529,12 +529,12 @@ runtime, a policy engine) is provisioned from this one source of truth.
 Two suites, one per language, both fast enough for a pre-commit hook and needing
 neither AWS credentials nor a container builder:
 
-- **`orchestrator/tests/`** (pytest, 429 tests, a few seconds) — the runtime side:
+- **`orchestrator/tests/`** (pytest, 585 tests, a few seconds) — the runtime side:
   topology derivation, graph compilation across 14 step shapes, branch rules and
   routing, rewind planning, tool argument shapes, Gateway tool-name resolution,
   citation verification, contract coercion, and the RBAC rules plus their wiring on
   every mutating route.
-- **`orchestrator/cdk/test/`** (jest, 149 tests) — the IaC side: the projections
+- **`orchestrator/cdk/test/`** (jest, 145 tests) — the IaC side: the projections
   and validators, the synthesized template (Cognito groups, route set + authorizer,
   BFF environment, Gateway targets, Cedar policies), and **Terraform ↔ CDK parity**.
 
@@ -550,11 +550,18 @@ mutation-checked — each bug was reintroduced and confirmed to turn the suite r
 rather than merely being green. See the two `README.md` files in those directories.
 
 The parity suite exists because nothing structural keeps the two IaC paths in step:
-they are independent implementations of the same projection, and the one time they
-drifted it was found by comparing two live deployments. It now reads the HCL as text
-and compares the BFF projection's key set, the API route list, the byte budget, and
-the constants that must be duplicated across HCL / TypeScript / Python (notably the
-seven RBAC action names).
+they are independent implementations of the same infrastructure, and the one time they
+drifted it was found by comparing two live deployments. It reads the HCL as text and
+compares the API route list, the tool-plane shapes, and the constants duplicated across
+HCL / TypeScript / Python (notably the seven RBAC action names, which
+`tests/test_authz.py` additionally proves are the exact set the routes enforce).
+
+It used to compare the BFF workflow projection too. That comparison is gone because
+the thing it compared is gone: the projection was built twice, once in HCL and once in
+TypeScript, and is now one Python function (`orchestrator/bff/workflow.py`). Deleting a
+duplicate implementation is a better fix than testing that two copies agree — and it
+removed a hard ceiling at the same time, because the projection no longer has to fit
+in a 4 KB Lambda environment.
 
 Not covered by either: the IaC's own resource semantics. `terraform validate` /
 `cdk synth` plus the plan-time preconditions in both paths are the gate there.

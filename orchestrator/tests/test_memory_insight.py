@@ -388,3 +388,66 @@ def test_a_recall_that_survives_the_filter_records_no_extra_row(monkeypatch):
 
     assert got == [on_topic]
     assert [r[0] for r in recorded] == ["recall"]
+
+
+# ---------------------------------------------------------------------------
+# WHERE the memory lifecycle runs
+# ---------------------------------------------------------------------------
+# The node wrapper recalls before run() and stores after it, which is what makes
+# memory config-driven for an ordinary agent. For an agent whose work happens
+# elsewhere, both were wrong — and silently so. These pin the split.
+
+def test_a_dedicated_agent_does_not_recall_or_store_in_the_orchestrator():
+    """The dedicated CONTAINER owns both halves (app/subagent_runtime.py), because
+    that is where ctx.llm injects the recalled insights into the prompt.
+
+    Doing it in the orchestrator as well was two defects per run. The recall was
+    billed, written to the telemetry table as a recall row, and then DISCARDED —
+    `recalled_memory` is read only by ctx.llm and the InvokeAgentRuntime payload never
+    carried it. The store wrote the same insight to the same actor namespace twice,
+    and duplicates come back as two copies on every later recall.
+    """
+    from app.common.agentcore_agent import AgentCoreRuntimeAgent
+
+    assert AgentCoreRuntimeAgent.recall_in_orchestrator is False
+    assert AgentCoreRuntimeAgent.store_in_orchestrator is False
+
+
+def test_a_remote_a2a_agent_does_not_recall_but_does_store():
+    """The asymmetry is the point, and it is why these are two flags.
+
+    A remote agent has its own context and its own model call; the A2A message carries
+    the task, not our recalled insights, so recalling here would be billed and
+    discarded. But what it RETURNED is a real result of this run, and a later run
+    benefits from remembering it.
+    """
+    from app.common.a2a_agent import A2AAgent
+
+    assert A2AAgent.recall_in_orchestrator is False
+    assert A2AAgent.store_in_orchestrator is True
+
+
+def test_an_ordinary_in_process_agent_still_gets_both_for_free():
+    """The config-driven promise: `memory.longTerm` in workflow.json and no agent
+    code."""
+    from app.common.base import Agent
+
+    assert Agent.recall_in_orchestrator is True
+    assert Agent.store_in_orchestrator is True
+
+
+def test_the_node_wrapper_honours_both_flags():
+    """A flag nothing reads is worse than no flag. Asserted against the source of the
+    wrapper, because driving a full graph node here would need the whole AWS surface
+    stubbed for what is a two-line guard."""
+    import inspect
+
+    from app.orchestrator import nodes
+
+    src = inspect.getsource(nodes)
+    assert "if agent.recall_in_orchestrator:" in src
+    assert "if agent.store_in_orchestrator:" in src
+    # The OUTPUT guardrail must NOT be behind either flag: it is about what crosses
+    # into the rest of the run, so it applies to every placement.
+    guard = src.index('await ctx.guardrail(str(out), "OUTPUT")')
+    assert "if agent." not in src[guard - 200:guard].split("\n")[-1]

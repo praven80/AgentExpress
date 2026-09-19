@@ -37,7 +37,8 @@ buys nothing.
 """
 
 import json
-import os
+
+import workflow
 
 # The mutating actions this module knows about. Keys are what workflow.json uses.
 # `delete` (removing a completed run and its timeline) is included because it is
@@ -45,8 +46,10 @@ import os
 # would be inconsistent.
 ACTIONS = ("start", "decision", "rerun", "cancel", "evaluate", "insights", "delete")
 
-_WF = json.loads(os.environ.get("WORKFLOW_JSON", "{}"))
-_AUTHZ = _WF.get("authorization") or {}
+# From the RAW workflow, not the browser projection: these rules are enforced
+# server-side, and the projection exists to limit what LEAVES the server. Reading
+# them from the projection would couple enforcement to a display concern.
+_AUTHZ = workflow.RAW.get("authorization") or {}
 GROUPS_CLAIM: str = _AUTHZ.get("groupsClaim") or "cognito:groups"
 # action -> list of groups permitted. Absent key = unrestricted.
 _RULES: dict = _AUTHZ.get("actions") or {}

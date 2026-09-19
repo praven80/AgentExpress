@@ -19,3 +19,25 @@ class AssetType(StrEnum):
     ANALYSIS = "analysis"
     RECOMMENDATION = "recommendation"
     REPORT = "report"
+
+
+class ArtifactKind(StrEnum):
+    """The artifact kinds THIS SAMPLE's report agent attaches.
+
+    Here for the same reason as AssetType above: these five are what a
+    document-producing pipeline emits, and they used to be a closed `Literal` in
+    `app/common/contracts/base.py` — so a customer whose workflow attaches an audio
+    file, a spreadsheet, a CAD drawing or a signed claim form had to edit a FRAMEWORK
+    file to describe their own output, and `extra="forbid"` on the envelope meant
+    anything unlisted failed validation outright.
+
+    `AssetEnvelope.artifact_type` is a plain `str` now. Narrow it on your own
+    contract if you want the check — `artifact_type: Literal["dicom-study"]` — which
+    is the useful place to be strict, because it is the place that knows.
+    """
+
+    CHART = "chart"
+    DOCUMENT = "document"
+    LINK = "link"
+    PDF = "pdf"
+    TABLE = "table"

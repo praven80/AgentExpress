@@ -58,6 +58,19 @@ def _agentcore():
 class AgentCoreRuntimeAgent(Agent):
     """Runs this agent by invoking its dedicated AgentCore Runtime."""
 
+    # The dedicated container owns this agent's memory lifecycle: it recalls before
+    # the real run() and stores after it (app/subagent_runtime.py), which is the only
+    # place that CAN work, because that is where ctx.llm injects the recalled insights
+    # into the prompt.
+    #
+    # Doing it here as well was two separate defects per run. The recall was billed,
+    # metered as a recall row, and discarded — `recalled_memory` is read only by
+    # ctx.llm and the payload below never carried it. The store wrote the same insight
+    # to the same actor namespace twice, and duplicates come back as two copies on
+    # every later recall.
+    recall_in_orchestrator = False
+    store_in_orchestrator = False
+
     async def run(self, ctx) -> str:
         arn = _RUNTIME_ARNS.get(self.id)
         if not arn:

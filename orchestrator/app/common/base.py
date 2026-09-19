@@ -37,6 +37,25 @@ class Agent:
     max_tokens: int = 4000
     agentcore: dict = None      # AgentCore features config (workflow.json "agentcore" block)
 
+    # --- where the long-term memory lifecycle runs -------------------------
+    # The node wrapper (app/orchestrator/nodes.py) recalls before run() and stores
+    # after it, which is what makes memory purely config-driven for an ordinary
+    # in-process agent. Neither is right for an agent whose work happens somewhere
+    # else, so the two are separate flags rather than one.
+    #
+    # Both were unconditionally true, and for a `dedicated` agent that was a measured
+    # defect on both counts. The RECALL was computed, billed, written to the telemetry
+    # table as a recall row — and then thrown away, because `recalled_memory` is only
+    # ever consumed by `ctx.llm` (app/common/context.py) and the InvokeAgentRuntime
+    # payload does not carry it. The STORE ran twice, once here and once inside the
+    # dedicated container (app/subagent_runtime.py), writing the same insight to the
+    # same actor namespace twice per run — and duplicates are then recalled as two
+    # copies, which skews what the extraction strategy makes of them.
+    #: Does this agent's `run()` actually read `ctx.recalled_memory`?
+    recall_in_orchestrator: bool = True
+    #: Should the node wrapper store this agent's output as a long-term insight?
+    store_in_orchestrator: bool = True
+
     # Overridden by subclasses:
     system_prompt: str = ""
 

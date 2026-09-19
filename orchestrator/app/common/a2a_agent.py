@@ -146,6 +146,15 @@ def _result_text(result: dict) -> str:
 class A2AAgent(Agent):
     """Runs this step by delegating it to a remote A2A agent."""
 
+    # A remote agent has its own context and its own model call, and the A2A message
+    # below carries the task — not our recalled insights. So recalling here would be
+    # billed and then discarded, exactly as it was for a dedicated agent.
+    #
+    # Storing, on the other hand, is still right and still happens: what the remote
+    # agent RETURNED is a real result of this run, and a later run benefits from
+    # remembering it. That asymmetry is why these are two flags and not one.
+    recall_in_orchestrator = False
+
     # Set by the registry from workflow.json.
     agent_card: str = ""
     auth: str = "none"

@@ -614,8 +614,13 @@ missing its `name` or `definition`
 - an unrecognised action name (`"aprove"`): it *looks* like a restriction in the
   config but gates nothing, leaving the real action wide open
 
-**Other** — `idp: "none"` with `enable_gateway = true`; a workflow projection too
-large for the BFF Lambda's 4 KB environment
+**Other** — `idp: "none"` with `enable_gateway = true`; an unprovisioned
+`memory.longTerm` strategy; a malformed evaluator name; an unrecognised tool `type`
+
+> There used to be one more: a workflow too large for the BFF Lambda's 4 KB
+> environment, which capped a deployment at about **eleven agents**. The workflow now
+> travels inside the BFF's deployment package instead, so there is no such limit — see
+> `orchestrator/bff/workflow.py`.
 
 So a typo is a failed `terraform plan` or `cdk synth`, not a broken deployment. The
 corpora checks matter most: before them, a mistyped corpus produced a Cedar filter on

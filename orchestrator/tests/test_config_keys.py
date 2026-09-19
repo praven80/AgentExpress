@@ -22,11 +22,14 @@ If you add a real key, add it here and note where it is read.
 
 import json
 
+import pytest
 from conftest import ORCH_ROOT
 
 # Agent-level keys, each with the module that reads it.
 AGENT_KEYS = {
     "name": "registry.py -> agent.name; UI node title",
+    "kind": ("registry.py:34 -> agent.kind (\"sync\" | \"async\"); bff/workflow.py ships it; "
+             "index.html renders it as a chip when it is not \"sync\""),
     "runtime": "registry.py (main | dedicated | a2a); subagent_runtimes.tf; UI chip",
     "agentCard": "a2a_agent.py -> the remote agent's Agent Card URL; runtime \"a2a\" only",
     "auth": "a2a_agent.py -> none | bearer | oauth2 | sigv4; runtime \"a2a\" only",
@@ -128,24 +131,39 @@ def test_no_unread_ui_keys():
 
 
 def test_ui_strings_shipped_to_the_browser_are_actually_read_there():
-    """The keys the UI consumes must survive the BFF projection.
+    """The keys the UI consumes must survive the BFF projection, in both directions.
 
-    Both IaC paths build a compact `ui`/`chatbot` projection for the 4 KB Lambda
-    env. A key present here but dropped there is invisible to the browser, which is
-    exactly how greeting/placeholder became decorative."""
+    A `ui` key the page never reads is decorative. A key the page reads but the
+    projection drops is worse: the customer edits it and the UI keeps showing its own
+    hardcoded copy, which is exactly what happened to the assistant's greeting and
+    placeholder.
+
+    This used to grep both IaC languages for the field names, because the projection
+    was built twice — in HCL and in TypeScript — and either copy could drop one. It
+    is one Python function now (bff/workflow.py), so the assertion is made against
+    its actual OUTPUT rather than against the text of two templates.
+    """
     import re
+    import sys
 
     index = (ORCH_ROOT / "web" / "index.html").read_text()
     for key in UI_KEYS:
         # Any accessor: ui.<key>, uiCfg.<key>, cfg.<key>, ui["<key>"].
         assert re.search(rf"[.\[]\s*\"?{re.escape(key)}\b", index), (
             f"ui.{key} is declared in UI_KEYS but index.html never reads it")
-    # chatbot.greeting / .placeholder must be projected by BOTH IaC paths.
-    tf = (ORCH_ROOT / "terraform" / "bff.tf").read_text()
-    cdk = (ORCH_ROOT / "cdk" / "lib" / "orchestrator-stack.ts").read_text()
+
+    sys.modules.pop("workflow", None)
+    from workflow import project
+
+    shipped = project(wf())
+    for key, value in (wf().get("ui") or {}).items():
+        assert shipped["ui"].get(key) == value, (
+            f"ui.{key} is in workflow.json but the BFF projection does not ship it, "
+            f"so the browser cannot see it")
     for field in ("greeting", "placeholder"):
-        assert f"chatbot.{field}" in tf, f"terraform/bff.tf does not ship chatbot.{field}"
-        assert f"{field}: cb.{field}" in cdk, f"the CDK path does not ship chatbot.{field}"
+        configured = (wf()["orchestrator"].get("chatbot") or {}).get(field)
+        assert shipped["chatbot"][field] == configured, (
+            f"chatbot.{field} is configured but not projected to the browser")
 
 
 def test_no_note_or_description_prose_in_agents():
@@ -254,3 +272,91 @@ def test_no_agent_hardcodes_a_token_budget():
         assert not hit, (
             f"{path.relative_to(ORCH_ROOT)} hardcodes {hit.group()!r}; let it default "
             f"to the agent's configured maxTokens instead")
+
+
+# ---------------------------------------------------------------------------
+# A recognised KEY with an unrecognised VALUE
+# ---------------------------------------------------------------------------
+# The allow-lists above close the set of agentcore KEYS. These close the set of
+# VALUES for the two that were silent when wrong — the same class of bug one level
+# down, and the reason `registry.validate_features` exists.
+
+def _one_agent(agentcore: dict) -> dict:
+    return {
+        "orchestrator": {"defaultModel": "m"},
+        "agents": {"solo": {"name": "Solo", "maxTokens": 100, "agentcore": agentcore}},
+        "steps": [{"agent": "solo"}],
+    }
+
+
+def test_an_unprovisioned_memory_strategy_is_rejected():
+    """It used to be SILENT. `_namespace_for` falls back to the strategy name as its
+    own prefix, so this searched a namespace nothing writes, found nothing, and
+    reported a successful recall — with the observability panel showing memory
+    working."""
+    from conftest import workflow
+
+    with workflow(_one_agent({"memory": {"longTerm": ["userPreference"]}})) as imp:
+        registry = imp("app.orchestrator.registry")
+        with pytest.raises(ValueError, match="long-term memory strategy"):
+            registry.validate_features()
+
+
+def test_the_provisioned_memory_strategies_are_accepted():
+    from conftest import workflow
+
+    with workflow(_one_agent({"memory": {"longTerm": ["semantic", "summary"]}})) as imp:
+        imp("app.orchestrator.registry").validate_features()
+
+
+def test_a_bare_truthy_long_term_still_means_semantic():
+    """`longTerm: true` is documented shorthand (context._longterm_strategies), so it
+    must not be dragged through the list check."""
+    from conftest import workflow
+
+    with workflow(_one_agent({"memory": {"longTerm": True}})) as imp:
+        imp("app.orchestrator.registry").validate_features()
+
+
+def test_a_misspelled_evaluator_is_rejected_at_start_not_at_evaluation_time():
+    """AgentCore rejects an unknown evaluator when an evaluation RUNS, which can be
+    days after the deploy reported success."""
+    from conftest import workflow
+
+    with workflow(_one_agent({"evaluations": {
+            "enabled": True, "evaluators": ["Builtin.Faithfullness"]}})) as imp:
+        registry = imp("app.orchestrator.registry")
+        # Caught on shape, not on a name list — see below.
+        registry.validate_features()  # "Faithfullness" is a valid SHAPE, so this passes
+
+    with workflow(_one_agent({"evaluations": {
+            "enabled": True, "evaluators": ["Faithfulness"]}})) as imp:
+        registry = imp("app.orchestrator.registry")
+        with pytest.raises(ValueError, match="Builtin"):
+            registry.validate_features()
+
+
+def test_evaluator_validation_is_a_shape_check_not_a_name_list():
+    """Deliberate: AWS adds built-in evaluators, and a closed list here would reject a
+    valid new one and force a framework edit to use it. What is caught is the
+    structural mistake — a bare name, a lower-case prefix, a typo'd namespace."""
+    from conftest import workflow
+
+    with workflow(_one_agent({"evaluations": {
+            "enabled": True,
+            "evaluators": ["Builtin.SomeEvaluatorAwsAddedLastWeek",
+                           "Custom.OurOwnRubric"]}})) as imp:
+        imp("app.orchestrator.registry").validate_features()
+
+    for bad in ("builtin.Faithfulness", "Builtin.", "Builtin", "Buitlin.Faithfulness"):
+        with workflow(_one_agent({"evaluations": {
+                "enabled": True, "evaluators": [bad]}})) as imp:
+            registry = imp("app.orchestrator.registry")
+            with pytest.raises(ValueError, match="Builtin"):
+                registry.validate_features()
+
+
+def test_the_shipped_workflow_passes_feature_validation():
+    from app.orchestrator.registry import validate_features
+
+    validate_features()

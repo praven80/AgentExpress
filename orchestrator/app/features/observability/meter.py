@@ -113,10 +113,22 @@ def record_session_compute(*, session_id: str, user: str = "", active_seconds: f
 
 
 def record_tool(*, provider: str, query: str = "", latency_ms: int = 0,
-                mode: str = "gateway", result_text: str = "") -> None:
+                mode: str = "gateway", result_text: str = "",
+                tool_type: str = "") -> None:
     """A tool/KB call. Its Gateway invocation cost is charged here; the KB path
     also embeds the query (Titan). The RESULT tokens are billed as input tokens
-    on the next model call, so they are captured by record_llm, not here."""
+    on the next model call, so they are captured by record_llm, not here.
+
+    `provider` is the tool's LABEL in workflow.json (whatever the customer called it)
+    and is what the observability panel displays. `tool_type` is its declared TYPE,
+    and it is a separate argument because the embedding charge below depends on the
+    KIND of tool, not on its name.
+
+    Those were one argument until an audit caught it: the retrieval branch compared
+    `provider == "kb"`, which is THIS SAMPLE's key for its Knowledge Base. A customer
+    who called theirs `policies` — as they are told they may — got no embedding cost
+    on any retrieval and a permanently zero `embed_tokens_est`, with no error.
+    """
     try:
         s = get_scope()
         if mode == "error":
@@ -124,7 +136,9 @@ def record_tool(*, provider: str, query: str = "", latency_ms: int = 0,
             embed = 0
         else:
             cost = pricing.gateway_tool_cost()
-            embed = est_tokens(query) if provider == "kb" else 0
+            # Compared against the declared TYPE — framework vocabulary, the same in
+            # every deployment — not against the label, which is the customer's.
+            embed = est_tokens(query) if tool_type.lower() == "kb" else 0
             if embed:
                 cost += pricing.embedding_cost(embed)
         # embed tokens are an estimate and are NOT model tokens, so keep them out

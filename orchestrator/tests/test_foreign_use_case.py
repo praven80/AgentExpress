@@ -32,6 +32,7 @@ with all of it.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 
 import pytest
@@ -229,24 +230,177 @@ def test_the_framework_does_not_import_the_sample():
     assert not offenders, "framework imports the sample:\n" + "\n".join(offenders)
 
 
-def test_no_framework_module_names_a_shipped_agent_in_executable_code():
-    """A hardcoded agent id would break the moment a customer renames or removes it.
+def _shipped_vocabulary() -> dict[str, set[str]]:
+    """Every name THIS SAMPLE chose, read from the shipped files rather than listed.
 
-    Comments and docstrings are allowed to use the sample's ids as examples; a
-    string literal in executable code is not.
+    Derived, not hardcoded, because a list goes stale: the previous version of this
+    test named eight agent ids and silently stopped covering the two a2a review agents
+    the moment they shipped.
+    """
+    workflow = json.loads((ORCH_ROOT / "app" / "workflow.json").read_text())
+    vocab = {
+        "agent id": set(workflow["agents"]),
+        "corpus": {a["corpus"] for a in workflow["agents"].values() if a.get("corpus")},
+    }
+    # This sample's asset types. Read from the AssetType enum only — NOT from the
+    # whole file — because ArtifactKind beside it holds ordinary words like "link"
+    # and "table" that appear legitimately in framework code as JSON field names.
+    types_src = (ORCH_ROOT / "app" / "subagents" / "_shared" / "contracts"
+                 / "types.py").read_text()
+    asset_block = types_src[types_src.index("class AssetType"):]
+    asset_block = asset_block[:asset_block.index("\n\nclass ")] if "\n\nclass " in asset_block \
+        else asset_block
+    vocab["asset type"] = set(re.findall(r'^\s+[A-Z_]+ = "([a-z-]+)"', asset_block,
+                                         re.MULTILINE))
+    # TOOL LABELS ARE DELIBERATELY NOT CHECKED HERE, and the reason is worth writing
+    # down because it looks like a gap. Framework code legitimately compares a tool's
+    # declared TYPE against a literal — `kind == "websearch"` in the Gateway client is
+    # correct, because the five types are framework vocabulary, identical in every
+    # deployment. A tool's LABEL is the customer's. In source both read as
+    # `x == "kb"`, and an AST constant scan cannot tell which side it is looking at.
+    #
+    # Running this check anyway produced four false positives out of five hits, so it
+    # would have been turned off. The one true positive it found is now pinned
+    # directly instead, by the two tests below — which is the better trade: a test that
+    # asserts the specific mistake beats one that flags the shape and gets ignored.
+    return {k: v for k, v in vocab.items() if v}
+
+
+#: Framework areas that must not know this sample. `features` is included because it
+#: was NOT — it held the one real offender this test previously missed, a fallback to
+#: the literal tool label "kb" in app/features/gateway/client.py.
+FRAMEWORK_AREAS = ("common", "orchestrator", "features")
+
+
+def test_no_framework_module_names_this_samples_vocabulary_in_executable_code():
+    """A hardcoded sample name breaks the moment a customer renames or removes it.
+
+    Comments and docstrings are allowed to use the sample's names as examples — they
+    are how the reasoning gets explained. A string literal in EXECUTABLE code is not,
+    because it is read at runtime.
+
+    Widened three ways after an audit found the earlier version was narrower than its
+    name suggested. It covered agent ids only, in two of the three framework areas,
+    against a hand-written list of eight that had already gone stale. It therefore
+    missed `app/features/gateway/client.py` returning the literal `"kb"` — this
+    sample's tool key — as a fallback, so a customer who called theirs `policies` got
+    a Gateway call for a tool that does not exist and an empty retrieval reported as a
+    successful one.
     """
     import ast
 
-    sample_ids = {"intake", "web_search", "knowledge_research", "documentation_search",
-                  "cost_research", "analysis", "recommendation", "report"}
+    vocab = _shipped_vocabulary()
+    # Ordinary English, or somebody ELSE's field name, that happens to collide with a
+    # sample id. Each exemption is a decision, listed so it reads as one rather than as
+    # a gap:
+    #
+    #   analysis, report, summary, sources, kind, status
+    #       plain words this codebase uses about its own data structures.
+    #   recommendation
+    #       a field in the AgentCore Insights API RESPONSE. `app/features/optimization/
+    #       insights.py` reads `rc.get("recommendation")` from AWS's payload; it has
+    #       nothing to do with this sample's `recommendation` agent, and renaming that
+    #       agent would not affect it.
+    ignore = {"analysis", "report", "summary", "sources", "kind", "status",
+              "recommendation"}
     offenders = []
-    for area in ("common", "orchestrator"):
+    for area in FRAMEWORK_AREAS:
         for path in (ORCH_ROOT / "app" / area).rglob("*.py"):
-            offenders += [
-                f"{path.relative_to(ORCH_ROOT)}:{n.lineno}: {n.value!r}"
-                for n in ast.walk(ast.parse(path.read_text()))
-                if isinstance(n, ast.Constant) and isinstance(n.value, str)
-                and n.value in sample_ids
-            ]
-    assert not offenders, ("framework code hardcodes a sample agent id:\n"
-                           + "\n".join(offenders))
+            tree = ast.parse(path.read_text())
+            # Docstrings are Constant nodes too, so collect and exclude them.
+            docstrings = {
+                id(node.body[0].value)
+                for node in ast.walk(tree)
+                if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                     ast.AsyncFunctionDef))
+                and node.body and isinstance(node.body[0], ast.Expr)
+                and isinstance(node.body[0].value, ast.Constant)
+            }
+            for node in ast.walk(tree):
+                if (not isinstance(node, ast.Constant)
+                        or not isinstance(node.value, str)
+                        or id(node) in docstrings
+                        or node.value in ignore):
+                    continue
+                for kind, names in vocab.items():
+                    if node.value in names:
+                        offenders.append(
+                            f"{path.relative_to(ORCH_ROOT)}:{node.lineno}: "
+                            f"{kind} {node.value!r}")
+                        break  # one report per literal, not one per vocabulary it is in
+    assert not offenders, (
+        "framework code hardcodes a name that belongs to THIS SAMPLE, so a customer "
+        "who renames it gets a silent failure:\n" + "\n".join(offenders))
+
+
+def test_the_framework_areas_under_test_are_all_of_them():
+    """The previous version scanned two of three areas, and the third held the only
+    real offender. This fails if a fourth top-level framework package appears."""
+    present = {p.name for p in (ORCH_ROOT / "app").iterdir()
+               if p.is_dir() and not p.name.startswith(("_", "."))
+               and p.name != "subagents"}
+    assert present == set(FRAMEWORK_AREAS), (
+        f"app/ has framework package(s) this test does not scan: "
+        f"{sorted(present - set(FRAMEWORK_AREAS))}")
+
+
+def test_the_vocabulary_is_derived_from_the_shipped_files_not_listed_here():
+    """If this ever returns an empty set the test above passes vacuously."""
+    vocab = _shipped_vocabulary()
+    assert vocab["agent id"] >= {"intake", "compliance_review", "resilience_review"}, (
+        "the agent ids are not being read from workflow.json")
+    assert vocab["asset type"] >= {"research-finding", "request-brief"}, (
+        "the asset types are not being read from the AssetType enum")
+    # ArtifactKind sits in the same file and holds ordinary words that appear
+    # legitimately in framework code as JSON field names.
+    assert "link" not in vocab["asset type"]
+    assert "table" not in vocab["asset type"]
+
+
+# --- a tool's LABEL is the customer's; its TYPE is the framework's ----------
+# The distinction an AST scan cannot make, pinned where it actually matters. Both of
+# these were live defects found by widening the scan above, and both had the same
+# shape: framework code comparing a literal against something that is a tool's NAME.
+
+def test_a_retrieval_charges_embedding_cost_by_tool_type_not_by_tool_name():
+    """The KB path embeds the query with Titan, and that cost was charged only when
+    the tool happened to be KEYED "kb" — this sample's key.
+
+    A customer who calls theirs `policies`, which they are told they may, got no
+    embedding cost on any retrieval and a permanently zero `embed_tokens_est`, with no
+    error anywhere.
+    """
+    from app.features.observability import meter
+
+    recorded = []
+
+    class _Store:
+        @staticmethod
+        def put(record):
+            recorded.append(record)
+
+    original = meter.store
+    meter.store = _Store()  # type: ignore[assignment]
+    try:
+        meter.record_tool(provider="policies", tool_type="kb", query="a query" * 20)
+        meter.record_tool(provider="kb", tool_type="websearch", query="a query" * 20)
+    finally:
+        meter.store = original
+
+    by_type, by_name = recorded
+    assert by_type.embed_tokens_est > 0, (
+        "a kb-TYPE tool named something other than 'kb' was not charged for embedding")
+    assert by_name.embed_tokens_est == 0, (
+        "a non-kb tool that happens to be NAMED 'kb' was charged for embedding")
+
+
+def test_the_gateway_client_passes_the_declared_type_to_the_meter():
+    """The fix above only holds if the caller actually supplies the type."""
+    import inspect
+
+    from app.features.gateway import client
+
+    src = inspect.getsource(client._record_tool)
+    assert "tool_type=" in src, (
+        "_record_tool no longer passes the tool's declared type, so meter.record_tool "
+        "falls back to charging no embedding cost for every retrieval")

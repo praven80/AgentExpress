@@ -227,3 +227,53 @@ def test_report_is_complete_only_when_every_expected_section_is_present(SECTIONS
     partial = [*full[:-1], ReportSection(sectionId="section-extra", sectionType="extra", title="Extra")]
     present = {s.section_type for s in partial}
     assert not all(t in present for t in SECTIONS)
+
+
+# --- artifactType: open, for the same reason assetType is ------------------
+
+def test_artifact_type_is_open_so_a_customers_output_needs_no_framework_edit():
+    """It was a closed `Literal["chart","document","link","pdf","table"]`.
+
+    Those five are what a DOCUMENT-producing pipeline emits. With `extra="forbid"` on
+    the envelope, a customer attaching an audio file, a spreadsheet, a CAD drawing, a
+    DICOM study or a signed claim form got a validation error and had to edit
+    app/common/contracts/base.py — a framework file — to describe their own output.
+    """
+    from app.common.contracts import Artifact
+
+    for kind in ("dicom-study", "audio-recording", "spreadsheet", "claim-form",
+                 "cad-drawing", "bodycam-footage"):
+        a = Artifact(artifactId="a1", name="n", artifactType=kind)
+        assert a.artifact_type == kind
+
+
+def test_a_customer_contract_can_still_narrow_artifact_type_itself():
+    """Being strict is useful in the place that KNOWS, which is the customer's own
+    model — not in shared framework code."""
+    from typing import Literal
+
+    import pytest
+    from pydantic import ValidationError
+
+    from app.common.contracts import Artifact
+
+    class DicomArtifact(Artifact):
+        artifact_type: Literal["dicom-study"] = "dicom-study"  # type: ignore[assignment]
+
+    assert DicomArtifact(artifactId="a1", name="scan").artifact_type == "dicom-study"
+    with pytest.raises(ValidationError):
+        DicomArtifact(artifactId="a1", name="scan", artifactType="pdf")
+
+
+def test_artifact_role_stays_closed_because_it_is_orchestrator_vocabulary():
+    """Not domain vocabulary: "final" is what the UI surfaces as the run's
+    deliverable, so a third value would not describe anything — it would just fail to
+    be either."""
+    import pytest
+    from pydantic import ValidationError
+
+    from app.common.contracts import Artifact
+
+    Artifact(artifactId="a1", name="n", artifactType="pdf", artifactRole="final")
+    with pytest.raises(ValidationError):
+        Artifact(artifactId="a1", name="n", artifactType="pdf", artifactRole="draft")

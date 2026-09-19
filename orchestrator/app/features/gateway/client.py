@@ -531,8 +531,27 @@ async def query_tool_rows(tool_key: str, query: str) -> tuple[list[dict], str]:
 
 
 def _kb_tool_key() -> str:
-    """The workflow.json label of the tool declared with type="kb"."""
-    return next((k for k, v in TOOLS.items() if str(v.get("type", "")).lower() == "kb"), "kb")
+    """The workflow.json label of the tool declared with type="kb".
+
+    RAISES when there is none, rather than falling back to a label. The fallback was
+    the literal "kb" — which is THIS SAMPLE's key for it, so a customer who called
+    theirs `policies` and then called `ctx.retrieve()` from an agent with no kb tool
+    declared got a Gateway call for a tool named "kb" that does not exist, and an
+    empty retrieval reported as a successful one.
+
+    Both IaC paths already reject a `corpus` on an agent whose tool is not a kb, so
+    reaching here without one means the agent called `ctx.retrieve()` without being
+    bound to a Knowledge Base at all. That is an agent-code mistake and it deserves
+    to say so.
+    """
+    key = next((k for k, v in TOOLS.items() if str(v.get("type", "")).lower() == "kb"), "")
+    if not key:
+        raise ToolUnavailable(
+            "ctx.retrieve() needs a tool declared with type=\"kb\" in workflow.json, and "
+            "this workflow has none. Declare one (its key is yours to choose) and bind "
+            "the agent to it with `tool`, or gather evidence with ctx.call_tool() "
+            "against a tool that does exist.")
+    return key
 
 
 # --- observability wrappers -------------------------------------------------
@@ -544,7 +563,12 @@ def _record_tool(provider: str, query: str, latency_ms: int, result: tuple[str, 
     with contextlib.suppress(Exception):  # metering must never break a call
         from app.features.observability import meter
         text = result[0] if isinstance(result, tuple) and result else ""
-        meter.record_tool(provider=provider, query=query, latency_ms=latency_ms,
+        # The tool's declared TYPE as well as its label: the embedding charge for a
+        # retrieval depends on the kind of tool, and the label is whatever the
+        # customer named it. See meter.record_tool.
+        tool_type = str((TOOLS.get(provider) or {}).get("type") or "").lower()
+        meter.record_tool(provider=provider, tool_type=tool_type,
+                          query=query, latency_ms=latency_ms,
                           mode=(result[1] if isinstance(result, tuple) and len(result) > 1 else "gateway"),
                           result_text=text)
 

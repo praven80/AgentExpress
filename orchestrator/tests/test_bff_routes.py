@@ -67,7 +67,7 @@ def bff(monkeypatch):
     monkeypatch.setenv("STATUS_TABLE", "t-status")
     monkeypatch.setenv("EVENTS_TABLE", "t-events")
     monkeypatch.setenv("RUNTIME_ARN", "arn:aws:bedrock-agentcore:us-east-1:1:runtime/x")
-    for mod in ("authz", "chatbot", "handler"):
+    for mod in ("workflow", "authz", "chatbot", "handler"):
         sys.modules.pop(mod, None)
     handler = importlib.import_module("handler")
 
@@ -81,7 +81,7 @@ def bff(monkeypatch):
     handler._test_invoked = invoked
     handler._test_status = status
     yield handler
-    for mod in ("authz", "chatbot", "handler"):
+    for mod in ("workflow", "authz", "chatbot", "handler"):
         sys.modules.pop(mod, None)
 
 
@@ -194,7 +194,7 @@ def open_bff(monkeypatch):
     monkeypatch.setenv("STATUS_TABLE", "t-status")
     monkeypatch.setenv("EVENTS_TABLE", "t-events")
     monkeypatch.setenv("RUNTIME_ARN", "arn:aws:bedrock-agentcore:us-east-1:1:runtime/x")
-    for mod in ("authz", "chatbot", "handler"):
+    for mod in ("workflow", "authz", "chatbot", "handler"):
         sys.modules.pop(mod, None)
     handler = importlib.import_module("handler")
     monkeypatch.setattr(handler, "status_tbl",
@@ -202,7 +202,7 @@ def open_bff(monkeypatch):
     monkeypatch.setattr(handler, "events_tbl", FakeTable())
     monkeypatch.setattr(handler, "_self_invoke", lambda fn, payload: None)
     yield handler
-    for mod in ("authz", "chatbot", "handler"):
+    for mod in ("workflow", "authz", "chatbot", "handler"):
         sys.modules.pop(mod, None)
 
 

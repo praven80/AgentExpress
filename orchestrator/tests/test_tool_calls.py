@@ -419,6 +419,16 @@ def test_kb_tool_key_is_found_by_type_not_by_name(client, monkeypatch):
     assert client._kb_tool_key() == "company_docs"
 
 
-def test_kb_tool_key_falls_back_to_kb_when_none_is_declared(client, monkeypatch):
+def test_retrieve_with_no_kb_declared_raises_instead_of_guessing_a_name(client, monkeypatch):
+    """It used to fall back to the literal "kb", which is THIS SAMPLE's key.
+
+    A customer who names theirs `policies`, and then calls ctx.retrieve() from an
+    agent that is not bound to a Knowledge Base, got a Gateway call for a tool called
+    "kb" that does not exist — and an empty retrieval reported as a successful one.
+    The only hardcoded sample tool label in framework code, and this is it.
+    """
+    from app.common.errors import ToolUnavailable
+
     with_tools(client, {"websearch": {"type": "websearch"}}, monkeypatch)
-    assert client._kb_tool_key() == "kb"
+    with pytest.raises(ToolUnavailable, match='type="kb"'):
+        client._kb_tool_key()

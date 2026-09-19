@@ -47,18 +47,20 @@ import authz
 import boto3
 import chatbot
 import clock
+import workflow
 from boto3.dynamodb.conditions import Key
 
 STATUS_TABLE = os.environ["STATUS_TABLE"]
 EVENTS_TABLE = os.environ["EVENTS_TABLE"]
 RUNTIME_ARN = os.environ["RUNTIME_ARN"]
 REGION = os.environ.get("AWS_REGION", "us-east-1")
-WORKFLOW = json.loads(os.environ.get("WORKFLOW_JSON", '{"agents":{},"steps":[]}'))
-NODE_IDS = list(WORKFLOW.get("agents", {}).keys())
-# The topic a run starts with when the caller sends none. From workflow.json
-# (ui.defaultTopic) via the projection, never a literal — the sample's topic has
-# nothing to do with a customer's use case.
-DEFAULT_TOPIC = str((WORKFLOW.get("ui") or {}).get("defaultTopic") or "")
+# `WORKFLOW` is the PROJECTION — the subset of workflow.json the browser may see.
+# `GET /api/workflow` returns it verbatim, so nothing may be added to it that the
+# page has no business holding. See bff/workflow.py for where it comes from and why
+# it is no longer built by the IaC and shipped in an environment variable.
+WORKFLOW = workflow.VIEW
+NODE_IDS = workflow.NODE_IDS
+DEFAULT_TOPIC = workflow.DEFAULT_TOPIC
 
 ddb = boto3.resource("dynamodb")
 status_tbl = ddb.Table(STATUS_TABLE)

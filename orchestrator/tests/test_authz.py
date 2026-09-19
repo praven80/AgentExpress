@@ -38,9 +38,11 @@ def load_authz(authorization: dict | None, monkeypatch):
     """Import bff/authz.py fresh with the given `authorization` block."""
     payload = {} if authorization is None else {"authorization": authorization}
     monkeypatch.setenv("WORKFLOW_JSON", json.dumps(payload))
-    sys.modules.pop("authz", None)
+    for cached in ("workflow", "authz"):
+        sys.modules.pop(cached, None)
     module = importlib.import_module("authz")
-    monkeypatch.delitem(sys.modules, "authz", raising=False)
+    for cached in ("workflow", "authz"):
+        monkeypatch.delitem(sys.modules, cached, raising=False)
     return module
 
 
@@ -203,11 +205,17 @@ def test_the_shipped_authorization_block_is_coherent(shipped, monkeypatch):
 # --- the assistant is held to the same rules ------------------------------
 
 def load_chatbot(monkeypatch, tools=None):
+    # The RAW workflow shape, i.e. what a customer writes — `orchestrator.chatbot`,
+    # not the projection's top-level `chatbot`. bff/workflow.py does the projection
+    # now, so feeding the projection here would test a shape nobody authors.
     monkeypatch.setenv("WORKFLOW_JSON", json.dumps(
-        {"chatbot": {"enabled": True, "tools": tools or {}}, "agents": {}}))
-    sys.modules.pop("chatbot", None)
+        {"orchestrator": {"chatbot": {"enabled": True, "tools": tools or {}}},
+         "agents": {}}))
+    for cached in ("workflow", "chatbot"):
+        sys.modules.pop(cached, None)
     module = importlib.import_module("chatbot")
-    monkeypatch.delitem(sys.modules, "chatbot", raising=False)
+    for cached in ("workflow", "chatbot"):
+        monkeypatch.delitem(sys.modules, cached, raising=False)
     return module
 
 
@@ -289,3 +297,88 @@ def test_a_capability_switched_off_in_config_is_not_reported_as_a_permission_pro
     chatbot = load_chatbot(monkeypatch, tools={"review": False, "rerun": False,
                                                "runEval": False})
     assert chatbot._authz_rule([]) == ""
+
+
+# --- the closed sets, and why each one is the right boundary ----------------
+# Two enumerations an audit flagged as "a customer must edit framework code to
+# extend". Both are correctly closed, and these tests are what make that a
+# demonstrable fact rather than an assertion: each one is DERIVED from the code it
+# governs, so it cannot drift into being a stale hand-written list.
+
+def test_every_action_name_actually_guards_a_route(monkeypatch):
+    """`authorization.actions` is closed to seven names, and that is not arbitrary:
+    each name is a route in bff/handler.py that calls `_forbidden(<name>, event)`.
+
+    A name with no route would gate NOTHING while reading like a restriction — the
+    failure mode the whole config-key discipline exists to prevent. Both IaC paths
+    reject an unknown key at plan/synth for that reason; this proves the list they
+    check against is the real one.
+    """
+    import re
+
+    from conftest import ORCH_ROOT
+
+    authz = load_authz(None, monkeypatch)
+    handler_src = (ORCH_ROOT / "bff" / "handler.py").read_text()
+    guarded = set(re.findall(r'_forbidden\(\s*"([a-z_]+)"', handler_src))
+
+    assert guarded == set(authz.ACTIONS), (
+        f"authz.ACTIONS and the routes disagree.\n"
+        f"  named but never enforced: {sorted(set(authz.ACTIONS) - guarded)}\n"
+        f"  enforced but not nameable in workflow.json: {sorted(guarded - set(authz.ACTIONS))}")
+
+
+def test_both_iac_paths_check_against_that_same_list(monkeypatch):
+    """So a typo'd action name fails the deploy rather than silently gating nothing."""
+    import re
+
+    from conftest import ORCH_ROOT
+
+    authz = load_authz(None, monkeypatch)
+    expected = sorted(authz.ACTIONS)
+
+    # Read the allow-list each IaC path validates against, rather than grepping for
+    # the names anywhere in the file — a name that merely APPEARS somewhere proves
+    # nothing about what the precondition checks.
+    tf = "\n".join(p.read_text() for p in (ORCH_ROOT / "terraform").glob("*.tf"))
+    tf_list = re.search(r"authz_known_actions\s*=\s*\[([^\]]*)\]", tf)
+    assert tf_list, "terraform has no authz_known_actions list to validate against"
+    assert sorted(re.findall(r'"([a-z_]+)"', tf_list.group(1))) == expected, (
+        "terraform's authz_known_actions disagrees with authz.ACTIONS")
+
+    cdk = (ORCH_ROOT / "cdk" / "lib" / "orchestrator-stack.ts").read_text()
+    cdk_list = re.search(r"knownActions\s*=\s*\[([^\]]*)\]", cdk)
+    assert cdk_list, "the CDK path has no knownActions list to validate against"
+    assert sorted(re.findall(r'"([a-z_]+)"', cdk_list.group(1))) == expected, (
+        "the CDK path's knownActions disagrees with authz.ACTIONS")
+
+
+def test_the_tool_types_are_closed_by_what_the_framework_can_provision():
+    """The other flagged enumeration. Each value is a different kind of Gateway
+    target with its own infrastructure, so a sixth needs framework code by
+    definition — and `type: "lambda"` + `lambdaArn` is the escape hatch that keeps
+    that from limiting anyone.
+
+    Checked in the APP as well as in both IaC paths because the Gateway client used to
+    default an unrecognised type to "mcp", turning a typo into a plausible-looking
+    call against a target that was never provisioned.
+    """
+    import pytest
+    from conftest import workflow
+
+    good = {
+        "orchestrator": {"defaultModel": "m"},
+        "tools": {"anything_you_like": {"type": "lambda", "lambdaArn":
+                                        "arn:aws:lambda:us-east-1:123456789012:function:f"}},
+        "agents": {"a": {"name": "A", "maxTokens": 10, "tool": "anything_you_like"}},
+        "steps": [{"agent": "a"}],
+    }
+    with workflow(good) as imp:
+        imp("app.orchestrator.registry").validate_tool_types()
+
+    bad = json.loads(json.dumps(good))
+    bad["tools"]["anything_you_like"]["type"] = "grpc"
+    with workflow(bad) as imp:
+        registry = imp("app.orchestrator.registry")
+        with pytest.raises(ValueError, match="type \"lambda\""):
+            registry.validate_tool_types()

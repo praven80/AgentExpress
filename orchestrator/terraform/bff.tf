@@ -1,100 +1,40 @@
 # --- BFF Lambda + API Gateway (HTTP API) ----------------------------------
 
-# The BFF/UI only need a trimmed view of the workflow (agent display fields +
-# steps) to render the DAG — not the module names, orchestrator block, or
-# descriptions. Trimmed + compact (jsonencode) so the Lambda env stays under the
-# 4 KB limit; the runtime reads the FULL workflow.json from the image, not env.
-locals {
-  # tool name -> declared type, for the UI's data-source chip. Reads the raw
-  # workflow.json block (not local.tools) so the label is correct even when the
-  # Gateway is disabled and no targets are provisioned.
-  tool_types = {
-    for n, t in try(local.workflow_def.tools, {}) : n => lower(try(t.type, "mcp"))
-  }
-
-  bff_workflow = {
-    agents = { for id, a in local.workflow_def.agents : id => {
-      name    = a.name
-      kind    = lookup(a, "kind", "sync")
-      runtime = lookup(a, "runtime", "main")
-      tool    = lookup(a, "tool", null)
-      corpus  = lookup(a, "corpus", null)
-      model   = lookup(a, "model", null)
-      # Compact, display-ready data-source label for the UI (avoids shipping the
-      # full access[] array in the 4 KB env). Derived from the tool's declared
-      # TYPE, so a new tool type shows a sensible chip with no UI change.
-      # A remote (runtime "a2a") agent has no `tool` by construction, so it is matched
-      # FIRST — otherwise it renders as an em dash, and it is the one agent on the
-      # diagram whose provenance the reviewer most needs to see. Host only, never the
-      # path: this lands in a 4 KB env. Mirrors a2aHost() on the CDK path.
-      source = (
-        lookup(a, "runtime", "main") == "a2a" ? "A2A · ${lookup(a, "source", null) != null ? a.source : coalesce(split("/", replace(lookup(a, "agentCard", ""), "/(?i)^https?:\\/\\//", ""))[0], "remote")}" :
-        lookup(a, "tool", null) == null ? (
-          can(regex("(?i)session", try(a.access[0], ""))) ? "Session input" :
-          can(regex("(?i)upstream", try(a.access[0], ""))) ? "Upstream agent outputs" :
-          "—"
-          ) : (
-          local.tool_types[a.tool] == "kb" ? "Knowledge Base · ${lookup(a, "corpus", "all")}" :
-          local.tool_types[a.tool] == "websearch" ? "Web Search" :
-          local.tool_types[a.tool] == "openapi" ? "REST API · ${a.tool}" :
-          local.tool_types[a.tool] == "lambda" ? "Function · ${a.tool}" :
-          "MCP · ${a.tool}"
-        )
-      )
-    } }
-    steps = local.workflow_def.steps
-    # Compact feature-flag list the UI uses to gate the "Evaluate" button (kept as
-    # a short id array to stay under Lambda's 4 KB env limit).
-    evalAgents = [for id, a in local.workflow_def.agents : id if try(a.agentcore.evaluations.enabled, false)]
-    # In-app assistant config for the BFF tool loop + the UI. Kept lean for the 4 KB
-    # Lambda env: enabled + model + only the DISABLED tool flags (the backend
-    # defaults any missing tool to ON). greeting/placeholder ARE shipped — they were
-    # not, which made those two workflow.json keys decorative: a customer edited
-    # them and the UI kept showing its own hardcoded strings.
-    chatbot = try(local.workflow_def.orchestrator.chatbot.enabled, null) == null ? null : {
-      enabled     = local.workflow_def.orchestrator.chatbot.enabled
-      model       = try(local.workflow_def.orchestrator.chatbot.model, null)
-      greeting    = try(local.workflow_def.orchestrator.chatbot.greeting, null)
-      placeholder = try(local.workflow_def.orchestrator.chatbot.placeholder, null)
-      tools       = { for k, v in try(local.workflow_def.orchestrator.chatbot.tools, {}) : k => v if v == false }
-    }
-    # RBAC rules for bff/authz.py. Shipped ONLY when something is actually
-    # restricted: with no `actions` map the module is a no-op, and null keeps those
-    # bytes out of the 4 KB env. The *Note key is dropped for the same reason.
-    authorization = length(local.authz_actions) == 0 ? null : {
-      groupsClaim = try(local.workflow_def.authorization.groupsClaim, null)
-      actions     = local.authz_actions
-    }
-    # Presentation strings (title / heading / default topic / assistant title), so
-    # re-branding is a workflow.json edit rather than an index.html edit. The
-    # explanatory *Note keys are dropped — they are for whoever edits the config,
-    # and every byte counts in the 4 KB Lambda env.
-    ui = {
-      for k, v in try(local.workflow_def.ui, {}) : k => v
-      if !endswith(k, "Note") && v != null && v != ""
-    }
-  }
-}
-
-# Lambda caps the TOTAL environment at 4 KB. The other variables are ARNs and
-# table names (~1 KB together), so fail at PLAN with an actionable message rather
-# than letting a large workflow surface as an opaque Lambda error mid-apply.
-# The CDK path has the same guard in lib/orchestrator-stack.ts.
-resource "terraform_data" "bff_workflow_size" {
-  input = length(jsonencode(local.bff_workflow))
-
-  lifecycle {
-    precondition {
-      condition     = length(jsonencode(local.bff_workflow)) <= 3400
-      error_message = "The workflow projection shipped to the BFF is ${length(jsonencode(local.bff_workflow))} bytes, over the 3400-byte budget (Lambda's whole environment is capped at 4 KB). Shorten agent \"name\" values in app/workflow.json, or move the projection to S3/SSM and have bff/handler.py read it from there."
-    }
-  }
-}
-
+# The BFF's deployment package: bff/*.py PLUS app/workflow.json, so the API reads
+# the same file the customer edits and the same file the runtime reads.
+#
+# It used to be source_dir = ../bff, with a projection of the workflow built here in
+# HCL (and a second time in TypeScript for the CDK path) and shipped in a
+# WORKFLOW_JSON environment variable. That was a CEILING: Lambda caps the whole
+# environment at 4 KB and the quota cannot be raised, so this file carried a
+# 3400-byte precondition and the shipped ten-agent workflow measured 3153 bytes —
+# about eleven agents before a customer's deploy failed with "shorten your agent
+# names". bff/workflow.py now does the projection, once, in Python.
+#
+# `source` blocks rather than `source_dir` because the two inputs live in different
+# directories. bff/ is pure UTF-8 Python, which is why `file()` is safe here; a
+# binary asset would need `filebase64` and a different archive strategy.
+#
+# `**/*.py` rather than `*.py` so a future subpackage under bff/ is included, and
+# rather than `**` so __pycache__ is not: source_dir used to ship every stale .pyc
+# in the working tree — including ones built by a different Python minor version —
+# into the deployment package.
 data "archive_file" "bff" {
   type        = "zip"
-  source_dir  = "${path.module}/../bff"
   output_path = "${path.module}/.build/bff.zip"
+
+  dynamic "source" {
+    for_each = fileset("${path.module}/../bff", "**/*.py")
+    content {
+      content  = file("${path.module}/../bff/${source.value}")
+      filename = source.value
+    }
+  }
+
+  source {
+    content  = file("${path.module}/../app/workflow.json")
+    filename = "workflow.json"
+  }
 }
 
 resource "aws_iam_role" "bff" {
@@ -179,7 +119,9 @@ resource "aws_lambda_function" "bff" {
       EVENTS_TABLE    = aws_dynamodb_table.events.name
       TELEMETRY_TABLE = aws_dynamodb_table.telemetry.name
       RUNTIME_ARN     = awscc_bedrockagentcore_runtime.orchestrator.agent_runtime_arn
-      WORKFLOW_JSON   = jsonencode(local.bff_workflow)
+      # No WORKFLOW_JSON. The workflow is in the deployment package (see the
+      # archive_file above) because a 4 KB environment could not hold more than
+      # about eleven agents' worth of it.
     }
   }
 }

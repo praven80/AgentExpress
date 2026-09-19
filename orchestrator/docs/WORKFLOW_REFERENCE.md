@@ -41,7 +41,7 @@ code have been moved so they don't:
 | How an evidence-gathering agent should use its inputs | pass `instructions=` to `research.synthesize` from your `agent.py` |
 | Which agentic framework an agent reasons with | pass `think=` to `research.synthesize`, or just write it in `run()`. Per agent — `web_search` uses Strands, `knowledge_research` a nested LangGraph, the others none. Route the model call through `ctx.llm` or you lose guardrails, cost telemetry, memory and truncation detection silently; see the README |
 | Your terminal asset's sections | a `SECTIONS` tuple in that agent's `prompts.py` — it builds the prompt, the schema and the completeness check |
-| Your own asset shape | a Pydantic model in your agent's folder. `assetType`, `sourceType` and `sectionType` are open strings, so your vocabulary survives into the UI |
+| Your own asset shape | a Pydantic model in your agent's folder. `assetType`, `sourceType`, `sectionType` and `artifactType` are open strings, so your vocabulary survives into the UI. Narrow any of them on your own model (`artifact_type: Literal["dicom-study"]`) if you want the check — that is the place that knows. The UI chooses a layout by the SHAPE of each field, not by its name, so a contract the framework has never seen still renders as a first-class one |
 
 Renaming an agent means: its key in `agents`, its ids in `steps`, its folder under
 `app/subagents/`, and the id it passes to `upstream_of()` in its own `agent.py`. If
@@ -64,7 +64,7 @@ does not turn tests red.
 | `policy.mode` | same | `ENFORCE` obeys a DENY and blocks the call; `LOG_ONLY` evaluates and logs without blocking — the safe way to roll out. |
 | `chatbot.enabled` | `bff/chatbot.py`, UI | Shows the chat icon. |
 | `chatbot.model` | `bff/chatbot.py` | Model for the assistant's tool-use loop. |
-| `chatbot.greeting` / `chatbot.placeholder` | UI | The assistant's opening message and input placeholder. Shipped in the BFF projection by both IaC paths; the page keeps a short generic fallback if you omit them. |
+| `chatbot.greeting` / `chatbot.placeholder` | UI | The assistant's opening message and input placeholder. Shipped in the BFF projection (`orchestrator/bff/workflow.py`); the page keeps a short generic fallback if you omit them. |
 | `chatbot.tools.<name>` | `bff/chatbot.py` | One flag per assistant capability: `status`, `sessions`, `outputs`, `costs`, `latency`, `guardrails`, `evals`, `runEval`, `rerun`, `review`. Anything unlisted defaults to **on**. |
 
 You never write Cedar by hand — the rules are generated from the `tools` block.
@@ -248,13 +248,13 @@ or off is a config change. Omit a block to leave the capability off.
 
 | Key | Read by | Notes |
 |---|---|---|
-| `memory.longTerm` | `context.py` | List of strategies: `semantic` extracts discrete insights into `insights/{actor}` (cross-run), `summary` maintains a running summary in `summary/{actor}/{session}` (session-scoped). Before `run()` the framework recalls past insights into the system prompt; after, it stores new ones. Namespaced per agent **and** per subject, so insights don't leak between topics. |
+| `memory.longTerm` | `context.py` | List of strategies: `semantic` extracts discrete insights into `insights/{actor}` (cross-run), `summary` maintains a running summary in `summary/{actor}/{session}` (session-scoped). Before `run()` the framework recalls past insights into the system prompt; after, it stores new ones. Namespaced per agent **and** per subject, so insights don't leak between topics. **Only `semantic` and `summary`** — those are the strategies the IaC provisions, and an unrecognised name is rejected at container start. It used to be accepted and then searched as its own namespace, which nothing writes to, so recall returned nothing and reported success. For a `dedicated` agent the recall/store happens inside that agent's own container, not in the orchestrator. |
 | `identity.outbound` | `context.py` | Credential providers this agent may fetch an OAuth token from, to call an external API **directly** via `ctx.get_identity_token`. Not needed for anything reached through the Gateway. |
 | `guardrails.input` | `context.py` | Run the Bedrock guardrail on the agent's input, before the model sees it. |
 | `guardrails.output` | `context.py` | Run it on the agent's output. Use this on any agent handling untrusted text. |
 | `evaluations.enabled` | `evaluations/service.py` | Enables AgentCore Evaluations (LLM-as-judge) and shows the Evaluate button. |
 | `evaluations.auto` | same | `true` scores the agent automatically at run completion; `false` means on demand only. Each evaluator is a billed model call, so `false` is the cheaper default. |
-| `evaluations.evaluators` | same | Built-ins, `Builtin.<Name>`: `Coherence`, `Conciseness`, `Correctness`, `Faithfulness`, `GoalSuccessRate`, `Harmfulness`, `Helpfulness`, `InstructionFollowing`, `Refusal`, `ResponseRelevance`, `Stereotyping`, `ToolParameterAccuracy`, `ToolSelectionAccuracy`. |
+| `evaluations.evaluators` | same | Built-ins, `Builtin.<Name>`: `Coherence`, `Conciseness`, `Correctness`, `Faithfulness`, `GoalSuccessRate`, `Harmfulness`, `Helpfulness`, `InstructionFollowing`, `Refusal`, `ResponseRelevance`, `Stereotyping`, `ToolParameterAccuracy`, `ToolSelectionAccuracy`. Validated on SHAPE (`Builtin.<Name>` or `Custom.<Name>`) rather than against this list, so an evaluator AWS adds later needs no framework edit — but a typo like `Faithfullness` is caught at container start instead of surfacing as an API error the first time an evaluation runs. |
 | `policy.enabled` | `context.py` | An **app-level** Cedar check via `ctx.policy_check`. Secondary: tool calls through the Gateway are already authorized server-side by the attached engine. |
 
 **Deliberately not per-agent**, though it might look like it should be:

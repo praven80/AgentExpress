@@ -17,8 +17,10 @@
 import * as cdk from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import * as path from "path";
+import * as fs from "fs";
+import * as os from "os";
 
-import { a2aLambdaAgents, buildBffWorkflow, OrchestratorStack } from "../lib/orchestrator-stack";
+import { a2aLambdaAgents, OrchestratorStack, stageBffPackage } from "../lib/orchestrator-stack";
 
 const ORCH_ROOT = path.join(__dirname, "..", "..");
 const shipped = require(`${ORCH_ROOT}/app/workflow.json`);
@@ -129,38 +131,129 @@ describe("HTTP API", () => {
   });
 });
 
-describe("the BFF Lambda environment", () => {
-  function bffEnv(): Record<string, string> {
+describe("the BFF deployment package", () => {
+  /**
+   * The workflow reaches the BFF in its PACKAGE, not in its environment.
+   *
+   * It used to travel in a `WORKFLOW_JSON` env var holding a projection this file
+   * built. Lambda caps the whole environment at 4 KB and that quota cannot be
+   * raised, so both IaC paths carried a 3400-byte guard and the shipped ten-agent
+   * workflow measured 3153 bytes — about eleven agents before a customer's deploy
+   * failed telling them to shorten an agent name. bff/workflow.py does the
+   * projection now, at request time, from the file staged here.
+   *
+   * What the projection CONTAINS is asserted in tests/test_bff_projection.py, next
+   * to the implementation. What this file owns is that the file gets there.
+   */
+  function bffFunction(): any {
     const fns = Object.values<any>(template.findResources("AWS::Lambda::Function")).filter(
-      (f) => f.Properties?.Environment?.Variables?.WORKFLOW_JSON
+      (f) => f.Properties?.Handler === "handler.handler"
     );
     expect(fns).toHaveLength(1);
-    return fns[0].Properties.Environment.Variables;
+    return fns[0];
   }
 
-  it("carries the authorization rules", () => {
-    // Without this the BFF's authz module reads an empty block and treats every
-    // action as unrestricted — RBAC configured and silently not enforced.
-    const wf = JSON.parse(bffEnv().WORKFLOW_JSON);
-    expect(wf.authorization).toEqual({
-      groupsClaim: shipped.authorization.groupsClaim,
-      actions: shipped.authorization.actions,
-    });
+  it("ships no WORKFLOW_JSON, because that was an eleven-agent ceiling", () => {
+    const env = bffFunction().Properties.Environment.Variables;
+    expect(env).not.toHaveProperty("WORKFLOW_JSON");
+    // The vars that remain are ARNs, table names and the model id.
+    expect(Object.keys(env).sort()).toEqual([
+      "EVENTS_TABLE",
+      "MODEL_ID",
+      "RUNTIME_ARN",
+      "STATUS_TABLE",
+      "TELEMETRY_TABLE",
+    ]);
   });
 
-  it("carries the agents, steps, evalAgents, chatbot and ui projections", () => {
-    const wf = JSON.parse(bffEnv().WORKFLOW_JSON);
-    expect(Object.keys(wf.agents)).toEqual(Object.keys(shipped.agents));
-    expect(wf.steps).toEqual(shipped.steps);
-    expect(wf.evalAgents.length).toBeGreaterThan(0);
-    expect(wf.chatbot.enabled).toBe(true);
-    expect(wf.ui.title).toBe(shipped.ui.title);
-  });
-
-  it("keeps the whole environment inside Lambda's 4 KB limit", () => {
-    const env = bffEnv();
+  it("keeps the whole environment well inside Lambda's 4 KB limit", () => {
+    // Trivially true now, and kept because the limit is the reason the projection
+    // moved: if anything large is ever put back in here, this is where it shows up.
+    const env = bffFunction().Properties.Environment.Variables;
     const bytes = Object.entries(env).reduce((n, [k, v]) => n + k.length + String(v).length, 0);
-    expect(bytes).toBeLessThan(4096);
+    expect(bytes).toBeLessThan(2048);
+  });
+
+  it("stages workflow.json next to the handler, byte-identical to the source", () => {
+    const staged = fs.mkdtempSync(path.join(os.tmpdir(), "bff-stage-"));
+    stageBffPackage(shipped, staged);
+
+    const files = fs.readdirSync(staged).sort();
+    expect(files).toContain("handler.handler".split(".")[0] + ".py");
+    expect(files).toContain("workflow.py");
+    expect(files).toContain("workflow.json");
+    // The whole point: bff/workflow.py finds the customer's config beside it.
+    expect(JSON.parse(fs.readFileSync(path.join(staged, "workflow.json"), "utf8"))).toEqual(
+      shipped
+    );
+  });
+
+  it("stages no __pycache__, which fromAsset(bff/) used to ship", () => {
+    // Including .pyc files built by a different Python minor version than the
+    // Lambda's runtime.
+    const staged = fs.mkdtempSync(path.join(os.tmpdir(), "bff-stage-"));
+    stageBffPackage(shipped, staged);
+    expect(fs.readdirSync(staged)).not.toContain("__pycache__");
+  });
+
+  it("synthesizes a workflow far past the old eleven-agent ceiling", () => {
+    // THE HEADLINE CLAIM, asserted rather than argued. Twenty-five agents with long
+    // names is roughly twice what the WORKFLOW_JSON environment variable could hold;
+    // under the old design this threw at synth with "shorten your agent names".
+    //
+    // 25 is not the new limit — there isn't one worth asserting. It is far enough
+    // past 11 to show the constraint was REMOVED rather than raised, which is all
+    // SSM Parameter Store would have done (4 KB standard, 8 KB advanced and billed).
+    const many: Record<string, any> = {};
+    for (let n = 0; n < 25; n++) {
+      many[`specialist_review_agent_${String(n).padStart(2, "0")}`] = {
+        name: `Specialist Review and Escalation Agent number ${String(n).padStart(2, "0")}`,
+        runtime: "main",
+        maxTokens: 4000,
+        access: ["Upstream assets (orchestrator graph state)"],
+        agentcore: { evaluations: { enabled: true, auto: false } },
+      };
+    }
+    const big = {
+      ...shipped,
+      agents: { ...shipped.agents, ...many },
+      steps: [...shipped.steps, { parallel: Object.keys(many), gateId: "bulk" }],
+    };
+    expect(() => synth({ workflow: big, a2aTokens: {} })).not.toThrow();
+
+    // And the projection that WOULD have been shipped in the env var is comfortably
+    // over the old budget, which is what makes the point concrete.
+    const staged = fs.mkdtempSync(path.join(os.tmpdir(), "bff-stage-big-"));
+    stageBffPackage(big, staged);
+    const bundled = fs.readFileSync(path.join(staged, "workflow.json"), "utf8");
+    expect(bundled.length).toBeGreaterThan(3400);
+    expect(Object.keys(JSON.parse(bundled).agents)).toHaveLength(
+      Object.keys(shipped.agents).length + 25
+    );
+  });
+
+  it("stages the same python files Terraform's archive_file does", () => {
+    // Two IaC paths, one package. A module present in one and not the other is an
+    // ImportError on half your deployments.
+    const staged = fs.mkdtempSync(path.join(os.tmpdir(), "bff-stage-"));
+    stageBffPackage(shipped, staged);
+    const stagedPy = fs
+      .readdirSync(staged)
+      .filter((f) => f.endsWith(".py"))
+      .sort();
+    const sourcePy = fs
+      .readdirSync(path.join(__dirname, "..", "..", "bff"))
+      .filter((f) => f.endsWith(".py"))
+      .sort();
+    expect(stagedPy).toEqual(sourcePy);
+    // And Terraform's fileset pattern must be the recursive one, or a subpackage
+    // added later is silently dropped from that path only.
+    const bffTf = fs.readFileSync(
+      path.join(__dirname, "..", "..", "terraform", "bff.tf"),
+      "utf8"
+    );
+    expect(bffTf).toContain('fileset("${path.module}/../bff", "**/*.py")');
+    expect(bffTf).toContain('filename = "workflow.json"');
   });
 });
 
@@ -284,10 +377,17 @@ describe("a remote (a2a) agent", () => {
     expect(runtimes.join(" ")).not.toContain("partner_check");
   });
 
-  it("still reaches the UI, labelled by its Agent Card host", () => {
-    const projected = buildBffWorkflow(withRemote).agents.partner_check;
-    expect(projected.runtime).toBe("a2a");
-    expect(projected.source).toBe("A2A \u00b7 agents.partner.example");
+  it("still reaches the BFF, so the UI can draw it", () => {
+    // How it is LABELLED is bff/workflow.py's job and is asserted in
+    // tests/test_bff_projection.py. What this path owns is that a remote agent —
+    // which provisions no runtime of its own — is still in the config the API reads.
+    const staged = fs.mkdtempSync(path.join(os.tmpdir(), "bff-stage-remote-"));
+    stageBffPackage(withRemote, staged);
+    const bundled = JSON.parse(fs.readFileSync(path.join(staged, "workflow.json"), "utf8"));
+    expect(bundled.agents.partner_check.runtime).toBe("a2a");
+    expect(bundled.agents.partner_check.agentCard).toBe(
+      withRemote.agents.partner_check.agentCard
+    );
   });
 
   it("ships an A2A_TOKENS env var to the orchestrator", () => {

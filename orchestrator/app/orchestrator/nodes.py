@@ -109,12 +109,21 @@ def make_agent_node(agent: Agent):
                     # Long-term memory: recall this agent's relevant past insights
                     # (ctx.llm auto-injects them into the system prompt), run, then
                     # store this run's output for future runs.
-                    ctx.recalled_memory = await ctx.memory_recall(ctx.topic or agent.name)
+                    #
+                    # Guarded by the agent, because "here" is only the right place
+                    # when the model call also happens here. A `dedicated` agent runs
+                    # both halves inside its own container, and a remote `a2a` agent
+                    # never sees our recall at all — see the flags on app/common/base.py.
+                    if agent.recall_in_orchestrator:
+                        ctx.recalled_memory = await ctx.memory_recall(ctx.topic or agent.name)
                     out = await agent.run(ctx)
                     # OUTPUT guardrail: screen what the agent produced before it
                     # becomes an input to any downstream agent or the reviewer.
+                    # Applied to EVERY placement — unlike memory, this is about what
+                    # crosses into the rest of this run, so it belongs here.
                     await ctx.guardrail(str(out), "OUTPUT")
-                    await ctx.memory_store(out)
+                    if agent.store_in_orchestrator:
+                        await ctx.memory_store(out)
                 except WorkflowCancelled:
                     raise  # user stop — reported as "cancelled", not a failure
                 except GuardrailBlocked as _blocked:

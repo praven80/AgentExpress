@@ -25,7 +25,6 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 
-import { buildBffWorkflow } from "../lib/orchestrator-stack";
 
 const ORCH_ROOT = path.join(__dirname, "..", "..");
 const TF = path.join(ORCH_ROOT, "terraform");
@@ -108,105 +107,6 @@ function hclKeys(body: string): string[] {
   }
   return [...keys].sort();
 }
-
-// ---------------------------------------------------------------------------
-// The BFF projection
-// ---------------------------------------------------------------------------
-
-describe("BFF workflow projection", () => {
-  const tfKeys = hclKeys(hclBlock(read(path.join(TF, "bff.tf")), "bff_workflow"));
-
-  it("emits the same top-level keys on both paths", () => {
-    const cdkKeys = Object.keys(buildBffWorkflow(shipped)).sort();
-    expect(tfKeys.length).toBeGreaterThan(3); // the extraction actually worked
-    expect(cdkKeys).toEqual(tfKeys);
-  });
-
-  it("emits the same per-agent keys on both paths", () => {
-    // `agents = { for id, a in ... : id => { name = ..., kind = ... } }` — the shape
-    // we want is the comprehension's VALUE, not the comprehension itself.
-    const tfAgentKeys = hclKeys(
-      hclForValue(hclBlock(read(path.join(TF, "bff.tf")), "bff_workflow"), "agents")
-    );
-    const cdkAgentKeys = Object.keys(buildBffWorkflow(shipped).agents[firstAgent]).sort();
-    expect(tfAgentKeys.length).toBeGreaterThan(3);
-    expect(cdkAgentKeys).toEqual(tfAgentKeys);
-  });
-
-  it("fits the byte budget both paths enforce", () => {
-    const bff = read(path.join(TF, "bff.tf"));
-    const tfBudget = Number(bff.match(/length\(jsonencode\(local\.bff_workflow\)\) <= (\d+)/)![1]);
-    const cdkBudget = Number(
-      read(path.join(__dirname, "..", "lib", "orchestrator-stack.ts")).match(
-        /WORKFLOW_JSON_MAX = (\d+)/
-      )![1]
-    );
-    expect(cdkBudget).toBe(tfBudget);
-    // And the shipped config is actually under it, with room to spare.
-    expect(JSON.stringify(buildBffWorkflow(shipped)).length).toBeLessThan(tfBudget);
-  });
-
-  it("derives the same data-source labels as the Terraform expression", () => {
-    // The four labels are written out longhand in both places, so compare the
-    // literal strings rather than trusting they were copied correctly.
-    const bff = read(path.join(TF, "bff.tf"));
-    for (const label of [
-      "Knowledge Base \u00b7 ",
-      "Web Search",
-      "REST API \u00b7 ",
-      "MCP \u00b7 ",
-      "Session input",
-      "Upstream agent outputs",
-      "A2A \u00b7 ",
-    ]) {
-      expect(bff).toContain(label);
-    }
-    // Agents resolved by their tool TYPE, not by name, so the assertion is about the
-    // label derivation rather than about this sample's agent ids.
-    const out = buildBffWorkflow(shipped);
-    const kb = agentWithToolType("kb");
-    const ws = agentWithToolType("websearch");
-    const mcp = agentWithToolType("mcp");
-    expect([kb, ws, mcp, firstAgent, upstreamAgent].every(Boolean)).toBe(true);
-    expect(out.agents[kb].source).toMatch(/^Knowledge Base \u00b7 /);
-    expect(out.agents[ws].source).toBe("Web Search");
-    expect(out.agents[mcp].source).toMatch(/^MCP \u00b7 /);
-    expect(out.agents[firstAgent].source).toBe("Session input");
-    expect(out.agents[upstreamAgent].source).toBe("Upstream agent outputs");
-  });
-
-  it("labels a remote (a2a) agent by its Agent Card host, identically on both paths", () => {
-    // A remote agent has no `tool`, so it hits a branch of its own. The two paths
-    // compute the host with different primitives — a JS regex here, HCL replace/split
-    // there — and they DID disagree on an uppercase scheme and on an empty card until
-    // both were run against these four inputs. Hence the literal expectations: the
-    // point is that the strings match, not that each side is individually plausible.
-    const { a2aHost } = require("../lib/orchestrator-stack");
-    expect(a2aHost("https://agents.partner.example/credit/v2")).toBe("agents.partner.example");
-    expect(a2aHost("https://a.example")).toBe("a.example");
-    expect(a2aHost("HTTPS://B.example/z")).toBe("B.example"); // scheme match is case-insensitive
-    expect(a2aHost("")).toBe("remote"); // never an empty chip
-
-    const out = buildBffWorkflow({
-      orchestrator: {}, tools: {}, steps: [{ agent: "remote_one" }],
-      agents: {
-        remote_one: {
-          name: "Partner Agent", runtime: "a2a",
-          agentCard: "https://agents.partner.example/credit/v2",
-        },
-      },
-    });
-    expect(out.agents.remote_one.source).toBe("A2A \u00b7 agents.partner.example");
-    expect(out.agents.remote_one.runtime).toBe("a2a");
-
-    // And the HCL must strip the scheme case-insensitively and default to "remote",
-    // which is what the two divergences were.
-    const bff = read(path.join(TF, "bff.tf"));
-    expect(bff).toContain('"A2A \u00b7 ');
-    expect(bff).toContain("(?i)^https?:");
-    expect(bff).toContain('"remote"');
-  });
-});
 
 // ---------------------------------------------------------------------------
 // API routes
@@ -681,9 +581,4 @@ describe("the shipped workflow.json", () => {
     }
   });
 
-  it("keeps every *Note key out of the BFF projection", () => {
-    // The Notes are for whoever edits the file, and every byte counts in a 4 KB
-    // Lambda environment.
-    expect(JSON.stringify(buildBffWorkflow(shipped))).not.toMatch(/"[a-zA-Z]+Note"/);
-  });
 });

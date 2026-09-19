@@ -769,9 +769,27 @@ function renderVal(d, depth = 0) {
 // executive summary, findings (with evidence-class chips), fields, sources, and
 // data limitations — instead of raw JSON. Falls back to formatted text when the
 // output isn't a JSON object.
+/* EXACTLY the framework envelope — see AssetEnvelope in app/common/contracts/base.py.
+   Every other key is the customer's own business content and is rendered below.
+
+   `summary`, `findings` and `dataLimitations` used to be in here, and they are NOT
+   envelope fields: they belong to this sample's research contract. Listing them here
+   meant the page had this workflow's vocabulary baked into it — a customer whose
+   contract says `observations` and `unresolvedQueries` got their content rendered as
+   an afterthought while three fields they do not have were privileged. Everything
+   below selects a layout by the SHAPE of a value, never by its name. */
 const ASSET_ENVELOPE = new Set(["assetId","assetType","version","status",
-  "createdAt","createdByAgent","executiveSummary","summary","findings","dataLimitations",
-  "sources","sourceAssetIds","artifacts"]);
+  "createdAt","createdByAgent","executiveSummary","sources","sourceAssetIds","artifacts"]);
+
+/* Generic English words for "what this run could not settle". A list under a key like
+   this is collapsed and flagged rather than shown as a plain list, because it is a
+   caveat and not a result.
+
+   Deliberately the same vocabulary as `_UNCERTAIN_KEY_RE` in app/common/context.py,
+   which picks the most reusable part of an asset for long-term memory the same
+   name-agnostic way. One idea, one word list, so `caveats`, `gaps`, `openQuestions`
+   and `dataLimitations` all get the same treatment. */
+const UNCERTAIN_KEY = /question|limitation|gap|unknown|caveat|missing|unresolved|outstanding|risk|blocker|assumption|exclusion|constraint/i;
 
 /* Only ever emit http(s) links. A citation url arrives from a model, so treating
    it as trusted markup would be an injection vector (javascript:, data:, …). */
@@ -804,6 +822,63 @@ function renderAssetVal(v){
   }
   return mdInline(String(v));
 }
+/* An array of flat objects — this sample's `findings`, a claims workflow's
+   `observations`, a triage workflow's `signals`. Rendered as a claim list rather than
+   a key/value grid, because that is the shape a reader scans.
+
+   Shape test only: every item a plain object, at least one string value, and no
+   nested objects or arrays (those get the grid, which handles depth). */
+function isClaimList(v){
+  return Array.isArray(v) && v.length > 0 && v.every(x =>
+    x && typeof x === "object" && !Array.isArray(x) &&
+    Object.values(x).some(val => typeof val === "string" && val.trim()) &&
+    Object.values(x).every(val => val === null || typeof val !== "object"));
+}
+
+/* One claim. The LONGEST string is the claim itself; every other scalar becomes a
+   chip beside it.
+   Longest-wins because the substance is always the longest field and the labels
+   around it are always short — which holds for `statement` + `classification` +
+   `sourceRef` without the renderer having to know any of those three names. */
+/* A value drawn from a controlled vocabulary — "sourced-fact", "high", "claim-form".
+   Chipped, because that is what a reader scans for.
+   A SINGLE TOKEN is the test, not a character count. A count alone promoted
+   "Corroborated by the site visit." to a chip (31 characters) and demoted nothing,
+   and allowing two words promoted "Developer guide" — a citation — as well. Every
+   controlled vocabulary in practice is one word, hyphenated or underscored. */
+function isVocabToken(s){
+  return s.length <= 24 && /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(s);
+}
+
+/* One claim. The longest NON-URL string is the claim itself; the rest sit beside it as
+   vocabulary chips, citation links, or trailing references. */
+function renderClaim(item){
+  const entries = Object.entries(item).filter(([, v]) => v !== null && v !== "");
+  /* URLs are excluded from the lead: a url is never the claim, it is always the
+     evidence for it. Without this exclusion a 36-character citation url outranked a
+     34-character statement and the page led with the link. */
+  let leadKey = null, leadLen = -1;
+  for (const [k, v] of entries){
+    if (typeof v !== "string" || safeUrl(v)) continue;
+    if (v.length > leadLen){ leadKey = k; leadLen = v.length; }
+  }
+  const chips = [], refs = [];
+  for (const [k, v] of entries){
+    if (k === leadKey) continue;
+    const s = String(v);
+    /* A url is a citation: rendered as a link, per AgentCore Web Search's
+       acceptable-use terms, wherever the result is surfaced. */
+    if (safeUrl(s))
+      refs.push(` <a class="sref" href="${esc(s)}" target="_blank" rel="noopener noreferrer">${esc(s)}</a>`);
+    else if (isVocabToken(s)) chips.push(clsChip(s));
+    else refs.push(` <span class="sref">— ${esc(s)}</span>`);
+  }
+  /* Vocabulary chips lead, references trail — the visual order the old hardcoded
+     findings block produced, now without knowing any field's name. */
+  const lead = leadKey ? mdInline(String(item[leadKey])) : "";
+  return `<li>${chips.join("")}${lead}${refs.join("")}</li>`;
+}
+
 function renderAsset(d){
   const P = [];
   const meta = [];
@@ -811,18 +886,24 @@ function renderAsset(d){
   if (d.version) meta.push("v" + d.version);
   if (d.status) meta.push(String(d.status));
   if (meta.length) P.push(`<div class="asset-meta">${esc(meta.join("  ·  "))}</div>`);
-  const summary = d.executiveSummary || d.summary;
+  const summary = d.executiveSummary;
   if (summary) P.push(`<div class="asset-summary">${mdInline(summary)}</div>`);
-  if (Array.isArray(d.findings) && d.findings.length){
-    P.push(`<div class="asset-sec"><h5>Findings</h5><ul class="blist">${d.findings.map(f =>
-      `<li>${clsChip(f.classification)}${esc(f.statement || "")}` +
-      `${f.sourceRef ? ` <span class="sref">— ${esc(f.sourceRef)}</span>` : ""}</li>`).join("")}</ul></div>`);
-  }
-  // Any remaining business fields, in document order.
+
+  /* Business content, in document order, each laid out by its shape. */
+  const caveats = [];
   for (const [k, v] of Object.entries(d)){
     if (ASSET_ENVELOPE.has(k)) continue;
     if (v === null || v === "" || (Array.isArray(v) && !v.length)) continue;
-    P.push(`<div class="asset-sec"><h5>${esc(humanizeKey(k))}</h5>${renderAssetVal(v)}</div>`);
+    /* A field that merely repeats the executive summary is not a second section.
+       Name-agnostic, so it also covers a customer contract that carries its summary
+       twice — which this sample's research asset does (`executiveSummary` and
+       `summary` hold the same sentence). */
+    if (typeof v === "string" && summary && v.trim() === String(summary).trim()) continue;
+    if (UNCERTAIN_KEY.test(k) && Array.isArray(v)){ caveats.push([k, v]); continue; }
+    const body = isClaimList(v)
+      ? `<ul class="blist">${v.map(renderClaim).join("")}</ul>`
+      : renderAssetVal(v);
+    P.push(`<div class="asset-sec"><h5>${esc(humanizeKey(k))}</h5>${body}</div>`);
   }
   // Sources are CITATIONS. AgentCore Web Search's acceptable-use terms require the
   // returned links to be displayed wherever a result is surfaced, so a source that
@@ -837,10 +918,31 @@ function renderAsset(d){
         `${s.sourceType ? ` <span class="muted">(${esc(s.sourceType)})</span>` : ""}</li>`;
     }).join("")}</ul></div>`);
   }
-  if (Array.isArray(d.dataLimitations) && d.dataLimitations.length){
-    P.push(`<details class="asset-sec warn asset-collapse"><summary>Data limitations (${
-      d.dataLimitations.length})</summary><ul class="blist">${
-      d.dataLimitations.map(x => `<li>${esc(x)}</li>`).join("")}</ul></details>`);
+  /* ARTIFACTS are envelope, and until now they were skipped and rendered NOWHERE —
+     so a customer attaching a PDF, a spreadsheet or a signed form saw no trace of it.
+     `artifactType` is an open string (see app/common/contracts/base.py), so the kind
+     is displayed as given rather than matched against a list. */
+  if (Array.isArray(d.artifacts) && d.artifacts.length){
+    P.push(`<div class="asset-sec"><h5>Artifacts</h5><ul class="blist">${d.artifacts.map(a => {
+      const label = esc(a.name || a.artifactId || "artifact");
+      const link = safeUrl(a.uri)
+        ? `<a href="${esc(a.uri)}" target="_blank" rel="noopener noreferrer">${label}</a>`
+        : label;
+      return `<li>${a.artifactType ? clsChip(a.artifactType) : ""}${link}` +
+        `${a.artifactRole === "final" ? ` <span class="cls">final</span>` : ""}` +
+        `${a.description ? ` <span class="sref">— ${esc(a.description)}</span>` : ""}</li>`;
+    }).join("")}</ul></div>`);
+  }
+
+  /* Caveats last and collapsed: they qualify the result rather than being it. Keyed
+     on the generic uncertainty vocabulary above, so `dataLimitations`, `caveats`,
+     `gaps` and `openQuestions` all land here without the page knowing any of them. */
+  for (const [k, v] of caveats){
+    P.push(`<details class="asset-sec warn asset-collapse"><summary>${
+      esc(humanizeKey(k))} (${v.length})</summary><ul class="blist">${
+      v.map(x => (x && typeof x === "object")
+        ? renderClaim(x)
+        : `<li>${esc(String(x))}</li>`).join("")}</ul></details>`);
   }
   return `<div class="asset">${P.join("")}</div>`;
 }
