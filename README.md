@@ -10,7 +10,7 @@ Memory, Identity, Observability, Guardrails, Evaluations, Policy, Optimization),
 all declared in one `workflow.json`.
 
 This is a **reference pattern**, not a finished product for any one domain. The
-sample topic (`"Design a serverless data pipeline on AWS"`) and the ten agents
+sample topic (`"Design a serverless data pipeline on AWS"`) and the eight agents
 are intentionally generic — swap the prompts, contracts, and Knowledge Base corpus
 for your use case.
 
@@ -35,7 +35,7 @@ for your use case.
 > different 4-agent workflow in another domain — renamed agents, a different topology,
 > its own tool, guardrail and branding — and separately renaming a shipped agent by
 > touching only `workflow.json` and its own folder. Both compile the graph and pass
-> the full suite (429 Python + 149 TypeScript), `terraform validate` and `cdk synth`
+> the full suite (652 Python + 132 TypeScript), `terraform validate` and `cdk synth`
 > with no other change.
 >
 > Four couplings remain, none of which blocks a typical use case: the five tool
@@ -178,19 +178,21 @@ deliberately contrasts a **parallel** group with a **sequential** group:
 ```
 
 Agents are keyed by **semantic ids** in `workflow.json` (e.g. `intake`,
-`analysis`); each has a self-contained package under `app/subagents/<id>/`.
+`analysis`); each agent whose code you ship has a self-contained package under
+`app/subagents/<id>/`. Two of the eight do not, because they are not yours to ship —
+see stage 3.
 
 | # | Stage | Agent id(s) | Pattern | Notes |
 |---|-------|-------------|---------|-------|
 | 1 | Request Intake | `intake` | single | LLM turns the request into a structured brief; HITL gate after, then a **`branch`** on that brief (see below) |
 | 2 | Research | `knowledge_research`, `web_search`, `documentation_search`, `cost_research` | **parallel** (**RAG** ‖ **Web Search** ‖ **MCP** ‖ **your own Lambda**), the first three on a **dedicated runtime** | run concurrently — one per tool pattern; one HITL group gate after all four |
-| 3 | Analysis → Recommendation | `analysis`, `recommendation` | **sequential** | run one after another; one HITL gate after both complete (revise re-runs the whole chain) |
+| 3 | Analysis → Recommendation | `analysis`, `recommendation` | **sequential**, and both **`runtime: "a2a"`** — agents this deployment does not operate, reached over the **Agent2Agent protocol** | run one after another; one HITL gate after both complete (revise re-runs the whole chain). No folder under `app/subagents/` for either: the code is somebody else's. Both still produce real contract assets — the framework stamps the asset envelope on a structured reply, so `report` traces its sections to their `assetId`s exactly as it would a local agent's |
 | 4 | Report | `report` | terminal | assembles the final sectioned report (no gate) |
 
 Each agent entry binds to a data source with one field — `tool` (a key in the
 `tools` block) plus `corpus` for a Knowledge Base tool — and carries declarative
 `access` / `produces` metadata surfaced as chips in the UI, plus the
-`agentcore` block that switches its features on. The ten agents deliberately use
+`agentcore` block that switches its features on. The eight agents deliberately use
 **different** combinations so one deployment exercises the whole surface:
 
 | Agent | Runtime | Tool | Reasons with | Long-term memory | Guardrails | Evaluations | Policy |
@@ -200,16 +202,25 @@ Each agent entry binds to a data source with one field — `tool` (a key in the
 | `web_search` | dedicated | `websearch` | **Strands** | — | output | on demand | **enabled** |
 | `documentation_search` | dedicated | `docs` (MCP) | `ctx.llm` | — | output | on demand | **enabled** |
 | `cost_research` | main | `pricing` (**your own Lambda**) | `ctx.llm` + code | — | — | on demand | **enabled** |
-| `compliance_review` | **a2a** | its own | someone else's | — | — | role descriptor | outside ours |
-| `resilience_review` | **a2a** | its own | someone else's | — | — | role descriptor | outside ours |
-| `analysis` | main | — | `ctx.llm` | semantic | output | auto | — |
-| `recommendation` | main | — | `ctx.llm` | semantic + summary | output | auto | — |
+| `analysis` | **a2a** | its own | someone else's | semantic | output | on demand, role descriptor | outside ours |
+| `recommendation` | **a2a** | its own | someone else's | semantic + summary | output | on demand, role descriptor | outside ours |
 | `report` | main | — | `ctx.llm` | — | input + output | auto | — |
 
 *Reasons with* is the per-agent authoring choice described under
 [Author an agent with any agentic framework](#author-an-agent-with-any-agentic-framework);
 every one of these still reaches the model through `ctx.llm` except the `a2a` pair,
 which is a different deployment entirely.
+
+The `a2a` rows are where the table earns its keep, because they show what a trust
+boundary costs and what it does not. **Long-term memory works in both directions** —
+the recall is sent to the remote agent inside the A2A task, with the caveat that says
+it is recollection and not evidence — and **guardrails still apply**, because the
+framework wraps the call on this side. **Evaluations degrade**: with no local model
+call there is no captured prompt, so an evaluation scores a role descriptor plus the
+real output, which is why those two are `auto: false` with a narrower evaluator list
+(Faithfulness is dropped — there is no source context to be faithful to, and a number
+computed anyway would read exactly like a measured one). **Cedar cannot reach their
+tool calls at all.**
 
 ### Branching — letting an agent's output choose the next step
 
@@ -412,15 +423,20 @@ orchestrator/
 │   │   ├── graph_builder.py    #   builds the LangGraph (single / parallel / sequence steps + their HITL gates)
 │   │   │                       #   + rerun_plan / group_rerun_plan (rewind planning)
 │   │   ├── nodes.py            #   generic agent-node (spans, tokens, guardrails, memory) + HITL-gate wrappers
-│   │   ├── registry.py         #   node factory: main (in-process module) vs dedicated (AgentCoreRuntimeAgent)
+│   │   ├── registry.py         #   node factory: main (in-process module) vs dedicated
+│   │   │                       #     (AgentCoreRuntimeAgent) vs a2a (A2AAgent, somebody else's service)
 │   │   ├── runtime.py          #   AgentCore entrypoint (start / resume / rerun_from / evaluate / insights)
 │   │   └── server.py           #   local dev server (same API + UI)
-│   └── subagents/<name>/       # one self-contained package per agent (agent.py + prompts.py + __init__.py):
-│                               #   intake, knowledge_research, web_search, documentation_search,
-│                               #   cost_research, analysis, recommendation, report
+│   └── subagents/<name>/       # one self-contained package per agent WHOSE CODE YOU SHIP
+│                               #   (agent.py + prompts.py + __init__.py): intake, knowledge_research,
+│                               #   web_search, documentation_search, cost_research, report.
+│                               #   `analysis` and `recommendation` have no folder — they are
+│                               #   runtime: "a2a", so the code is somebody else's
 │       └── _shared/            # SAMPLE code the agents share, not framework: research.py (gather
 │                               #   evidence from a tool), synthesis.py (reason over upstream assets),
-│                               #   contracts/ (the five asset shapes this sample happens to use)
+│                               #   contracts/ (the five asset shapes this sample happens to use —
+│                               #   Analysis and Recommendation are now the shapes the REMOTE agents
+│                               #   are asked for, and tests validate their replies against them)
 ├── web/index.html              # config-driven UI: pluggable login, DAG, HITL gates, outputs, rerun, assistant
 ├── web/observability.js        # self-contained Observability tab (charts, drilldown, Prompts & I/O
 │                               #   inspector, evaluation scores, Insights, export)

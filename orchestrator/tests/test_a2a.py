@@ -58,16 +58,40 @@ def remote_wf(**agent_overrides) -> dict:
     return defn
 
 
-class Ctx:
-    """Only what A2AAgent touches on the context."""
+def no_contract_wf(**agent_overrides) -> dict:
+    """REMOTE_WF with `produces` removed, so a reply comes back exactly as sent.
 
-    def __init__(self, outputs=None, feedback="", token=""):
+    Used by the tests about READING the wire. `produces` is what turns a structured
+    reply into a stamped asset, and leaving it on would mean those tests assert the
+    envelope too — so a change to the envelope would break nine tests about JSON-RPC
+    part shapes, which are not about the envelope at all.
+    """
+    defn = remote_wf(**agent_overrides)
+    del defn["agents"]["partner"]["produces"]
+    return defn
+
+
+class Ctx:
+    """Only what A2AAgent touches on the context.
+
+    `agent_id` and `input()` are here because the framework now stamps an asset
+    envelope on a structured reply, and the two things it cannot guess — this agent's
+    previous version and the upstream assetIds — are read off the context exactly the
+    way a local agent reads them. They mirror app/common/context.py: `input(id)` is
+    `state["outputs"][id]`, nothing more.
+    """
+
+    def __init__(self, outputs=None, feedback="", token="", agent_id="partner"):
         self.topic = "assess this applicant"
         self.session_id = "sess-1"
+        self.agent_id = agent_id
         self.state = {"outputs": outputs or {}, "subject_id": ""}
         self.feedback = feedback
         self.logs: list[str] = []
         self._token = token
+
+    def input(self, agent_id: str):
+        return (self.state.get("outputs") or {}).get(agent_id)
 
     async def log(self, msg):
         self.logs.append(msg)
@@ -473,7 +497,9 @@ def test_oauth2_auth_uses_the_existing_per_agent_identity_feature():
      "enum state"),
 ])
 def test_the_answer_is_found_wherever_the_protocol_allows_it(send, expected):
-    out, _ = run(REMOTE_WF, Wire(send=send))
+    """On a workflow with no `produces`, so what comes back is what was sent. The
+    envelope stamping that a `produces` agent gets is asserted separately below."""
+    out, _ = run(no_contract_wf(), Wire(send=send))
     assert out == expected
 
 
@@ -493,6 +519,125 @@ def test_a_completed_task_with_no_content_fails_rather_than_returning_empty():
     send = {"result": {"id": "t1", "status": {"state": "completed"}, "artifacts": []}}
     with pytest.raises(Exception, match="returned no text content"):
         run(REMOTE_WF, Wire(send=send))
+
+
+# ---------------------------------------------------------------------------
+# A remote agent is a first-class asset producer
+# ---------------------------------------------------------------------------
+#
+# The remote agent supplies the CONTENT; the framework supplies the ENVELOPE. That
+# split is not a convenience — the envelope is bookkeeping about THIS run (which
+# version, which step id, which upstream assets) and the remote cannot know any of it.
+# Asked to invent `version`, it gets it wrong on every re-run, silently, because a
+# wrong integer still validates.
+#
+# What this buys: `synthesis.upstream_context` collects `assetId` off every upstream
+# output and passes the ids to the model for claim tracing. A remote reply with no
+# assetId went in as an unattributable block — a report could mention it in prose but
+# never cite it. The last test in this section is that payoff, asserted end to end.
+
+
+def json_reply(payload: dict) -> dict:
+    """A completed task whose artifact carries `payload` as JSON text."""
+    return {"result": {"id": "t1", "status": {"state": "completed"}, "artifacts": [
+        {"parts": [{"kind": "text", "text": json.dumps(payload)}]}]}}
+
+
+def test_a_structured_reply_is_stamped_with_the_envelope_the_framework_owns():
+    ctx = Ctx(outputs={"intake": '{"title": "Applicant 42"}'})
+    out, _ = run(REMOTE_WF, Wire(send=json_reply({"verdict": "low risk"})), ctx)
+    asset = json.loads(out)
+    # The remote's content, untouched.
+    assert asset["verdict"] == "low risk"
+    # The envelope, all of it from config and run state — never from the remote.
+    assert asset["assetType"] == "risk-assessment"        # `produces`
+    assert asset["createdByAgent"] == "partner"           # the id THIS workflow gave it
+    assert asset["version"] == 1
+    assert asset["status"] == "in-review"
+    assert asset["assetId"] == "asset-risk-assessment-applicant-42-v1"
+    assert asset["createdAt"]
+
+
+def test_a_prose_reply_is_left_exactly_as_the_agent_wrote_it():
+    """A remote reviewer that answers in sentences is a legitimate remote agent. Its
+    text is the deliverable, and wrapping it in a JSON envelope would put a wall of
+    escaped prose into the timeline and into every downstream prompt."""
+    send = {"result": {"id": "t1", "status": {"state": "completed"}, "artifacts": [
+        {"parts": [{"kind": "text", "text": "Data residency is unaddressed."}]}]}}
+    out, _ = run(REMOTE_WF, Wire(send=send))
+    assert out == "Data residency is unaddressed."
+
+
+def test_an_agent_that_declares_no_produces_is_never_wrapped():
+    """`produces` is what names the contract, so with no `produces` there is no asset
+    to build — and a remote agent used as a plain step is a normal thing to configure."""
+    out, _ = run(no_contract_wf(), Wire(send=json_reply({"verdict": "low risk"})))
+    assert json.loads(out) == {"verdict": "low risk"}
+
+
+def test_the_remotes_own_fields_are_not_overwritten():
+    """A contract-aware partner may send its own envelope fields. Filling gaps is the
+    framework's job; overruling a remote agent about its own output is not."""
+    send = json_reply({"assetId": "partner-own-id", "executiveSummary": "theirs",
+                       "verdict": "low risk"})
+    out, _ = run(REMOTE_WF, Wire(send=send), Ctx(outputs={"intake": '{"title": "X"}'}))
+    asset = json.loads(out)
+    assert asset["assetId"] == "partner-own-id"
+    assert asset["executiveSummary"] == "theirs"
+    # And the fields it did NOT send are still stamped.
+    assert asset["createdByAgent"] == "partner"
+
+
+def test_the_version_counts_this_agents_runs_and_the_remote_is_not_asked():
+    """The field the remote provably cannot know. On a revise the previous asset is in
+    state, so this run is v2 — and the remote sent no version at all either time."""
+    prior = json.dumps({"assetId": "asset-risk-assessment-x-v1", "version": 1,
+                        "verdict": "stale"})
+    ctx = Ctx(outputs={"intake": '{"title": "X"}', "partner": prior},
+              feedback="look again at affordability")
+    out, wire = run(REMOTE_WF, Wire(send=json_reply({"verdict": "fresh"})), ctx)
+    asset = json.loads(out)
+    assert asset["version"] == 2
+    assert asset["assetId"].endswith("-v2")
+    # Nothing about the version was asked of them, so nothing about it can be wrong.
+    sent = wire.of("message/send")[0]["body"]["params"]["message"]["parts"][0]["text"]
+    assert "version" not in json.loads(sent)
+
+
+def test_the_asset_records_which_upstream_assets_it_was_built_from():
+    """`sourceAssetIds` is asset-level provenance, and only this side knows the ids:
+    the remote was handed the upstream CONTENT, not this graph's bookkeeping."""
+    ctx = Ctx(outputs={"intake": json.dumps({"title": "X", "assetId": "asset-brief-x-v1"})})
+    out, _ = run(REMOTE_WF, Wire(send=json_reply({"verdict": "low risk"})), ctx)
+    assert json.loads(out)["sourceAssetIds"] == ["asset-brief-x-v1"]
+
+
+def test_an_upstream_with_no_asset_id_contributes_nothing_rather_than_a_blank():
+    """An upstream agent may legitimately answer in prose. A "" in sourceAssetIds
+    would be a citation to nothing."""
+    ctx = Ctx(outputs={"intake": "just some prose"})
+    out, _ = run(REMOTE_WF, Wire(send=json_reply({"verdict": "low risk"})), ctx)
+    assert json.loads(out)["sourceAssetIds"] == []
+
+
+def test_a_downstream_agent_can_now_trace_a_claim_to_the_remote_agents_asset():
+    """The payoff, through the code a synthesis agent actually runs.
+
+    `upstream_context` appends an assetId only when the upstream output has one, and
+    puts it in the prompt header so the model can cite it. Before the envelope, a
+    remote agent's output reached this function with no assetId: it still went into the
+    prompt, but as a block with nothing to cite, so rule 2 ("trace every material claim
+    to the assetId(s) above") had nothing to point at."""
+    ctx = Ctx(outputs={"intake": '{"title": "Applicant 42"}'})
+    out, _ = run(REMOTE_WF, Wire(send=json_reply({"verdict": "low risk"})), ctx)
+
+    ctx.state["outputs"]["partner"] = out
+    with workflow(REMOTE_WF) as imp:
+        context, ids = imp("app.subagents._shared.synthesis").upstream_context(
+            ctx, ["intake", "partner"])
+    assert "asset-risk-assessment-applicant-42-v1" in ids
+    assert "assetId: asset-risk-assessment-applicant-42-v1" in context
+    assert "low risk" in context
 
 
 # ---------------------------------------------------------------------------
@@ -723,7 +868,11 @@ def round_trip(answer, *, skill="compliance", outputs=None):
 def test_the_shipped_server_and_the_client_interoperate():
     answer = '{"reviewer": "compliance", "verdict": "Data residency is unaddressed."}'
     out, seen = round_trip(answer, outputs={"intake": '{"objective": "build a pipeline"}'})
-    assert out == answer
+    # The remote's content arrives intact, inside the envelope the framework stamps.
+    asset = json.loads(out)
+    assert asset["reviewer"] == "compliance"
+    assert asset["verdict"] == "Data residency is unaddressed."
+    assert asset["assetType"] == "risk-assessment"
     # The card was fetched from the well-known path under the skill, then the RPC went
     # to the url the CARD returned — not to the configured base.
     assert seen[0] == ("GET", "/compliance/.well-known/agent-card.json")
@@ -731,16 +880,92 @@ def test_the_shipped_server_and_the_client_interoperate():
 
 
 def test_each_shipped_skill_is_reachable_and_distinct():
-    """Two remote agents backed by one function, which is the point of the path-based
-    skill: different reviewers, not the same one called twice."""
+    """Several remote agents backed by one function, which is the point of the
+    path-based skill: different agents, not the same one called four times.
+
+    Driven off `SKILLS` rather than a list written here, so adding a skill to the
+    handler is covered the moment it exists instead of when somebody remembers to
+    extend this test."""
     server = a2a_server()
-    for skill in ("compliance", "resilience"):
+    assert len(server.SKILLS) > 1
+    for skill in server.SKILLS:
         out, seen = round_trip(f'{{"reviewer": "{skill}"}}', skill=skill)
-        assert out == f'{{"reviewer": "{skill}"}}'
+        assert json.loads(out)["reviewer"] == skill
         assert seen[1] == ("POST", f"/{skill}")
     # And they really are different prompts, not one with a label swapped.
     prompts = {k: v["prompt"] for k, v in server.SKILLS.items()}
     assert len(set(prompts.values())) == len(prompts)
+
+
+@pytest.mark.parametrize("skill,contract,content", [
+    ("analysis", "Analysis", {
+        "executiveSummary": "A layered design is the load-bearing choice.",
+        "summary": "The three findings converge on a layered architecture.",
+        "rationale": "Documentation and web search agreed; the cost finding was set aside.",
+        "claims": [{"statement": "A layered split is the consensus design.",
+                    "tracedToAssetIds": ["asset-brief-x-v1"], "confidence": "high"}],
+        "assumptions": ["The workload is request-driven."],
+        "limitations": ["No volume was supplied."],
+        "sources": [{"sourceId": "s1", "sourceType": "research-finding",
+                     "sourceName": "web search", "sourceAssetId": "asset-brief-x-v1"}],
+    }),
+    ("recommendation", "Recommendation", {
+        "executiveSummary": "Settle the workload profile first.",
+        "summary": "Four choices wait on one missing input.",
+        "items": [{"title": "Describe the workload", "detail": "Volume and latency.",
+                   "priority": "high", "rationale": "Four decisions turn on it.",
+                   "tracedToAssetIds": ["asset-brief-x-v1"]}],
+        "risks": ["Choosing before the profile is known."],
+        "assumptions": [],
+        "sources": [{"sourceId": "s1", "sourceType": "analysis", "sourceName": "analysis"}],
+    }),
+])
+def test_a_remote_agents_asset_validates_against_the_contract_it_produces(
+        skill, contract, content):
+    """The two halves of the contract split, checked against each other.
+
+    The stand-in is asked for CONTENT only — its `shape` has no assetId, no version, no
+    status — and the framework stamps the envelope. Neither half is a valid asset alone,
+    so the thing worth asserting is that together they satisfy the pydantic contract
+    this sample's report agent reads.
+
+    A framework CANNOT do this check at run time for a remote agent: there is no local
+    contract class for code somebody else owns, which is the real cost of the trust
+    boundary (see A2AAgent._as_asset). It can be done HERE, against the stand-in we do
+    ship, and that is what makes the shape in handler.py a claim rather than a hope.
+    """
+    import importlib
+
+    contracts = importlib.import_module("app.subagents._shared.contracts")
+    defn = remote_wf(agentCard=f"{CARD_HOST}/{skill}", produces=skill)
+    server = a2a_server()
+    server._bedrock = _bedrock_returning(json.dumps(content))
+
+    from urllib.parse import urlsplit
+
+    def urlopen(request, timeout=None):
+        url = urlsplit(request.full_url)
+        out = server.lambda_handler({
+            "requestContext": {"http": {"method": request.get_method()}},
+            "rawPath": url.path, "headers": {"Host": url.netloc},
+            "body": request.data.decode() if request.data else "",
+        })
+        return _Resp(json.loads(out["body"]))
+
+    ctx = Ctx(outputs={"intake": json.dumps({"title": "X", "assetId": "asset-brief-x-v1"})})
+    with workflow(defn) as imp:
+        mod = imp("app.common.a2a_agent")
+        mod.urllib.request.urlopen = urlopen
+        out = asyncio.run(imp("app.orchestrator.registry").load_agents()["partner"].run(ctx))
+
+    # `extra="forbid"` on the envelope, so this fails if the shape asks for a field the
+    # contract does not have OR the stamped envelope misses one it requires.
+    asset = getattr(contracts, contract)(**json.loads(out))
+    assert asset.asset_type == skill
+    assert asset.version == 1
+    assert asset.status.value == "in-review"
+    assert asset.created_by_agent == "partner"
+    assert asset.source_asset_ids == ["asset-brief-x-v1"]
 
 
 def test_a_card_the_server_generates_is_one_the_client_can_follow():
@@ -772,6 +997,52 @@ def test_the_server_reports_a_model_failure_as_a_failed_task():
     result = json.loads(out["body"])["result"]
     assert result["status"]["state"] == "failed"
     assert "AccessDenied" in result["status"]["message"]["parts"][0]["text"]
+
+
+def test_each_skill_gets_its_own_output_budget_and_it_reaches_the_model():
+    """A reviewer's verdict and a full analysis are not the same size of job. One budget
+    for all of them means either the reviewers are given room they cannot use or the
+    synthesis skills are cut off — and a cut-off asset across this boundary is the
+    failure the client cannot see. Asserted on the inferenceConfig actually sent."""
+    server = a2a_server()
+    seen: dict = {}
+
+    def converse(self, **kwargs):
+        seen.update(kwargs["inferenceConfig"])
+        return {"output": {"message": {"content": [{"text": "{}"}]}}}
+
+    server._bedrock = type("B", (), {"converse": converse})()
+
+    server.review("x", "compliance")
+    assert seen["maxTokens"] == server.MAX_TOKENS       # the env default
+    server.review("x", "analysis")
+    assert seen["maxTokens"] == server.SKILLS["analysis"]["maxTokens"]
+    assert seen["maxTokens"] > server.MAX_TOKENS
+
+
+def test_every_skill_the_vocabulary_allows_is_one_this_server_implements():
+    """The silent failure this prevents: `_skill()` falls back to DEFAULT_SKILL for a
+    name it does not know. So a skill listed in app/vocabulary.json but missing from
+    SKILLS passes every config check, deploys, and answers every request with a
+    COMPLIANCE REVIEW under the name of whatever agent asked — a wrong asset that looks
+    like a right one."""
+    from app.common.vocabulary import A2A_LAMBDA_SKILLS
+
+    assert set(A2A_LAMBDA_SKILLS) == set(a2a_server().SKILLS), (
+        "app/vocabulary.json a2aLambdaSkills and a2a_lambda/handler.py SKILLS disagree")
+
+
+def test_the_card_names_the_skill_and_credits_the_operator_separately():
+    """One function serves several paths, and each path is a distinct agent as far as
+    the protocol is concerned — so a single `name` for all of them would advertise the
+    analysis agent as a reviewer. Who runs them is `provider`, which is where A2A puts
+    it."""
+    server = a2a_server()
+    names = {s: server.agent_card(f"https://h.example/{s}", s)["name"] for s in server.SKILLS}
+    assert len(set(names.values())) == len(names), f"cards do not distinguish skills: {names}"
+    card = server.agent_card("https://h.example/analysis", "analysis")
+    assert card["provider"]["organization"] == server.AGENT_NAME
+    assert card["skills"][0]["id"] == "analysis"
 
 
 def test_the_server_never_fabricates_an_answer():

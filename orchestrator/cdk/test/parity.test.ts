@@ -180,39 +180,58 @@ describe("the framework vocabulary has ONE home", () => {
     }
   });
 
-  it("is read by the TypeScript plane, not restated in it", () => {
+  it("is reached by all three planes through the file, not through an import of nothing", () => {
     const stack = read(path.join(__dirname, "..", "lib", "orchestrator-stack.ts"));
     expect(stack).toContain('from "./vocabulary"');
-    const vocabTs = read(path.join(__dirname, "..", "lib", "vocabulary.ts"));
-    expect(vocabTs).toContain("vocabulary.json");
-    // The literals must be GONE from the stack, or the duplicate is back.
-    expect(stack).not.toMatch(/\["kb", "websearch", "mcp", "openapi", "lambda"\]/);
-    expect(stack).not.toMatch(/\["main", "dedicated", "a2a"\]/);
-    expect(stack).not.toMatch(/\["none", "bearer", "oauth2", "sigv4"\]/);
-    expect(stack).not.toMatch(/"cancel", "decision", "delete"/);
-  });
-
-  it("is read by the Python plane, not restated in it", () => {
-    const registry = read(path.join(ORCH_ROOT, "app", "orchestrator", "registry.py"));
-    expect(registry).toContain("vocabulary.");
-    expect(registry).not.toMatch(/RUNTIMES = \("main"/);
-    expect(registry).not.toMatch(/TOOL_TYPES = \("kb"/);
-    const authz = read(path.join(ORCH_ROOT, "bff", "authz.py"));
-    expect(authz).toContain("authorizationActions");
-    expect(authz).not.toMatch(/ACTIONS = \("start"/);
-  });
-
-  it("is read by the Terraform plane, not restated in it", () => {
-    const tools = read(path.join(TF, "tools.tf"));
-    const identity = read(path.join(TF, "identity.tf"));
-    const guardrail = read(path.join(TF, "guardrail.tf"));
-    for (const src of [tools, identity, guardrail]) {
-      expect(src).toContain("app/vocabulary.json");
+    expect(read(path.join(__dirname, "..", "lib", "vocabulary.ts"))).toContain("vocabulary.json");
+    expect(read(path.join(ORCH_ROOT, "app", "orchestrator", "registry.py"))).toContain("vocabulary.");
+    expect(read(path.join(ORCH_ROOT, "bff", "authz.py"))).toContain("authorizationActions");
+    for (const f of ["tools.tf", "identity.tf", "guardrail.tf"]) {
+      expect(read(path.join(TF, f))).toContain("app/vocabulary.json");
     }
-    expect(tools).not.toMatch(/\["kb", "websearch", "mcp", "openapi", "lambda"\]/);
-    expect(tools).not.toMatch(/\["DEFAULT", "DYNAMIC"\]/);
-    expect(identity).not.toMatch(/"cancel", "decision", "delete"/);
-    expect(guardrail).not.toMatch(/\["NONE", "LOW", "MEDIUM", "HIGH"\]/);
+  });
+
+  it("is not ALSO written out as a literal anywhere in any plane", () => {
+    // GENERATED from the vocabulary, over every source file, rather than a list of
+    // patterns maintained by hand. The hand-written version checked five of fourteen
+    // sets and missed `a2aLambdaSkills`, which stayed a literal pair in
+    // terraform/tools.tf while the other two planes read four values from the file —
+    // so `skill: "analysis"` synthesized under CDK and was rejected by Terraform. That
+    // is the precise failure this vocabulary exists to prevent, surviving inside the
+    // test that is supposed to prove it cannot happen.
+    const sources: [string, string][] = [
+      ...["tools.tf", "identity.tf", "guardrail.tf", "a2a.tf", "main.tf", "kb.tf"].map(
+        (f) => [`terraform/${f}`, read(path.join(TF, f))] as [string, string]
+      ),
+      ["cdk/lib/orchestrator-stack.ts", read(path.join(__dirname, "..", "lib", "orchestrator-stack.ts"))],
+      ["cdk/lib/tool-plane.ts", read(path.join(__dirname, "..", "lib", "tool-plane.ts"))],
+      ["app/orchestrator/registry.py", read(path.join(ORCH_ROOT, "app", "orchestrator", "registry.py"))],
+      ["bff/authz.py", read(path.join(ORCH_ROOT, "bff", "authz.py"))],
+    ];
+    // COMMENTS ARE STRIPPED FIRST. This is about code that VALIDATES against a copy —
+    // the thing that rejects a config the other planes accept. A comment illustrating
+    // what a customer might write (`memory.longTerm (["semantic","summary"])`) is
+    // documentation, and policing it here would only teach people to reword comments.
+    const strip = (src: string) =>
+      src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*(?:\/\/|#).*$/gm, "");
+
+    const offenders: string[] = [];
+    for (const name of Object.keys(vocab).filter((k) => !k.startsWith("$"))) {
+      const values: string[] = vocab[name].values.filter((v: string) => v !== "");
+      // A one-value set has no ORDER to drift and its single string appears all over
+      // these files legitimately (`t.lambda_source == "tool_lambda"`), so a literal
+      // check on it is all false positives.
+      if (values.length < 2) continue;
+      // An array or tuple literal holding exactly these strings, in order: `["a", "b"]`
+      // in HCL and TypeScript, `("a", "b")` in Python. Prose that happens to name the
+      // values is fine — an error message listing them is the point.
+      const body = values.map((v) => `"${v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`).join(",\\s*");
+      const literal = new RegExp(`[[(]\\s*${body}\\s*[)\\]]`);
+      for (const [file, src] of sources) {
+        if (literal.test(strip(src))) offenders.push(`${name} in ${file}`);
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 
   it("ships the file to the BFF, which reads the action names from it", () => {
@@ -231,7 +250,14 @@ describe("the framework vocabulary has ONE home", () => {
       expect.arrayContaining(["kb", "websearch", "mcp", "openapi", "lambda"])
     );
     expect(vocab.a2aAuthModes.values).toContain("sigv4");
-    expect(vocab.a2aLambdaSkills.values).toEqual(["compliance", "resilience"]);
+    // Read off the shipped agents rather than written out here. As a literal pair this
+    // had to be edited every time the sample's remote steps changed, which is the
+    // hand-maintained list this whole file exists to get rid of.
+    const skills = Object.values<any>(shipped.agents)
+      .filter((a) => a.skill)
+      .map((a) => a.skill);
+    expect(skills.length).toBeGreaterThan(0);
+    expect(vocab.a2aLambdaSkills.values).toEqual(expect.arrayContaining(skills));
     expect(vocab.memoryStrategies.values).toEqual(["semantic", "summary"]);
     expect(vocab.authorizationActions.values.sort()).toEqual([
       "cancel", "decision", "delete", "evaluate", "insights", "rerun", "start",

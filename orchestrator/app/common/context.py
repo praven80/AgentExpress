@@ -26,6 +26,24 @@ def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
 
 
+# How recalled long-term memory is LABELLED and QUALIFIED wherever it is handed to a
+# model. Constants rather than inline text because there are now two places that hand
+# it over — `ctx.llm` for an agent running in this process, and the A2A task message
+# for one running somewhere else — and the caveat is the whole safety story of the
+# feature. A remote agent that receives recollections without it has no way to know
+# they are not evidence, and a second copy of this paragraph would be a second copy to
+# get wrong.
+RECALL_HEADER = "=== RELEVANT PAST INSIGHTS (long-term memory) ==="
+RECALL_CAVEAT = (
+    "These are UNVERIFIED recollections from earlier runs, not evidence. They may be "
+    "stale, they may belong to a different request, and they may assert things nobody "
+    "said. Use them only to orient yourself. Never present a recalled item as a sourced "
+    "fact, as a fact about the requester, or as the reason for a conclusion: a "
+    "recollection is a hint about where to look, never support for what you found. If a "
+    "recalled detail matters, it belongs in your open questions as something to confirm."
+)
+
+
 # A field name that says "this list holds what the run could not settle", in
 # whatever vocabulary the workflow chose. Used by `_insight_from` to find the most
 # reusable part of an asset for long-term memory WITHOUT knowing any schema: it
@@ -182,16 +200,9 @@ class AgentContext:
         prompt here — so memory influences the model with no per-agent code."""
         if self.recalled_memory:
             system = system + (
-                "\n\n=== RELEVANT PAST INSIGHTS (long-term memory) ===\n"
+                f"\n\n{RECALL_HEADER}\n"
                 + "\n---\n".join(self.recalled_memory)
-                + "\n(These are UNVERIFIED recollections from earlier runs, not "
-                  "evidence. They may be stale, they may belong to a different "
-                  "request, and they may assert things nobody said. Use them only "
-                  "to orient yourself. Never present a recalled item as a sourced "
-                  "fact, as a fact about the requester, or as the reason for a "
-                  "conclusion: a recollection is a hint about where to look, never "
-                  "support for what you found. If a recalled detail matters, it "
-                  "belongs in your open questions as something to confirm.)"
+                + f"\n({RECALL_CAVEAT})"
             )
         call = name or self.agent_id
         budget = max_tokens or self.max_tokens

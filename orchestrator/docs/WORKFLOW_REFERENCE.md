@@ -58,7 +58,7 @@ does not turn tests red.
 | `defaultModel` | `config.py` | Model for any agent that doesn't name its own. `BEDROCK_MODEL_ID` overrides it. |
 | `runtimeInvoke.maxAttempts` | `config.py` → `agentcore_agent._agentcore` | **Total** attempts per call to a `dedicated` agent's runtime, not retries-after-the-first. Default **1, i.e. no retrying**, which is deliberate: `InvokeAgentRuntime` is synchronous, slow and **not idempotent**, so a retry does not replace the attempt it followed — the remote container is already working and cannot tell the caller stopped listening. boto3's own default (`legacy` mode, up to 5 attempts) therefore lets one transient blip run a research agent twice, bill both model calls, and return whichever answered last, with nothing in the timeline to show it: the node logs "Invoking dedicated AgentCore Runtime" once, before any retry exists. Observed on a live run — two invocations of the `web_search` runtime with different `requestId`s, 13s apart, for one node execution, $0.0158 spent on a discarded answer. For a call this long the failure that matters is a lost response to work that already succeeded, and retrying that is strictly worse than failing: an error reaches the reviewer, a duplicate just inflates the bill. Raise it only if you have made the call idempotent. |
 | `runtimeInvoke.readTimeoutSeconds` | same | How long to wait for a dedicated agent's response. Default **120**, well above boto3's 60 and the ~15–20s the shipped research agents take. With retrying off this timeout is fatal to the run, so keep it comfortably above your slowest agent — otherwise you trade a duplicate for a truncated run, which is not the trade being made here. |
-| `a2aInvoke.timeoutSeconds` | `config.py` → `a2a_agent` | Per HTTP request to a `runtime: "a2a"` agent (the card fetch, each RPC call). Default **30**. |
+| `a2aInvoke.timeoutSeconds` | `config.py` → `a2a_agent` | Per HTTP request to a `runtime: "a2a"` agent (the card fetch, each RPC call). Default **30**; the shipped sample sets **150**, because two of its remote agents synthesize a full asset rather than answering a short question. Keep it **above** the remote agent's own timeout (the shipped stand-in's Lambda is 120s) so the side that gives up first is the side that can say why — a client that abandons the request leaves no diagnosis and cannot tell a slow agent from a dead one. |
 | `a2aInvoke.pollIntervalSeconds` | same | Gap between `tasks/get` calls while a remote task is still working. Default **2**. Their rate limit is unknown to you; a busy loop is rude and may be throttled, which then looks like their agent failing. |
 | `a2aInvoke.maxPollSeconds` | same | Total wall-clock before giving up on a remote task, failing the run with the last state seen. Default **300**. Separate from `runtimeInvoke` on purpose: a dedicated runtime is yours and you know how slow it is, whereas A2A models work as a *Task* precisely so it can take minutes — so the budget that matters is not one request timeout but how long you are willing to wait overall. Bounded rather than open-ended, because a task that never leaves `working` would otherwise hold the workflow until the runtime's own 8-hour ceiling. |
 | `policy.enabled` | `policy.tf`, `tool-plane.ts` | Creates the Cedar policy engine and attaches it to the Gateway. |
@@ -113,7 +113,9 @@ the id becomes part of an AgentCore Runtime name.
 | `produces` | `nodes.py` | The deliverable name, injected into the agent's task prompt. |
 | `access` | UI chip | A short human label for the data source. **Only read when the agent has no `tool`** — with a tool, the chip is derived from the tool's type. Don't set both. |
 | `agentCard` | `a2a_agent.py` | **`runtime: "a2a"` only.** The remote agent's base URL or Agent Card URL. Must be `https://`. |
-| `auth` | `a2a_agent.py` | **`runtime: "a2a"` only.** `none` \| `bearer` \| `oauth2`. Defaults to `none`. |
+| `auth` | `a2a_agent.py` | **`runtime: "a2a"` only.** `none` \| `bearer` \| `oauth2` \| `sigv4`. Defaults to `none`. Required to be `sigv4` with `source` — see the stand-in, below. |
+| `source` | `a2a.tf`, `orchestrator-stack.ts` | **`runtime: "a2a"` only.** The framework-deployed stand-in to reach instead of a committed URL. `a2a_lambda` is the only value. Mutually exclusive with `agentCard`. |
+| `skill` | `a2a_agent.py` (endpoint path), IaC | **With `source` only.** Which of the stand-in's published skills this agent is. An external agent advertises its skills in its own Agent Card, so this means nothing without `source` and is rejected there. |
 
 ### `runtime` — where the agent actually runs
 
@@ -165,6 +167,7 @@ from its card and still work.
 | `none` | no `Authorization` header | — |
 | `bearer` | `Authorization: Bearer <token>` | `var.a2a_tokens` / `$A2A_TOKENS`, keyed by agent id |
 | `oauth2` | a token minted per call | the agent's existing `agentcore.identity.outbound` provider |
+| `sigv4` | every request signed with SigV4 | the orchestrator's own execution role. Nothing in config, nothing to rotate, nothing to leak — the mode for an AWS-hosted agent behind IAM, which is what the shipped stand-in is |
 
 Tokens are **never** written in `workflow.json` — it is committed, and these are
 credentials for somebody else's service. A `bearer` agent with no token supplied fails
@@ -174,15 +177,32 @@ not control.
 **Keys that do not apply.** `model`, `temperature`, `maxTokens`, `tool` and `corpus`
 are all rejected on an `a2a` agent. A remote agent makes its own model call and reaches
 its own data sources, so those would read as governing its cost and its access while
-doing nothing. Setting them fails validation rather than misleading you.
+doing nothing. Setting them fails validation rather than misleading you. Its output
+budget is its own: in the shipped stand-in each skill declares one
+(`a2a_lambda/handler.py` `maxTokens`), which is why a reviewer skill and a full
+synthesis skill can be backed by the same function without one starving the other.
 
-**What you keep, and what you lose.** The framework wraps the call in *your*
-container, so guardrails and long-term memory still apply. Two things cannot:
-evaluations fall back to a role descriptor (there is no local model call to capture a
-prompt from — the reasoning happened on their side), and any tool the remote agent
-uses is outside your Cedar policy. You are trusting their boundary, not enforcing
-yours. The UI marks it with an `a2a` chip and labels its source `A2A · <host>` so a
-reviewer can see which parts of a deliverable came from outside.
+**What you keep.** The framework wraps the call in *your* container, so **guardrails**
+apply to it. **Long-term memory works in both directions**: `agentcore.memory.longTerm`
+recalls this agent's past insights and carries them to the remote agent inside the A2A
+task, under `recalledContext`, with the same caveat `ctx.llm` attaches locally — that
+they are unverified recollections and never evidence. Its reply is then stored as a new
+insight. This differs from `dedicated` on purpose: `InvokeAgentRuntime` has a fixed
+payload that cannot carry a recollection, so recalling for one would be billed and
+thrown away, whereas A2A carries opaque text and can. Worth knowing before you declare
+it: this sends your deployment's accumulated recollections to an agent outside it, which
+is why it follows `agentcore.memory` rather than happening unconditionally.
+
+**What you lose.** **Evaluations** fall back to a role descriptor: there is no local
+model call to capture a prompt from, because the reasoning happened on their side. The
+descriptor plus the real output still supports Coherence, Helpfulness and
+InstructionFollowing; it does not support **Faithfulness**, because there is no source
+context to be faithful to — so prefer `auto: false` and a narrower evaluator list on a
+remote agent, as the two shipped ones do. A number computed from a descriptor reads
+exactly like a measured one. And any **tool** the remote agent uses is outside your
+Cedar policy: you are trusting their boundary, not enforcing yours. The UI marks it with
+an `a2a` chip and labels its source `A2A · <host>` (or `A2A · <source>` for the shipped
+stand-in) so a reviewer can see which parts of a deliverable came from outside.
 
 **When it fails** it raises `RemoteAgentUnavailable` with whatever the remote side
 said, and the run fails with that reason on that node. There is no fallback: an empty
@@ -190,23 +210,78 @@ answer would flow into every downstream agent looking exactly like a real findin
 nothing. A SigV4 403 additionally reports which principal signed, because that is the
 only question a rejected signature raises and the status alone does not answer it.
 
-**A third thing you lose: assetId traceability.** A remote agent returns its own output
-shape, not this framework's asset envelope, so it has no `assetId` — and a downstream
-synthesis agent can only list ids that exist. Measured on a live run: the remote reviews
-reached the analysis and the final report (their failure modes are quoted there), but
-they do not appear in `analysis.sourceAssetIds`. The content is used and attributed in
-prose; it is not machine-traceable the way a local agent's asset is. If you need that,
-have the remote agent emit your envelope — but demanding it is also what makes a
-third-party agent un-integrable, which is the trade this placement exists to offer.
+**What you get back, and who builds it.** If the remote agent replies with a JSON
+object and the agent declares `produces`, the framework wraps that object in the asset
+envelope — `assetId`, `assetType`, `version`, `status`, `createdAt`, `createdByAgent`,
+`sourceAssetIds` — so a remote step is a first-class contract producer and a downstream
+agent can cite it.
+
+The framework does this rather than asking the remote agent to, because the envelope is
+bookkeeping **about your run**: `version` is how many times that step has run in this
+session, `createdByAgent` is the id *you* gave it, `assetType` is *your* `produces`,
+and `sourceAssetIds` are the upstream assets *your* graph handed over. A remote agent
+asked to invent them gets `version` wrong on every re-run — silently, because a wrong
+integer still validates.
+
+Fields the remote DID send win; the envelope only fills gaps. A **prose** reply is
+returned exactly as written: a remote reviewer that answers in sentences is a
+legitimate remote agent, and wrapping its text in a JSON envelope would make the
+timeline and the report worse. Only a JSON object is treated as contract content.
+
+> This was a real gap, not a hypothetical one. Without the envelope a remote reply had
+> no `assetId`, and `synthesis.upstream_context` — which collects exactly that field for
+> claim tracing — took the reply in as a block with nothing to cite. Measured on a live
+> run: the remote output reached the analysis and the final report and was quoted there,
+> but never appeared in any `sourceAssetIds`. Used and attributed in prose; not
+> machine-traceable.
+
+**The one thing that cannot be checked.** The merged asset is NOT validated against a
+pydantic contract, because there is no local contract class for an agent whose code is
+somebody else's — `produces` names the type, it does not import a model. That is the
+real cost of the boundary, and it is why the UI renders an asset by *shape* rather than
+by field name. If you need schema enforcement, put the remote agent behind a
+`dedicated` wrapper that validates its reply, where the contract is yours to declare.
 
 ### The shipped stand-in (`source: "a2a_lambda"`)
 
 `runtime: "a2a"` needs an agent you do not operate, so a committed placeholder URL would
 fail every run. The framework therefore ships one: a real A2A server
 (`a2a_lambda/handler.py`) in its own Lambda behind its own Function URL, deployed only
-when an agent asks for it with `source: "a2a_lambda"`. The sample's External Review stage
-uses two of them, `skill: "compliance"` and `skill: "resilience"`, selected by path so
-one function backs two genuinely different reviewers.
+when an agent asks for it with `source: "a2a_lambda"`. `skill` picks which of its
+published skills you are reaching, selected by PATH (`/analysis`), so one function backs
+several genuinely different agents.
+
+It publishes four, and they are a **catalogue rather than a roster** — `workflow.json`
+decides which become agents, and a skill nobody names is simply never reached:
+
+| `skill` | What it is | Its output shape |
+|---|---|---|
+| `analysis` | synthesizes the approved research into one analysis, tracing claims | the CONTENT of this sample's `Analysis` contract |
+| `recommendation` | turns the approved analysis into prioritized actions | the CONTENT of its `Recommendation` contract |
+| `compliance` | an outside reviewer on regulatory and data-handling exposure | its own |
+| `resilience` | an outside reviewer on failure modes, blast radius and recovery | its own |
+
+The shipped sample wires up the first two, as its Analysis → Recommendation stage. Add
+`"skill": "compliance"` to a new `a2a` agent and you have a third with no other edit.
+
+The split between those two groups is the interesting part. A reviewer's shape is *its
+own*, which is the normal case for a third party and the reason A2A carries opaque text.
+The two synthesis skills are asked for **this sample's contract content**, because they
+are steps in the deliverable rather than commentary on it — and note what their shapes do
+*not* contain: no `assetId`, `version`, `status`, `createdAt` or `sourceAssetIds`. Those
+are your run's bookkeeping, and the framework stamps them (see above).
+
+A skill that hits its output ceiling is **refused** as a failed task rather than
+returned. A local agent detects its own truncation and stamps a `limitations` entry; that
+signal cannot cross the boundary — from the client's side a cut-off reply is just a
+reply, and JSON repair turns it into a complete-*looking* asset with the end of the
+longest list missing. Silent partial content in front of an approver is worse than a
+failed step.
+
+The stand-in's Lambda timeout is deliberately **shorter** than
+`orchestrator.a2aInvoke.timeoutSeconds` (120s against the sample's 150s): the side that
+gives up first should be the side that can say why. A client that abandons the request
+first leaves no diagnosis and cannot tell a slow agent from a dead one.
 
 It requires `auth: "sigv4"`, and that is validated rather than defaulted: the endpoint is
 an `AWS_IAM` Function URL, so an unsigned request is a guaranteed 403 that surfaces as
@@ -239,8 +314,11 @@ downstream agents would treat as real findings. If you see that error, this is t
 first thing to raise.
 
 Current values: `intake` 3000, the three evidence-gathering research agents 4000,
-`cost_research` 1500 (it emits a small rates table, not prose), `analysis` and
-`recommendation` 6000, `report` 8000.
+`cost_research` 1500 (it emits a small rates table, not prose), `report` 8000.
+
+`analysis` and `recommendation` have none, because they are `runtime: "a2a"` and a remote
+agent's budget is its own — for the shipped stand-in it is 6000 each, declared per skill
+in `a2a_lambda/handler.py`.
 
 These were literals buried at each call site until they were moved here. Nothing in
 `app/subagents/` passes `max_tokens` any more, and a test enforces that — otherwise
@@ -253,7 +331,7 @@ or off is a config change. Omit a block to leave the capability off.
 
 | Key | Read by | Notes |
 |---|---|---|
-| `memory.longTerm` | `context.py` | List of strategies: `semantic` extracts discrete insights into `insights/{actor}` (cross-run), `summary` maintains a running summary in `summary/{actor}/{session}` (session-scoped). Before `run()` the framework recalls past insights into the system prompt; after, it stores new ones. Namespaced per agent **and** per subject, so insights don't leak between topics. **Only `semantic` and `summary`** — those are the strategies the IaC provisions, and an unrecognised name is rejected at container start. It used to be accepted and then searched as its own namespace, which nothing writes to, so recall returned nothing and reported success. For a `dedicated` agent the recall/store happens inside that agent's own container, not in the orchestrator. |
+| `memory.longTerm` | `context.py` | List of strategies: `semantic` extracts discrete insights into `insights/{actor}` (cross-run), `summary` maintains a running summary in `summary/{actor}/{session}` (session-scoped). Before `run()` the framework recalls past insights into the system prompt; after, it stores new ones. Namespaced per agent **and** per subject, so insights don't leak between topics. **Only `semantic` and `summary`** — those are the strategies the IaC provisions, and an unrecognised name is rejected at container start. It used to be accepted and then searched as its own namespace, which nothing writes to, so recall returned nothing and reported success. **Where the recall/store runs depends on the placement:** for `main` it is the orchestrator; for `dedicated` it is inside that agent's own container, because that is where `ctx.llm` injects the insights; for `a2a` it is the orchestrator, which carries the recalled insights to the remote agent inside the A2A task (`recalledContext`, with the caveat attached) and stores its reply afterwards. |
 | `identity.outbound` | `context.py` | Credential providers this agent may fetch an OAuth token from, to call an external API **directly** via `ctx.get_identity_token`. Not needed for anything reached through the Gateway. |
 | `guardrails.input` | `context.py` | Run the Bedrock guardrail on the agent's input, before the model sees it. |
 | `guardrails.output` | `context.py` | Run it on the agent's output. Use this on any agent handling untrusted text. |

@@ -413,18 +413,83 @@ def test_a_dedicated_agent_does_not_recall_or_store_in_the_orchestrator():
     assert AgentCoreRuntimeAgent.store_in_orchestrator is False
 
 
-def test_a_remote_a2a_agent_does_not_recall_but_does_store():
-    """The asymmetry is the point, and it is why these are two flags.
+def test_a_remote_a2a_agent_gets_both_halves_of_memory():
+    """Unlike a dedicated agent, and the difference is the payload.
 
-    A remote agent has its own context and its own model call; the A2A message carries
-    the task, not our recalled insights, so recalling here would be billed and
-    discarded. But what it RETURNED is a real result of this run, and a later run
-    benefits from remembering it.
+    InvokeAgentRuntime has a fixed shape that cannot carry recalled insights, so
+    recalling for one would be billed and discarded. A2A carries OPAQUE TEXT, so the
+    task message can hand them over — and does. Leaving recall off here would have made
+    `agentcore.memory.longTerm` on a remote agent mean store-only: insights
+    accumulating run after run that nothing ever reads back, while the config reads as
+    though the feature is on.
     """
     from app.common.a2a_agent import A2AAgent
 
-    assert A2AAgent.recall_in_orchestrator is False
+    assert A2AAgent.recall_in_orchestrator is True
     assert A2AAgent.store_in_orchestrator is True
+
+
+def test_recalled_insights_reach_the_remote_agent_with_their_caveat():
+    """The flag above is only true if the message actually carries them.
+
+    And the caveat has to travel with them. In-process, `ctx.llm` appends it to the
+    system prompt; a remote agent has none of ours, so bare `items` would hand a
+    third-party agent a list of unverified assertions from earlier runs with nothing
+    saying they are not evidence.
+    """
+    import json
+    from types import SimpleNamespace
+
+    from app.common.a2a_agent import A2AAgent
+    from app.common.context import RECALL_CAVEAT
+
+    ctx = SimpleNamespace(
+        topic="assess this applicant", session_id="s1", agent_id="partner",
+        state={"outputs": {}}, feedback="",
+        # The blank is not incidental: recall returns whatever the store held, and an
+        # empty entry in the list would reach the remote agent as a blank insight.
+        recalled_memory=["Applicant 42 was declined in March.", "  "])
+
+    agent = A2AAgent()
+    agent.id = "partner"
+    task = json.loads(A2AAgent._message(agent, ctx)["parts"][0]["text"])
+    assert task["recalledContext"]["items"] == ["Applicant 42 was declined in March."]
+    assert task["recalledContext"]["caveat"] == RECALL_CAVEAT
+
+
+def test_no_recalled_insights_means_no_key_at_all():
+    """Rather than an empty list, which reads as "memory ran and found nothing" when
+    what happened is that memory is not configured for this agent."""
+    import json
+    from types import SimpleNamespace
+
+    from app.common.a2a_agent import A2AAgent
+
+    ctx = SimpleNamespace(topic="t", session_id="s1", agent_id="partner",
+                          state={"outputs": {}}, feedback="", recalled_memory=[])
+
+    agent = A2AAgent()
+    agent.id = "partner"
+    task = json.loads(A2AAgent._message(agent, ctx)["parts"][0]["text"])
+    assert "recalledContext" not in task
+
+
+def test_the_recall_caveat_is_one_paragraph_used_by_both_paths():
+    """Two copies of a safety caveat is one copy to get wrong. `ctx.llm` and the A2A
+    task message both read this constant rather than inlining the text."""
+    from pathlib import Path
+
+    from app.common import context
+
+    assert "not evidence" in context.RECALL_CAVEAT
+    a2a_src = Path(context.__file__).with_name("a2a_agent.py").read_text()
+    assert "RECALL_CAVEAT" in a2a_src
+    # The prose appears ONCE in the tree — at the constant. `ctx.llm` used to inline it,
+    # and a second copy is the copy that goes stale.
+    tree = Path(context.__file__).parent.parent
+    copies = sum(src.read_text().count("UNVERIFIED recollections")
+                 for src in tree.rglob("*.py"))
+    assert copies == 1, f"the recall caveat is written out {copies} times, not once"
 
 
 def test_an_ordinary_in_process_agent_still_gets_both_for_free():

@@ -115,6 +115,11 @@ one runner and one contract, a line of config apart; `cost_research` deliberatel
 does not — it runs `main` rather than `dedicated`, on a smaller token budget, and
 reads the tool's DATA rows through `ctx.call_tool_rows` instead of treating the
 result as evidence to paraphrase.
+Stage 3 is the other deliberate contrast: `analysis` and `recommendation` are
+`runtime: "a2a"` — agents this deployment does not operate, reached over the
+Agent2Agent protocol. They sit in a `sequence` behind a single gate like any other
+step, which is the point: the trust boundary changes what the framework can enforce
+about them, not how they are wired.
 The runtime writes to two independent stores (there is no Memory→DynamoDB flow):
 durable graph state to **AgentCore Memory** (the LangGraph checkpointer, for HITL
 pause/resume) and live per-session progress to **DynamoDB** (status + events),
@@ -219,12 +224,21 @@ different boundaries, both config-driven.
   Targets name a *later* step, so the graph stays acyclic and a branch can only
   redirect a run, never strand one. With a `hitl` gate on the same step, the human
   approves first and the branch then reads the output they approved.
-- Each agent is a small `Agent` subclass in `app/subagents/<id>/`. The research
-  agents share `app/subagents/_shared/research.py` (RAG/MCP + evidence
-  classification); the analysis/recommendation/report agents share
-  `app/subagents/_shared/synthesis.py` (gather approved upstream assets → structured
-  JSON → validated contract). Both live under `subagents/` on purpose: they are this
-  SAMPLE's editorial choices, not framework, and a customer replaces them.
+- Each agent whose code this deployment ships is a small `Agent` subclass in
+  `app/subagents/<id>/`. The research agents share
+  `app/subagents/_shared/research.py` (RAG/MCP + evidence classification); the
+  `report` agent uses `app/subagents/_shared/synthesis.py` (gather approved upstream
+  assets → structured JSON → validated contract). Both live under `subagents/` on
+  purpose: they are this SAMPLE's editorial choices, not framework, and a customer
+  replaces them.
+  `analysis` and `recommendation` have **no package at all** — they are
+  `runtime: "a2a"`, so their reasoning happens outside this deployment. They used to
+  be local `synthesis.py` agents, and the two contracts they produce
+  (`_shared/contracts/analysis.py`, `recommendation.py`) are still there: they are now
+  the shapes the REMOTE agents are asked to return, and `tests/test_a2a.py` validates
+  the shipped stand-in's replies against them. That is the one place the check can
+  live, because the framework cannot validate a remote reply against a contract class
+  for code it does not own.
 - **The agentic framework inside an agent is per-agent and is the author's choice.**
   `run()` is a plain `async def`, so an agent may drive Strands, CrewAI, LlamaIndex,
   a graph of its own, or nothing. `research.synthesize` exposes this as a `think`
@@ -255,8 +269,9 @@ different boundaries, both config-driven.
   The orchestrator's node body (`AgentCoreRuntimeAgent`) calls `InvokeAgentRuntime`
   with the same inputs an in-process agent would read, and returns the output. Same
   `Agent` interface either way, so the graph wiring is identical — placement is
-  config only. This sample ships three of its ten agents as `dedicated`
-  (`knowledge_research`, `web_search`, `documentation_search`); the rest are `main`.
+  config only. This sample ships three of its eight agents as `dedicated`
+  (`knowledge_research`, `web_search`, `documentation_search`), two as `a2a`
+  (`analysis`, `recommendation`); the rest are `main`.
 - `runtime: "a2a"` is the third value, and it is not a placement of your code — it is a
   **trust boundary**. The step is run by an agent you do not operate, reached over the
   **Agent2Agent protocol** at its Agent Card URL (`app/common/a2a_agent.py`): the card
@@ -264,15 +279,37 @@ different boundaries, both config-driven.
   endpoint in the card's preference order, the task goes out as JSON-RPC 2.0
   `message/send`, and a Task that is still working is polled via `tasks/get` under a
   bounded budget. No module under `app/subagents/`, because the code is somebody
-  else's; `tool`/`corpus`/`model`/`maxTokens` are rejected, because a remote agent
-  reaches its own data sources and makes its own model call.
+  else's; `tool`/`corpus`/`model`/`maxTokens` are rejected on the AGENT entry, because a
+  remote agent reaches its own data sources and makes its own model call — its output
+  budget is its own business, and in the shipped stand-in each skill declares one
+  (`a2a_lambda/handler.py`).
   A2A is transport and discovery only — it carries no opinion about WHICH agent to
   call, so routing stays this framework's job (`steps`, `branch`, a review gate) and an
-  a2a agent slots into the topology with no special case. What degrades is worth
-  knowing: guardrails and memory still apply because the framework wraps the call in
-  *our* container, but evaluations fall back to a role descriptor (there is no local
-  model call to capture a prompt from) and the remote agent's own tool calls are
-  outside this deployment's Cedar policy.
+  a2a agent slots into the topology with no special case.
+- **A remote agent is still a first-class asset producer**, and that takes work on this
+  side. The division is: the remote supplies the CONTENT, the framework supplies the
+  ENVELOPE (`A2AAgent._as_asset`). `version` is how many times this step has run in
+  this session, `createdByAgent` is the id this workflow gave it, `assetType` is its
+  `produces`, `sourceAssetIds` are the upstream assets this graph handed over — none of
+  which a remote agent can know, and one asked to invent `version` gets it wrong on
+  every re-run, silently, because a wrong integer still validates. A JSON object reply
+  is wrapped; a PROSE reply is left exactly as written, because a remote reviewer that
+  answers in sentences is a legitimate remote agent. Before this, a remote reply had no
+  `assetId`, so `synthesis.upstream_context` — which collects exactly that field — took
+  it in as an unattributable block and a report could mention it but never cite it.
+- **What degrades, and what does not.** Guardrails apply, because the framework wraps
+  the call in *our* container. **Long-term memory works in both directions**: recall is
+  carried to the remote agent inside the A2A task (`recalledContext`, with
+  `RECALL_CAVEAT` attached so it cannot be read as evidence) and the reply is stored as
+  a new insight. That is a deliberate difference from `dedicated`, where recall would be
+  billed and discarded because `InvokeAgentRuntime` has a fixed payload that cannot
+  carry it — A2A carries opaque text, so it can. Two things genuinely degrade:
+  evaluations fall back to a role descriptor (there is no local model call to capture a
+  prompt from, so the shipped a2a agents are `auto: false` with Faithfulness dropped),
+  and the remote agent's own tool calls are outside this deployment's Cedar policy.
+  Neither can the framework validate the reply against a pydantic contract, because
+  there is no local class for somebody else's code — which is why the UI renders an
+  asset by SHAPE rather than by field name.
 
 ### Tool access (which tools an agent may call) — AgentCore Gateway
 - Agents reach tools through one **Gateway** MCP endpoint over Streamable HTTP, using
@@ -496,7 +533,8 @@ different boundaries, both config-driven.
   "web_search":           { "name": "Web Search Research",       "runtime": "dedicated", "tool": "websearch", ... },
   "documentation_search": { "name": "MCP Documentation Research", "runtime": "dedicated", "tool": "docs", ... },
   "cost_research":        { "name": "Cost Research",            "runtime": "main",      "tool": "pricing", "maxTokens": 1500, ... },
-  "analysis":  { "name": "Analysis", "runtime": "main", "maxTokens": 6000,
+  "analysis":  { "name": "Analysis", "runtime": "a2a", "source": "a2a_lambda",
+                 "skill": "analysis", "auth": "sigv4", "produces": "analysis",
                  "agentcore": { "memory": {"longTerm": ["semantic"]},
                                 "guardrails": {"output": true}, ... } }
 },
@@ -508,7 +546,7 @@ different boundaries, both config-driven.
                  "cost_research"],
     "hitl": true, "gateId": "research", "gateName": "Research" },
   { "sequence": ["analysis", "recommendation"], "hitl": true, "gateId": "analysis_reco",
-    "gateName": "Analysis & Recommendation" },
+    "gateName": "Analysis & Recommendation (A2A)" },
   { "agent": "report" }
 ]
 ```
@@ -529,12 +567,12 @@ runtime, a policy engine) is provisioned from this one source of truth.
 Two suites, one per language, both fast enough for a pre-commit hook and needing
 neither AWS credentials nor a container builder:
 
-- **`orchestrator/tests/`** (pytest, 585 tests, a few seconds) — the runtime side:
+- **`orchestrator/tests/`** (pytest, 652 tests, a few seconds) — the runtime side:
   topology derivation, graph compilation across 14 step shapes, branch rules and
   routing, rewind planning, tool argument shapes, Gateway tool-name resolution,
   citation verification, contract coercion, and the RBAC rules plus their wiring on
   every mutating route.
-- **`orchestrator/cdk/test/`** (jest, 145 tests) — the IaC side: the projections
+- **`orchestrator/cdk/test/`** (jest, 132 tests) — the IaC side: the projections
   and validators, the synthesized template (Cognito groups, route set + authorizer,
   BFF environment, Gateway targets, Cedar policies), and **Terraform ↔ CDK parity**.
 

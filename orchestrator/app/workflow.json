@@ -3,6 +3,7 @@
   "orchestrator": {
     "defaultModel": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
     "runtimeInvoke": { "maxAttempts": 1, "readTimeoutSeconds": 120 },
+    "a2aInvoke": { "timeoutSeconds": 150 },
     "insights": { "lookbackHours": 168, "pollTimeoutSeconds": 900, "pollIntervalSeconds": 20 },
     "policy": { "enabled": true, "mode": "ENFORCE" },
     "chatbot": {
@@ -214,27 +215,12 @@
         "policy": { "enabled": true }
       }
     },
-    "compliance_review": {
-      "name": "Compliance Review",
-      "runtime": "a2a",
-      "source": "a2a_lambda",
-      "skill": "compliance",
-      "auth": "sigv4",
-      "produces": "compliance-review"
-    },
-    "resilience_review": {
-      "name": "Resilience Review",
-      "runtime": "a2a",
-      "source": "a2a_lambda",
-      "skill": "resilience",
-      "auth": "sigv4",
-      "produces": "resilience-review"
-    },
     "analysis": {
       "name": "Analysis",
-      "runtime": "main",
-      "maxTokens": 6000,
-      "access": ["Upstream assets (orchestrator graph state)"],
+      "runtime": "a2a",
+      "source": "a2a_lambda",
+      "skill": "analysis",
+      "auth": "sigv4",
       "produces": "analysis",
       "agentcore": {
         "memory": {
@@ -243,16 +229,17 @@
         "guardrails": { "output": true },
         "evaluations": {
           "enabled": true,
-          "auto": true,
-          "evaluators": ["Builtin.Faithfulness", "Builtin.Correctness", "Builtin.Coherence"]
+          "auto": false,
+          "evaluators": ["Builtin.Coherence", "Builtin.InstructionFollowing"]
         }
       }
     },
     "recommendation": {
       "name": "Recommendation",
-      "runtime": "main",
-      "maxTokens": 6000,
-      "access": ["Upstream assets (orchestrator graph state)"],
+      "runtime": "a2a",
+      "source": "a2a_lambda",
+      "skill": "recommendation",
+      "auth": "sigv4",
       "produces": "recommendation",
       "agentcore": {
         "memory": {
@@ -261,7 +248,7 @@
         "guardrails": { "output": true },
         "evaluations": {
           "enabled": true,
-          "auto": true,
+          "auto": false,
           "evaluators": ["Builtin.Helpfulness", "Builtin.InstructionFollowing"]
         }
       }
@@ -300,16 +287,10 @@
       "gateName": "Research"
     },
     {
-      "parallel": ["compliance_review", "resilience_review"],
-      "hitl": true,
-      "gateId": "external_review",
-      "gateName": "External Review (A2A)"
-    },
-    {
       "sequence": ["analysis", "recommendation"],
       "hitl": true,
       "gateId": "analysis_reco",
-      "gateName": "Analysis & Recommendation"
+      "gateName": "Analysis & Recommendation (A2A)"
     },
     { "agent": "report" }
   ]

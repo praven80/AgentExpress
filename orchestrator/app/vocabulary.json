@@ -42,8 +42,8 @@
   },
 
   "a2aLambdaSkills": {
-    "$comment": "Skills the shipped stand-in A2A server publishes (a2a_lambda/handler.py SKILLS). Only meaningful with `source`; an EXTERNAL agent advertises its own skills in its Agent Card.",
-    "values": ["compliance", "resilience"]
+    "$comment": "Skills the shipped stand-in A2A server publishes (a2a_lambda/handler.py SKILLS). A CATALOGUE, not a roster: workflow.json picks which become agents, and a skill nobody names is simply never reached. Only meaningful with `source`; an EXTERNAL agent advertises its own skills in its Agent Card.",
+    "values": ["compliance", "resilience", "analysis", "recommendation"]
   },
 
   "memoryStrategies": {

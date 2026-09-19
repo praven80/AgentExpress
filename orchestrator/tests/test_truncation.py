@@ -187,23 +187,55 @@ def test_an_untruncated_report_with_every_section_is_complete(monkeypatch):
     assert asset["isComplete"] is True
 
 
-def test_every_agent_that_builds_an_asset_surfaces_truncation():
+def test_every_local_agent_that_builds_an_asset_surfaces_truncation():
     """The point is that NO agent can forget. Each contract has a different field for
-    it, so this checks the wiring exists rather than the wording."""
+    it, so this checks the wiring exists rather than the wording.
+
+    DERIVED FROM workflow.json, not listed here. As a hand-written map this went stale
+    the moment two agents moved to `runtime: "a2a"` — it kept asserting against
+    app/subagents/analysis/agent.py, a file that no longer exists, so the failure was
+    about a missing path rather than about truncation. An agent either handles it in
+    its own agent.py or inherits it from a shared runner; both count.
+    """
+    import json
     import re
 
     from conftest import ORCH_ROOT
 
-    expected = {
-        "intake": "assumptions",           # what a reviewer should check
-        "analysis": "limitations",
-        "recommendation": "risks",
-        "report": "isComplete",            # a truncated report is not ready
-        "cost_research": "dataLimitations via limits",
-    }
-    for agent in expected:
+    # Both shared runners flag a cut-off response, so an agent that delegates to one
+    # cannot forget either.
+    shared_root = ORCH_ROOT / "app" / "subagents" / "_shared"
+    for runner in ("research.py", "synthesis.py"):
+        assert "truncated" in (shared_root / runner).read_text(), runner
+
+    wf = json.loads((ORCH_ROOT / "app" / "workflow.json").read_text())
+    local = sorted(aid for aid, a in wf["agents"].items()
+                   if a.get("produces") and str(a.get("runtime") or "main") != "a2a")
+    assert local, "no local asset-producing agents — this test would pass vacuously"
+    for agent in local:
         src = (ORCH_ROOT / "app" / "subagents" / agent / "agent.py").read_text()
-        assert re.search(r"truncat", src), f"{agent} does not mention truncation"
-    # The four research agents go through the shared runner.
-    shared = (ORCH_ROOT / "app" / "subagents" / "_shared" / "research.py").read_text()
-    assert "truncated_calls" in shared
+        inherits = re.search(r"import (research|synthesis)\b", src)
+        assert inherits or re.search(r"truncat", src), (
+            f"{agent} produces an asset but neither mentions truncation nor delegates "
+            f"to a shared runner that does")
+
+
+def test_a_remote_agent_refuses_to_return_a_cut_off_asset():
+    """The a2a half of the rule above, and it has to work differently.
+
+    An in-process agent detects its own truncation and stamps a `limitations` entry, so
+    the reviewer is told. That signal cannot cross the A2A boundary: from the client's
+    side a cut-off reply is just a reply, and `assets.extract_json` repairs it into a
+    complete-LOOKING asset with the end of the longest list missing. So the shipped
+    stand-in refuses instead — a failed task naming the budget, which the client turns
+    into RemoteAgentUnavailable rather than a silently partial asset in front of an
+    approver.
+    """
+    from test_a2a import a2a_server
+
+    server = a2a_server()
+    server._bedrock = type("B", (), {"converse": lambda self, **_k: {
+        "stopReason": "max_tokens",
+        "output": {"message": {"content": [{"text": '{"summary": "cut off here'}]}}}})()
+    with pytest.raises(RuntimeError, match="cut off"):
+        server.review("anything", "analysis")

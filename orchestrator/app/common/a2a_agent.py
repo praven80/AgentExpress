@@ -146,14 +146,28 @@ def _result_text(result: dict) -> str:
 class A2AAgent(Agent):
     """Runs this step by delegating it to a remote A2A agent."""
 
-    # A remote agent has its own context and its own model call, and the A2A message
-    # below carries the task — not our recalled insights. So recalling here would be
-    # billed and then discarded, exactly as it was for a dedicated agent.
+    # Long-term memory works on a remote agent, in BOTH directions, and that is a
+    # deliberate change from how this class started.
     #
-    # Storing, on the other hand, is still right and still happens: what the remote
-    # agent RETURNED is a real result of this run, and a later run benefits from
-    # remembering it. That asymmetry is why these are two flags and not one.
-    recall_in_orchestrator = False
+    # It began as `recall_in_orchestrator = False`, on the reasoning that applies to a
+    # `dedicated` agent: the recall would be computed, billed, written as a telemetry
+    # row, and then discarded, because the payload sent onward does not carry it. True
+    # for InvokeAgentRuntime, which has a fixed payload shape. NOT true here — A2A
+    # carries opaque text, so `_message` can hand the recollections over with the task,
+    # and it does.
+    #
+    # The alternative was to leave it off and accept that `agentcore.memory.longTerm`
+    # on an a2a agent means store-only. That reads as configured and half works: a
+    # customer declares memory, the insights accumulate run after run, and nothing ever
+    # reads them back. Silent, and in the direction that looks fine.
+    #
+    # WORTH KNOWING BEFORE YOU DECLARE IT: this sends your deployment's accumulated
+    # recollections to an agent outside it. That is the customer's call, which is why it
+    # follows `agentcore.memory` rather than happening unconditionally — declaring
+    # memory on an agent you have chosen to outsource IS the decision. The caveat block
+    # travels with them (app/common/context.py RECALL_CAVEAT), so the remote agent is
+    # told they are recollections and not evidence.
+    recall_in_orchestrator = True
 
     # Set by the registry from workflow.json.
     agent_card: str = ""
@@ -339,6 +353,7 @@ class A2AAgent(Agent):
             "producing": produces or None,
             "upstreamOutputs": upstream,
             "reviewerFeedback": (getattr(ctx, "feedback", "") or "") or None,
+            "recalledContext": self._recalled(ctx),
         }
         return {
             "role": "user",
@@ -347,6 +362,23 @@ class A2AAgent(Agent):
                        "text": json.dumps({k: v for k, v in task.items() if v is not None},
                                           ensure_ascii=False, default=str)}],
         }
+
+    def _recalled(self, ctx) -> dict | None:
+        """Long-term recollections for this step, with the caveat that governs them.
+
+        None when memory is not configured for this agent, so the key is simply absent
+        from the task rather than present and empty.
+
+        THE CAVEAT IS NOT OPTIONAL AND IS NOT PARAPHRASED HERE. In-process, `ctx.llm`
+        appends it to the system prompt; a remote agent has no system prompt of ours,
+        so it has to arrive as part of the task. Sending bare `items` would hand a
+        third-party agent a list of unverified assertions from earlier runs with nothing
+        saying so — and the predictable result is a recollection cited as a source.
+        """
+        from app.common.context import RECALL_CAVEAT
+
+        items = [str(i) for i in (getattr(ctx, "recalled_memory", None) or []) if str(i).strip()]
+        return {"items": items, "caveat": RECALL_CAVEAT} if items else None
 
     def _send(self, url: str, ctx, token: str) -> dict:
         return self._post(url, {
@@ -422,7 +454,93 @@ class A2AAgent(Agent):
             # nothing — the same reason ModelOutputUnusable exists.
             raise RemoteAgentUnavailable(
                 f"remote agent '{self.id}' completed but returned no text content")
-        return text
+        return self._as_asset(ctx, text)
+
+    def _upstream_asset_ids(self, ctx) -> list[str]:
+        """The assetIds of the approved upstream assets this step was given.
+
+        Asset-level provenance, and the framework is the only party that can state it:
+        the remote agent was handed the upstream CONTENT (`_message`), so it can quote
+        it, but the ids are this graph's bookkeeping. Same field, same meaning, as the
+        `sourceAssetIds` a local synthesis agent stamps.
+        """
+        from app.common import assets
+        from app.common.config import upstream_of
+
+        found: list[str] = []
+        for upstream_id in upstream_of(self.id):
+            asset_id = assets.parse(ctx.input(upstream_id)).get("assetId")
+            if asset_id:
+                found.append(str(asset_id))
+        return found
+
+    def _as_asset(self, ctx, text: str) -> str:
+        """Give a structured remote reply the same asset envelope a local agent's has.
+
+        WHY THE FRAMEWORK DOES THIS AND NOT THE REMOTE AGENT. The envelope is
+        BOOKKEEPING ABOUT THIS RUN, and a remote agent cannot know it: `version` is how
+        many times this agent has run in THIS session (read from the graph's history),
+        `createdByAgent` is the id THIS workflow gave the step, `assetType` is the
+        `produces` THIS workflow declared, and `sourceAssetIds` are the ids of the
+        upstream assets this graph chose to hand over. A remote agent asked to invent
+        them would get the version wrong on every re-run — silently, because a wrong
+        integer still validates.
+
+        So the division is: the remote agent supplies the CONTENT, which is the only
+        part it can legitimately know, and the framework supplies the envelope. That
+        makes a `runtime: "a2a"` agent a first-class contract producer — it gets a real
+        `assetId`, so a downstream agent can trace a claim to it and the UI renders it
+        as a structured asset rather than a wall of text. Without this a remote agent's
+        output had no assetId at all, and `synthesis.upstream_context` — which collects
+        exactly that field — passed it to the model as an unattributable block, so a
+        report could mention it in prose but never cite it.
+
+        A PROSE reply is returned untouched. A reviewer agent that answers in sentences
+        is a legitimate remote agent, and wrapping its text in a JSON envelope would
+        make the timeline and the report worse, not better. Only a JSON OBJECT is
+        treated as contract content.
+
+        WHAT IS NOT DONE HERE, deliberately: the merged asset is not validated against
+        a pydantic contract, because there is no local contract class for an agent whose
+        code is somebody else's — `produces` names the type, it does not import a model.
+        That is the real cost of the trust boundary, and it is the reason the UI renders
+        an asset by SHAPE rather than by field name. A remote agent you need schema
+        enforcement over belongs behind a `dedicated` wrapper that validates its reply.
+
+        Fields the remote DID supply are kept. If a remote agent is contract-aware
+        enough to send its own `executiveSummary`, `sources` or even `assetId`, that is
+        its business — this fills the gaps rather than overwriting.
+        """
+        from app.common import assets, clock
+        from app.common.config import AGENTS
+        from app.common.contracts.base import AssetStatus
+
+        produces = str((AGENTS.get(self.id) or {}).get("produces") or "").strip()
+        if not produces:
+            # Nothing to call the asset. `produces` is what names the contract, so
+            # without it there is no envelope to build — return the reply as given.
+            return text
+
+        payload = assets.extract_json(text)
+        if not isinstance(payload, dict) or not payload:
+            return text
+
+        version = assets.prior_version(ctx)
+        title = assets.brief_title(assets.brief(ctx), ctx)
+        envelope = {
+            "assetId": f"asset-{assets.slug(produces)}-{assets.slug(str(title))}-v{version}",
+            "assetType": produces,
+            "version": version,
+            # in-review, not approved: a remote agent's answer is exactly the kind of
+            # thing a human gate exists to look at, and the local agents use the same
+            # status for the same reason.
+            "status": AssetStatus.IN_REVIEW.value,
+            "createdAt": clock.now_et().isoformat(),
+            "createdByAgent": self.id,
+            "sourceAssetIds": self._upstream_asset_ids(ctx),
+        }
+        # The remote's own fields win; the envelope only fills what is absent.
+        return json.dumps({**envelope, **payload}, indent=2)
 
 
 def _rpc_error(payload: object) -> str:

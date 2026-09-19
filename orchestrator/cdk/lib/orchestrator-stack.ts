@@ -1328,14 +1328,23 @@ export class OrchestratorStack extends cdk.Stack {
         runtime: lambda.Runtime.PYTHON_3_13,
         handler: "handler.lambda_handler",
         code: lambda.Code.fromAsset(path.join(ORCH_ROOT, "a2a_lambda")),
-        // It makes a model call, so it needs more than the 3s default — but stays under
-        // the client's own a2aInvoke.timeoutSeconds, so the client's timeout is the one
-        // that fires and the failure says which side gave up.
-        timeout: cdk.Duration.seconds(25),
+        // It makes a model call, so it needs far more than the 3s default — and a skill
+        // that synthesizes a full asset (`analysis`, `recommendation`) is a 6000-token
+        // generation, not a short review.
+        //
+        // DELIBERATELY SHORTER than the client's own a2aInvoke.timeoutSeconds. The side
+        // that gives up first should be the side that knows why: this function returns
+        // an error naming the skill and the budget, whereas a client that abandons the
+        // request first leaves no diagnosis and cannot tell slow from dead.
+        timeout: cdk.Duration.seconds(120),
         memorySize: 512,
         environment: {
           BEDROCK_MODEL_ID: modelId,
-          A2A_AGENT_NAME: "Independent Review Agent",
+          // The card's `provider.organization` — who OPERATES these agents. Each skill
+          // names itself; this names the party behind them.
+          A2A_AGENT_NAME: "Independent Agent Services",
+          // The DEFAULT output budget. A skill that needs more declares its own
+          // (a2a_lambda/handler.py `maxTokens`), so this is never tuned per agent.
           A2A_MAX_TOKENS: "2000",
         },
       });
@@ -1814,15 +1823,19 @@ export function buildGuardrail(workflow: any): {
   piiEntities: Array<{ Type: string; Action: string }>;
 } {
   const g = workflow.guardrail ?? {};
-  const STRENGTHS = ["NONE", "LOW", "MEDIUM", "HIGH"];
-  const ACTIONS = ["BLOCK", "ANONYMIZE"];
+  // "NONE, LOW, MEDIUM or HIGH" rather than a bare join, because these strings are
+  // generated from the vocabulary now and an error a customer reads should still read
+  // like a sentence.
+  const orList = (v: string[]) =>
+    v.length < 2 ? v.join("") : `${v.slice(0, -1).join(", ")} or ${v[v.length - 1]}`;
 
   const contentFilters = Object.entries<string>(g.contentFilters ?? {}).map(([type, strength]) => {
     const t = type.toUpperCase();
     const s = String(strength).toUpperCase();
-    if (!STRENGTHS.includes(s)) {
+    if (!vocab.GUARDRAIL_FILTER_STRENGTHS.includes(s)) {
       throw new Error(
-        `workflow.json guardrail.contentFilters.${type} is "${strength}"; use NONE, LOW, MEDIUM or HIGH.`
+        `workflow.json guardrail.contentFilters.${type} is "${strength}"; use ` +
+          `${orList(vocab.GUARDRAIL_FILTER_STRENGTHS)}.`
       );
     }
     return {
@@ -1835,9 +1848,10 @@ export function buildGuardrail(workflow: any): {
 
   const piiEntities = Object.entries<string>(g.piiEntities ?? {}).map(([type, action]) => {
     const a = String(action).toUpperCase();
-    if (!ACTIONS.includes(a)) {
+    if (!vocab.GUARDRAIL_PII_ACTIONS.includes(a)) {
       throw new Error(
-        `workflow.json guardrail.piiEntities.${type} is "${action}"; use BLOCK or ANONYMIZE.`
+        `workflow.json guardrail.piiEntities.${type} is "${action}"; use ` +
+          `${orList(vocab.GUARDRAIL_PII_ACTIONS)}.`
       );
     }
     return { Type: type.toUpperCase(), Action: a };

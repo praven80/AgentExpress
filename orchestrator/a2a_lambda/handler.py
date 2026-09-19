@@ -13,12 +13,13 @@ Card, and answers by really calling Bedrock. The only fiction is the org chart: 
 happens to live in your account. Cross that out and nothing about the client changes
 — which is the property worth demonstrating.
 
-    "compliance_review": {
-      "name": "Compliance Review",
+    "analysis": {                      <- the shipped sample's own stage 3
+      "name": "Analysis",
       "runtime": "a2a",
-      "source": "a2a_lambda",     <- the framework deploys me and injects my URL
-      "skill": "compliance",
-      "produces": "compliance-review"
+      "source": "a2a_lambda",          <- the framework deploys me and injects my URL
+      "skill": "analysis",             <- which of my skills; a PATH segment, see below
+      "auth": "sigv4",                 <- required with `source`: my URL is AWS_IAM
+      "produces": "analysis"
     }
 
 Point an agent at a real partner instead and this function stops being deployed:
@@ -82,15 +83,34 @@ def _client():
 # Skills
 # ---------------------------------------------------------------------------
 #
-# Two, so the sample can show two remote agents that are genuinely different rather
-# than one function called twice. Each is a role plus a shape — the same thing an
-# agent under app/subagents/ carries in its prompts.py, which is the point: from the
-# orchestrator's side there is no way to tell that this one lives somewhere else.
+# A catalogue, not a fixed roster. `workflow.json` picks which of these are actually
+# wired up as agents, so adding a remote step to a pipeline is a workflow.json edit and
+# nothing else — and a skill nobody names simply is not reached. Each skill is a role
+# plus a shape, which is exactly what an agent under app/subagents/ carries in its
+# prompts.py: from the orchestrator's side there is no way to tell this one lives
+# somewhere else.
 #
-# Deliberately NOT this framework's asset contract. A remote agent has its own output
-# shape, and demanding ours is exactly what makes a third-party agent un-integrable.
-# The orchestrator takes the text and the downstream synthesis agents cite it like any
-# other input.
+# TWO KINDS OF SKILL HERE, on purpose.
+#
+#   `compliance` / `resilience` — REVIEWERS, and their shape is their own. This is the
+#   normal case for a third party: they have an output format, it is not ours, and
+#   demanding ours is what makes a partner agent un-integrable.
+#
+#   `analysis` / `recommendation` — CONTRACT PRODUCERS. Their shape is the CONTENT of
+#   this sample's Analysis and Recommendation contracts, because these two are steps in
+#   the deliverable rather than commentary on it: the report agent traces its sections
+#   back to them. Note what is NOT in these shapes — assetId, version, status,
+#   createdAt, createdByAgent, sourceAssetIds. Those are bookkeeping about the
+#   orchestrator's run, the remote agent cannot know them (it has no idea how many
+#   times it has been re-run in this session), and A2AAgent._as_asset stamps them on
+#   the way back. Asking for them here is how you get `"version": 1` on a revise.
+#
+# WHY THE GROUNDING RULES ARE SPELLED OUT AT LENGTH BELOW. An in-process synthesis
+# agent gets them for free: app/subagents/_shared/synthesis.py appends nine rules to
+# every prompt. That code does not cross the boundary, so a remote agent that is not
+# told "no figure that is not in an upstream asset" will invent one. The rules are the
+# same rules, in the place that can still apply them — which is the honest shape of
+# outsourcing a step: the standard travels with the work.
 
 SKILLS: dict[str, dict] = {
     "compliance": {
@@ -144,6 +164,127 @@ SKILLS: dict[str, dict] = {
                   '"basis": "established|inferred"}], '
                   '"unanswered": ["..."], "notReviewable": ["..."]}'),
     },
+    "analysis": {
+        "id": "analysis",
+        "name": "Evidence analysis",
+        "description": "Synthesizes a request and its approved research findings into one "
+                       "analysis, with every material claim traced to the asset that supports "
+                       "it.",
+        "tags": ["analysis", "synthesis", "provenance"],
+        # An analysis over four research findings does not fit in the reviewers' budget.
+        # Declared per skill rather than raised for everyone, because a compliance
+        # review that is given 6000 tokens does not get better, it gets longer.
+        "maxTokens": 6000,
+        "prompt": (
+            "You are an independent analysis agent. Synthesize the request and the approved "
+            "research findings you are given into ONE cohesive analysis.\n\n"
+            "The inputs arrive as JSON: `request` is what the run is for, `upstreamOutputs` "
+            "holds the approved assets from earlier steps, and `reviewerFeedback` — when "
+            "present — is a human's instruction for THIS revision, which takes precedence.\n\n"
+            "EVERY UPSTREAM ASSET CARRIES AN `assetId`. That id is how a claim is traced: put "
+            "the ids of the assets that support a claim in its `tracedToAssetIds`. A claim "
+            "with an empty list is an assertion nobody can check.\n\n"
+            "RULES\n"
+            "1. Use ONLY the upstream assets you were given. Invent no evidence.\n"
+            "2. No figure that is not in an upstream asset — no cost, threshold, percentage, "
+            "duration, cadence or timeline. Not even as an illustration, and not hedged with "
+            "\"e.g.\": a reader takes a number in a deliverable for one somebody agreed to.\n"
+            "3. Separate what the evidence ESTABLISHES from your own interpretation. Mark a "
+            "claim `medium` or `low` confidence when the evidence is thin, and say why in "
+            "`rationale`.\n"
+            "4. `rationale` EXPLAINS HOW YOU WEIGHED THE EVIDENCE and nothing else: which "
+            "findings agreed, which conflicted and how you settled it, what you set aside. It "
+            "is NOT a description of the request. If your rationale would read the same for "
+            "any request on this topic, you have written about the wrong thing.\n"
+            "5. Write about the SUBJECT, never about the request, the requester, or this "
+            "system's own run history. \"The request brief identifies seven key questions\" "
+            "and \"Eight prior runs completed\" are both true sentences about the wrong "
+            "subject. `recalledContext`, when you are given it, orients you and is never a "
+            "claim, a rationale or a source — it says so itself.\n"
+            "6. What the request leaves unsettled goes in `limitations`, ONCE. It is never a "
+            "claim, and it does not need repeating in every claim and rationale that touches "
+            "it. Measured on the in-house version of this agent: the same gap restated 21 "
+            "times in one deliverable.\n"
+            "7. If an input says something is unavailable, that is a limitation, not a "
+            "finding.\n"
+            "8. Counts must match the lists they count.\n"
+            "9. No preamble about being an AI, and no commentary on the request's quality."
+        ),
+        # The CONTENT of app/subagents/_shared/contracts/analysis.py. No envelope
+        # fields: the orchestrator stamps assetId/version/status/createdAt/
+        # createdByAgent/sourceAssetIds, because they describe its run and not this
+        # agent's answer.
+        "shape": ('{"executiveSummary": "1-2 sentences on the SUBJECT, for a reviewer", '
+                  '"summary": "the core analysis", '
+                  '"rationale": "how you weighed the evidence: what agreed, what conflicted '
+                  'and how you settled it, what you set aside", '
+                  '"claims": [{"statement": "a material claim", '
+                  '"tracedToAssetIds": ["the asset-... ids from upstreamOutputs that support '
+                  'it"], "confidence": "high|medium|low"}], '
+                  '"assumptions": ["..."], '
+                  '"limitations": ["named evidence gaps, or []"], '
+                  '"sources": [{"sourceId": "s1", '
+                  '"sourceType": "research-finding|request-brief|other", '
+                  '"sourceName": "which input", "sourceAssetId": "asset-... or omit"}]}'),
+    },
+    "recommendation": {
+        "id": "recommendation",
+        "name": "Recommendation",
+        "description": "Turns an approved analysis into a prioritized set of recommended "
+                       "actions, each traced to the asset that justifies it.",
+        "tags": ["recommendation", "prioritization", "provenance"],
+        "maxTokens": 6000,
+        "prompt": (
+            "You are an independent recommendation agent. Turn the approved analysis you are "
+            "given into a prioritized set of actionable recommendations.\n\n"
+            "The inputs arrive as JSON: `request` is what the run is for, `upstreamOutputs` "
+            "holds the approved assets from earlier steps, and `reviewerFeedback` — when "
+            "present — is a human's instruction for THIS revision, which takes precedence. "
+            "Trace each item to the `assetId`s that justify it.\n\n"
+            "ONE DECISION, ONE ITEM. Before you answer, read your own list and merge every "
+            "item that rests on the SAME missing input or the SAME underlying decision. "
+            "Measured on the in-house version of this agent: four separate items — defer the "
+            "compute choice, defer the queue choice, defer the cost estimate, look up one "
+            "service's price — which are one fact wearing four titles, namely that the "
+            "workload profile is unknown. Four slots spent, one thing said.\n"
+            "  EVERYTHING THE REQUESTER HAS NOT TOLD YOU IS *ONE* ITEM. \"Specify the data "
+            "source\", \"Specify the latency requirement\", \"Specify the budget\" is one "
+            "item split three ways. Write it once, name what is needed inside it, and say "
+            "which decisions each part unblocks — that is MORE useful than three, because a "
+            "reader learns that one answer unblocks three choices.\n\n"
+            "PREFER FEWER, LARGER ITEMS. Beyond roughly eight you are almost certainly "
+            "splitting decisions that belong together. Merge before you cut, so nothing is "
+            "lost.\n\n"
+            "LARGER DOES NOT MEAN INVENTING NUMBERS, and this is the trap that comes with the "
+            "instruction above. A bigger item has room for specifics, and the specifics that "
+            "come to mind are thresholds nobody gave you: \"alarm above a 1% failure rate\", "
+            "\"alert past a 1-hour lag\". Name the DIMENSION and say the value has to be set: "
+            "\"alarm on error rate and on processing lag; the thresholds depend on the latency "
+            "requirement, which has not been supplied\". That tells a reader what to "
+            "instrument AND what they still owe you.\n\n"
+            "RULES\n"
+            "1. Use ONLY the upstream assets you were given.\n"
+            "2. No figure that is not in an upstream asset — no cost, threshold, percentage, "
+            "duration, size or count. Not even as an illustration.\n"
+            "3. `executiveSummary` and `summary` are about the SUBJECT: what should be done "
+            "and what it turns on. Not about the request, and not a list of what is missing — "
+            "that is the one item above and `assumptions`.\n"
+            "4. If an input says something is unavailable, it cannot become an action. Name "
+            "the gap and what closing it would unblock.\n"
+            "5. No preamble about being an AI, and no commentary on the request's quality."
+        ),
+        # The CONTENT of app/subagents/_shared/contracts/recommendation.py.
+        "shape": ('{"executiveSummary": "1-2 sentences on the SUBJECT, for a reviewer", '
+                  '"summary": "overview of the recommendations", '
+                  '"items": [{"title": "the recommended action", "detail": "what to do", '
+                  '"priority": "high|medium|low", '
+                  '"rationale": "why, grounded in the upstream assets", '
+                  '"tracedToAssetIds": ["the asset-... ids that support it"]}], '
+                  '"risks": ["risks to weigh, or []"], "assumptions": ["...", "or []"], '
+                  '"sources": [{"sourceId": "s1", '
+                  '"sourceType": "analysis|request-brief|other", '
+                  '"sourceName": "which input", "sourceAssetId": "asset-... or omit"}]}'),
+    },
 }
 
 DEFAULT_SKILL = "compliance"
@@ -151,6 +292,20 @@ DEFAULT_SKILL = "compliance"
 
 def _skill(name: str) -> dict:
     return SKILLS.get(str(name or "").strip().lower()) or SKILLS[DEFAULT_SKILL]
+
+
+def _max_tokens(skill: dict) -> int:
+    """This skill's output budget.
+
+    Per skill because they are not the same size of job: a compliance review given 6000
+    tokens does not get better, it gets longer, and an analysis over four research
+    findings does not fit in 2000. `A2A_MAX_TOKENS` stays the default for a skill that
+    does not declare one, so the IaC needs to know nothing about any of this.
+    """
+    try:
+        return int(skill.get("maxTokens") or MAX_TOKENS)
+    except (TypeError, ValueError):
+        return MAX_TOKENS
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +319,13 @@ def agent_card(base_url: str, skill_name: str) -> dict:
     skill = _skill(skill_name)
     return {
         "protocolVersion": PROTOCOL_VERSION,
-        "name": AGENT_NAME,
+        # The SKILL's name, not the function's. Each path is a distinct agent as far as
+        # the protocol is concerned, so a single `name` for all of them would advertise
+        # an analysis agent as a reviewer. Who OPERATES them is the card's `provider`,
+        # which is where A2A puts it and the honest place for the one fact the stand-in
+        # is pretending about.
+        "name": skill["name"],
+        "provider": {"organization": AGENT_NAME, "url": base_url},
         "description": skill["description"],
         "version": "1.0.0",
         "url": base_url,
@@ -214,12 +375,25 @@ def review(task_text: str, skill_name: str) -> str:
         system=[{"text": f"{skill['prompt']}\n\nReturn ONLY valid JSON of this shape:\n"
                          f"{skill['shape']}"}],
         messages=[{"role": "user", "content": [{"text": task_text or "(no inputs supplied)"}]}],
-        inferenceConfig={"maxTokens": MAX_TOKENS, "temperature": 0},
+        inferenceConfig={"maxTokens": _max_tokens(skill), "temperature": 0},
     )
     blocks = response.get("output", {}).get("message", {}).get("content", [])
     text = "\n".join(b.get("text", "") for b in blocks if isinstance(b, dict)).strip()
     if not text:
         raise RuntimeError("the model returned no content")
+    if str(response.get("stopReason") or "").lower() == "max_tokens":
+        # A CUT-OFF ANSWER IS REFUSED, not returned. In-process, the orchestrator
+        # detects its own truncation and stamps a `limitations` entry on the asset
+        # (synthesis.truncation_limitation) so the reviewer is told. That signal cannot
+        # cross this boundary: from the client's side a truncated reply is just a reply,
+        # and the orchestrator's JSON repair turns it into a complete-LOOKING asset with
+        # the end of the longest list missing. Silent partial content in front of an
+        # approver is worse than a failed step, so this is a failed task with the fix
+        # named in it.
+        raise RuntimeError(
+            f"the '{skill['id']}' answer hit its {_max_tokens(skill)}-token output limit and "
+            f"was cut off; raise maxTokens for that skill in a2a_lambda/handler.py rather "
+            f"than returning a partial asset")
     # Unwrap a fenced block if the model added one, so the client gets JSON and not
     # markdown. Not a parse — just the fence.
     fenced = re.match(r"^```(?:json)?\s*\n(.*)\n```\s*$", text, re.DOTALL)

@@ -376,8 +376,10 @@ the two caveats (no native tool calling, and the image-size bill).
 
 `terraform apply` then creates its dedicated AgentCore Runtime, wires its IAM,
 adds it to the UI diagram, and includes it in the downstream agents' inputs —
-because `analysis`, `recommendation` and `report` derive their upstream list from
-the topology rather than hardcoding it.
+because every downstream step reads its upstream list from the topology rather than
+hardcoding it. `report` does that in its own code (`upstream_of("report")`); the
+two remote agents get it from the framework, which puts the approved upstream
+outputs into the A2A task it sends them.
 
 `"runtime": "main"` runs the agent in-process instead; `"dedicated"` gives it its
 own container and its own scaling.
@@ -403,16 +405,41 @@ becomes that node's output — so a review gate, a `branch`, a re-run and the ve
 history all work on it unchanged.
 
 `auth` is `none`, `bearer` (token from `TF_VAR_a2a_tokens` / `$A2A_TOKENS`, keyed by
-agent id — never in `workflow.json`, which is committed) or `oauth2` (minted per call
+agent id — never in `workflow.json`, which is committed), `oauth2` (minted per call
 from the agent's `agentcore.identity.outbound` provider, so no long-lived secret
-exists). `model`, `maxTokens`, `tool` and `corpus` are rejected on an `a2a` agent: it
-makes its own model call and reaches its own data sources, so those keys would read as
-governing its cost and access while doing nothing.
+exists) or `sigv4` (signed with your own execution role — the mode for an AWS-hosted
+agent behind IAM, where there is no token to leak at all). `model`, `maxTokens`, `tool`
+and `corpus` are rejected on an `a2a` agent: it makes its own model call and reaches its
+own data sources, so those keys would read as governing its cost and access while doing
+nothing.
 
-Two things you give up at the boundary: evaluations drop to role-level, because there
-is no local model call to capture a prompt from, and the remote agent's tool calls are
-outside your Cedar policy. Guardrails and long-term memory still apply, because the
-framework wraps the call on your side.
+**This is not a second-class step.** If the remote agent replies with a JSON object and
+you declared `produces`, the framework wraps it in your asset envelope — `assetId`,
+`version`, `status`, `createdByAgent`, `sourceAssetIds` — so a downstream agent can
+cite it the way it cites a local one. The framework supplies the envelope rather than
+asking the remote agent to, because it is bookkeeping about *your* run: a remote agent
+cannot know how many times you have re-run this step. A prose reply is left exactly as
+written.
+
+**What carries across, and what does not.** Guardrails apply, because the framework
+wraps the call on your side. Long-term memory works both ways: the recall is sent to the
+remote agent inside the task (with the caveat that it is recollection, not evidence) and
+the reply is stored as a new insight — worth knowing, because that means your
+accumulated recollections leave your deployment, which is why it follows
+`agentcore.memory` rather than happening unconditionally. Two things genuinely degrade:
+evaluations drop to role-level, because there is no local model call to capture a prompt
+from (so prefer `auto: false`, and drop Faithfulness — there is no source context to be
+faithful to), and the remote agent's tool calls are outside your Cedar policy.
+
+**No local agent for it means no folder — and the sample proves it.** Its own stage 3
+(`analysis` → `recommendation`) is two `a2a` agents, so `app/subagents/` has six
+packages for eight agents.
+
+The `runtime: "a2a"` placement needs an agent you do not operate, so the framework also
+ships a real one to point at: an A2A server in its own Lambda behind an IAM-authed
+Function URL, deployed only when an agent asks for it with `"source": "a2a_lambda"` and
+`"skill": "<one of analysis|recommendation|compliance|resilience>"`. Point an agent at a
+real partner's `agentCard` instead and none of that infrastructure is created.
 
 ---
 

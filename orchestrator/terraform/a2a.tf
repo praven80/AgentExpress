@@ -106,17 +106,27 @@ resource "aws_lambda_function" "a2a" {
   handler          = "handler.lambda_handler"
   filename         = data.archive_file.a2a_lambda[0].output_path
   source_code_hash = data.archive_file.a2a_lambda[0].output_base64sha256
-  # It makes a model call, so it needs more than the 3s default. Below the
-  # orchestrator's own a2aInvoke.timeoutSeconds, so the client's timeout is the one
-  # that fires and the failure says which side gave up.
-  timeout     = 25
+  # It makes a model call, so it needs far more than the 3s default — and a skill that
+  # synthesizes a full asset (`analysis`, `recommendation`) is a 6000-token generation,
+  # not a short review.
+  #
+  # DELIBERATELY SHORTER than the orchestrator's own a2aInvoke.timeoutSeconds. The side
+  # that gives up first should be the side that knows why: this function returns an
+  # error naming the skill and the budget, whereas a client that abandons the request
+  # first leaves no diagnosis at all and cannot tell a slow agent from a dead one.
+  timeout     = 120
   memory_size = 512
 
   environment {
     variables = {
       BEDROCK_MODEL_ID = var.model_id
-      A2A_AGENT_NAME   = "Independent Review Agent"
-      A2A_MAX_TOKENS   = "2000"
+      # The card's `provider.organization` — who OPERATES these agents. Each skill
+      # names itself; this names the party behind them, which is the one fact the
+      # stand-in is pretending about.
+      A2A_AGENT_NAME = "Independent Agent Services"
+      # The DEFAULT output budget. A skill that needs more declares its own
+      # (a2a_lambda/handler.py `maxTokens`), so this never has to be tuned per agent.
+      A2A_MAX_TOKENS = "2000"
     }
   }
 

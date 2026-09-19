@@ -347,7 +347,12 @@ def test_the_framework_areas_under_test_are_all_of_them():
 def test_the_vocabulary_is_derived_from_the_shipped_files_not_listed_here():
     """If this ever returns an empty set the test above passes vacuously."""
     vocab = _shipped_vocabulary()
-    assert vocab["agent id"] >= {"intake", "compliance_review", "resilience_review"}, (
+    # Compared against workflow.json itself rather than against ids typed here. Two of
+    # the ids this used to name were removed from the sample, and the test then failed
+    # for the wrong reason — it was asserting that a particular workflow exists, when
+    # the thing it means to assert is that the ids come from the workflow AT ALL.
+    shipped_ids = set(json.loads((ORCH_ROOT / "app" / "workflow.json").read_text())["agents"])
+    assert shipped_ids and vocab["agent id"] >= shipped_ids, (
         "the agent ids are not being read from workflow.json")
     assert vocab["asset type"] >= {"research-finding", "request-brief"}, (
         "the asset types are not being read from the AssetType enum")
