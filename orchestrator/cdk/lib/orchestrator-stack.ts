@@ -1401,7 +1401,14 @@ export class OrchestratorStack extends cdk.Stack {
       [bedrockInvoke, ...observabilityPerms(`${agentName}*`)].forEach((s) =>
         subagentRole.addToPolicy(s)
       );
-      telemetryTable.grantWriteData(subagentRole);
+      // PutItem only — grantWriteData() would also add DeleteItem/UpdateItem and the
+      // batch writes. A dedicated agent appends telemetry rows; it never edits them.
+      subagentRole.addToPolicy(
+        new iam.PolicyStatement({
+          actions: ["dynamodb:PutItem"],
+          resources: [telemetryTable.tableArn],
+        })
+      );
       // Feature-gated: granted only because THIS agent's config enables the feature.
       // Without the grant, GUARDRAIL_ID still resolves and ApplyGuardrail is denied —
       // the correct outcome for an agent that never calls it.
@@ -1560,12 +1567,43 @@ export class OrchestratorStack extends cdk.Stack {
       );
       a2aFunctionUrl.grantInvokeUrl(runtimeRole);
     }
-    statusTable.grantReadWriteData(runtimeRole);
-    eventsTable.grantReadWriteData(runtimeRole);
-    // Read/write, not write-only: Evaluations scores each prompt from its
-    // persisted model-call I/O, which means querying the telemetry table back.
-    telemetryTable.grantReadWriteData(runtimeRole);
-    insightsTable.grantReadWriteData(runtimeRole);
+    // Spelled out rather than grantReadWriteData(), which also hands over
+    // BatchGetItem/BatchWriteItem/ConditionCheckItem/DescribeTable and the stream
+    // reads — none of which this app calls. The Terraform path already granted only
+    // what the code uses, so the macro was both over-broad and a parity gap.
+    runtimeRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "ProgressStoreWrite",
+        actions: ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:GetItem"],
+        resources: [statusTable.tableArn, eventsTable.tableArn],
+      })
+    );
+    runtimeRole.addToPolicy(
+      // Scan on the STATUS table only: Insights flags whether each analyzed session
+      // still exists so the UI can disable dead links.
+      new iam.PolicyStatement({
+        sid: "ProgressStoreScanStatus",
+        actions: ["dynamodb:Scan"],
+        resources: [statusTable.tableArn],
+      })
+    );
+    runtimeRole.addToPolicy(
+      // Read as well as write: Evaluations scores each prompt from its persisted
+      // model-call I/O, which means querying the telemetry table back.
+      new iam.PolicyStatement({
+        sid: "TelemetryReadWrite",
+        actions: ["dynamodb:PutItem", "dynamodb:Query", "dynamodb:GetItem"],
+        resources: [telemetryTable.tableArn, `${telemetryTable.tableArn}/index/*`],
+      })
+    );
+    runtimeRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "InsightsFindingsStore",
+        actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem"],
+        resources: [insightsTable.tableArn],
+      })
+    );
 
     const orchestrator = new cdk.CfnResource(this, "Orchestrator", {
       type: "AWS::BedrockAgentCore::Runtime",
@@ -1632,9 +1670,22 @@ export class OrchestratorStack extends cdk.Stack {
         MODEL_ID: props.modelId,
       },
     });
-    statusTable.grantReadWriteData(bff);
-    eventsTable.grantReadWriteData(bff);
-    telemetryTable.grantReadData(bff);
+    // Explicit, not grantReadWriteData()/grantReadData() — same reason as the
+    // runtime role above: the macros add batch and stream actions the BFF never calls.
+    bff.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:Scan"],
+        resources: [statusTable.tableArn, eventsTable.tableArn],
+      })
+    );
+    bff.addToRolePolicy(
+      // Session detail query plus the by_date GSI the aggregation reads.
+      new iam.PolicyStatement({
+        actions: ["dynamodb:Query"],
+        resources: [telemetryTable.tableArn, `${telemetryTable.tableArn}/index/*`],
+      })
+    );
     bff.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ["bedrock-agentcore:InvokeAgentRuntime"],

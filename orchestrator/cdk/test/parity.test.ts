@@ -319,7 +319,10 @@ describe("web search domain filtering", () => {
     const strip = (src: string) => src.replace(/^\s*(?:\/\/|#).*$/gm, "");
     const window = (src: string, from: string) =>
       strip(src.slice(src.indexOf(from), src.indexOf(from) + 1400));
-    for (const src of [window(tf, "tools_env"), window(stack, "export function toolsEnv")]) {
+    // Anchored on the DECLARATIONS, not on a bare name: prose elsewhere in the file
+    // may mention the projection by name, and a loose anchor picks the wrong region.
+    for (const src of [window(tf, "tools_env = jsonencode("),
+      window(stack, "export function toolsEnv")]) {
       expect(src).not.toContain("domains");
       expect(src).toContain("maxResults");   // the projection is not simply empty
     }
@@ -415,5 +418,47 @@ describe("the kb tool's retrieval settings", () => {
     // And the feature gates, which are what makes the split worth having.
     expect(read(path.join(TF, "subagent_runtimes.tf"))).toContain("subagent_features");
     expect(stack).toMatch(/ac\.guardrails\?\.input \|\| ac\.guardrails\?\.output/);
+  });
+
+  it("grants BOTH Function URL actions for the a2a stand-in in both planes", () => {
+    // Learned the hard way: a principal holding only lambda:InvokeFunctionUrl is
+    // rejected with a bare 403 BEFORE the function is entered, so there is no log line
+    // to read and nothing on the function to inspect. lambda:InvokeFunction is required
+    // as well. CDK gets the pair from grantInvokeUrl(); Terraform has to spell it out.
+    // Dropping either action in either plane brings the whole A2A stage down, which is
+    // exactly the failure this asserts against.
+    const tf = read(path.join(TF, "a2a.tf"));
+    expect(tf).toContain('"lambda:InvokeFunctionUrl"');
+    expect(tf).toContain('"lambda:InvokeFunction"');
+    expect(tf).toContain('"lambda:InvokedViaFunctionUrl" = "true"');
+    const stack = read(path.join(__dirname, "..", "lib", "orchestrator-stack.ts"));
+    expect(stack).toContain("grantInvokeUrl(runtimeRole)");
+  });
+
+  it("grants the full ECR pull set to every runtime role in both planes", () => {
+    // BatchCheckLayerAvailability is part of a pull and its absence only shows up as an
+    // intermittent cold-start failure, so both planes state it explicitly.
+    for (const f of ["main.tf", "subagent_runtimes.tf"]) {
+      expect(read(path.join(TF, f))).toContain('"ecr:BatchCheckLayerAvailability"');
+    }
+    // CDK gets the same set from grantPull() on the asset's repository.
+    expect(read(path.join(__dirname, "..", "lib", "orchestrator-stack.ts")))
+      .toMatch(/grantPull\(/);
+  });
+
+  it("spells out DynamoDB actions in both planes instead of using CDK's grant macros", () => {
+    // grantReadWriteData() also hands over BatchGetItem/BatchWriteItem/
+    // ConditionCheckItem/DescribeTable and the stream reads. Nothing in the app calls
+    // any of them, and Terraform never granted them — so the macro was both over-broad
+    // and a silent divergence between the two deployments.
+    const stack = read(path.join(__dirname, "..", "lib", "orchestrator-stack.ts"));
+    // Comments stripped: each explicit grant NAMES the macro it replaced, and the check
+    // is about the code, not about whether the code is explained.
+    const code = stack.replace(/^\s*\/\/.*$/gm, "");
+    for (const macro of ["grantReadWriteData", "grantWriteData", "grantReadData"]) {
+      expect(code).not.toContain(macro);
+    }
+    expect(stack).toContain('sid: "ProgressStoreWrite"');
+    expect(read(path.join(TF, "main.tf"))).toContain('Sid      = "ProgressStoreWrite"');
   });
 });

@@ -88,9 +88,12 @@ resource "aws_iam_role_policy" "subagent" {
     Version = "2012-10-17"
     Statement = concat([
       {
-        Sid      = "ECRImageAccess"
-        Effect   = "Allow"
-        Action   = ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"]
+        Sid    = "ECRImageAccess"
+        Effect = "Allow"
+        # The full documented pull set — see the same statement in main.tf for why
+        # BatchCheckLayerAvailability is not optional.
+        Action = ["ecr:BatchCheckLayerAvailability", "ecr:BatchGetImage",
+        "ecr:GetDownloadUrlForLayer"]
         Resource = [aws_ecr_repository.orchestrator.arn]
       },
       {

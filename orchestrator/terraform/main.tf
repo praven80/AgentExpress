@@ -125,9 +125,14 @@ resource "aws_iam_role_policy" "runtime" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid      = "ECRImageAccess"
-        Effect   = "Allow"
-        Action   = ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"]
+        Sid    = "ECRImageAccess"
+        Effect = "Allow"
+        # The full documented pull set. BatchCheckLayerAvailability is the one that
+        # looks droppable and is not: a pull that has to verify layers rather than
+        # take them from cache calls it, so omitting it buys nothing and risks a
+        # cold start that fails only sometimes. Matches the CDK path's grantPull().
+        Action = ["ecr:BatchCheckLayerAvailability", "ecr:BatchGetImage",
+        "ecr:GetDownloadUrlForLayer"]
         Resource = [aws_ecr_repository.orchestrator.arn]
       },
       {
