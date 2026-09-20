@@ -161,7 +161,11 @@ def test_the_shipped_workflow_still_has_evaluable_agents():
 
     wf = json.loads((__import__("conftest").ORCH_ROOT / "app" / "workflow.json").read_text())
     enabled = [aid for aid in wf["agents"] if is_enabled(aid)]
-    assert len(enabled) >= 5, f"only {enabled} are evaluable in the shipped workflow"
+    # AT LEAST ONE, not at least five. The invariant is that the gate has something to
+    # gate; five was the shipped sample's count, and asserting it told a customer with
+    # four evaluable agents that the framework was broken.
+    assert enabled, ("no agent in this workflow enables evaluations, so the gate above "
+                     "would pass while refusing everything")
 
 
 # ---------------------------------------------------------------------------

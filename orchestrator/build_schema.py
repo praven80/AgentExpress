@@ -254,6 +254,20 @@ def build() -> dict:
             "tools": {
                 "type": "object",
                 "description": "One entry per data source.\n\n" + keys["tool"]["$comment"],
+                # ALPHANUMERIC, and narrower than either AWS rule alone: the key builds
+                # the Gateway target `<key>` (no underscores allowed) AND the Cedar policy
+                # `permit_<key>` (no hyphens allowed). Both were found by CloudFormation
+                # refusing a change set after a clean synth, so the editor now says it
+                # first.
+                "propertyNames": {
+                    "pattern": "^[A-Za-z][A-Za-z0-9]*$",
+                    "description": (
+                        "A tool's key must be letters and digits, starting with a letter — "
+                        "it builds both the Gateway target name (no underscores) and the "
+                        "Cedar policy name permit_<key> (no hyphens), so neither separator "
+                        "survives both. Use camelCase, e.g. \"policyDocs\". An agent id is "
+                        "different and may contain underscores."),
+                },
                 "additionalProperties": _entry_schema(keys["tool"], vocab),
             },
             "steps": {

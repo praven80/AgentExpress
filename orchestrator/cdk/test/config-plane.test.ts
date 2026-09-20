@@ -19,6 +19,14 @@ import {
 import { cedarStatement, ToolSpec } from "../lib/tool-plane";
 
 const ORCH_ROOT = `${__dirname}/../..`;
+
+// A REAL corpus folder, read from kb_docs/ rather than named. These tests hardcoded
+// "reference", the sample's own corpus, so replacing kb_docs/ made them fail with a
+// message about a folder the customer had correctly removed.
+const A_REAL_CORPUS = require("fs")
+  .readdirSync(`${ORCH_ROOT}/kb_docs`, { withFileTypes: true })
+  .filter((d: any) => d.isDirectory())
+  .map((d: any) => d.name)[0];
 const GW = "arn:aws:bedrock-agentcore:us-east-1:123456789012:gateway/gw-abc";
 
 /** A minimal valid `type: "lambda"` spec, spread into tests that need one. */
@@ -330,13 +338,13 @@ describe("validateWorkflow", () => {
     // The quiet failure: the Cedar permit filters on a doc_type no chunk carries
     // and retrieval returns nothing, with no error anywhere.
     const w = wf([{ agent: "a" }], {
-      tools: { kb: { type: "kb", corpora: ["reference", "nope"] } },
+      tools: { kb: { type: "kb", corpora: [A_REAL_CORPUS, "nope"] } },
     });
     expect(() => ok(w)).toThrow(/do not exist under orchestrator\/kb_docs\/: nope/);
   });
 
   it("rejects an agent corpus outside the declared corpora", () => {
-    const w = wf([{ agent: "a" }], { tools: { kb: { type: "kb", corpora: ["reference"] } } });
+    const w = wf([{ agent: "a" }], { tools: { kb: { type: "kb", corpora: [A_REAL_CORPUS] } } });
     w.agents.a.corpus = "other";
     expect(() => ok(w)).toThrow(/which is not in\s+tools\.<kb>\.corpora/);
   });

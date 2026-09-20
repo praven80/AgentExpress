@@ -379,16 +379,16 @@ def test_the_tool_types_are_closed_by_what_the_framework_can_provision():
 
     good = {
         "orchestrator": {"defaultModel": "m"},
-        "tools": {"anything_you_like": {"type": "lambda", "lambdaArn":
+        "tools": {"anythingYouLike": {"type": "lambda", "lambdaArn":
                                         "arn:aws:lambda:us-east-1:123456789012:function:f"}},
-        "agents": {"a": {"name": "A", "maxTokens": 10, "tool": "anything_you_like"}},
+        "agents": {"a": {"name": "A", "maxTokens": 10, "tool": "anythingYouLike"}},
         "steps": [{"agent": "a"}],
     }
     with workflow(good) as imp:
         imp("app.orchestrator.registry").validate_tool_types()
 
     bad = json.loads(json.dumps(good))
-    bad["tools"]["anything_you_like"]["type"] = "grpc"
+    bad["tools"]["anythingYouLike"]["type"] = "grpc"
     with workflow(bad) as imp:
         registry = imp("app.orchestrator.registry")
         with pytest.raises(ValueError, match="type \"lambda\""):

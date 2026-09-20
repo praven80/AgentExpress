@@ -234,9 +234,25 @@ def main() -> int:
     args.produces = args.produces or f"{agent_id.replace('_', '-')}-output"
 
     workflow = json.loads(WORKFLOW.read_text(), object_pairs_hook=OrderedDict)
-    if agent_id in workflow["agents"]:
-        print(f"scaffold: agent {agent_id!r} is already in workflow.json.", file=sys.stderr)
-        return 2
+    # ALREADY IN CONFIG -> write the folder only, and leave workflow.json alone.
+    #
+    # This used to be a hard error, which made the tool useless for the order the docs
+    # actually recommend: "define the workflow.json configuration, then define the agent
+    # logic in the subagents folder". Designing the pipeline first and implementing the
+    # agents second is the natural direction, and it was the one direction the scaffold
+    # refused — found while building a foreign workflow exactly that way.
+    existing = agent_id in workflow["agents"]
+    if existing:
+        spec_in_config = workflow["agents"][agent_id]
+        placement = str(spec_in_config.get("runtime") or "main")
+        if placement == "a2a":
+            print(f"scaffold: agent {agent_id!r} is runtime \"a2a\" in workflow.json, so its "
+                  f"code is somebody else's — there is no folder to create.", file=sys.stderr)
+            return 2
+        if (SUBAGENTS / agent_id).exists():
+            print(f"scaffold: app/subagents/{agent_id}/ already exists, and {agent_id!r} is "
+                  f"already in workflow.json. Nothing to do.", file=sys.stderr)
+            return 2
     if args.tool and args.tool not in (workflow.get("tools") or {}):
         print(f"scaffold: --tool {args.tool!r} is not a key in the `tools` block "
               f"({', '.join(workflow.get('tools') or {}) or 'none declared'}). Declare the "
@@ -244,12 +260,18 @@ def main() -> int:
         return 2
 
     args.workflow = workflow
-    spec = entry(args)
+    # When the entry already exists it is the CUSTOMER'S; generating one and overwriting
+    # theirs would throw away the decisions they came here having already made.
+    spec = spec_in_config if existing else entry(args)
     folder = SUBAGENTS / agent_id
-    written = files(agent_id) if not args.remote else {}
+    written = {} if args.remote else files(agent_id)
 
-    print(f"workflow.json  agents.{agent_id}:")
-    print("  " + json.dumps(spec, indent=2, ensure_ascii=False).replace("\n", "\n  "))
+    if existing:
+        print(f"agents.{agent_id} is already configured; writing the folder only:")
+        print("  " + json.dumps(spec, indent=2, ensure_ascii=False).replace("\n", "\n  "))
+    else:
+        print(f"workflow.json  agents.{agent_id}:")
+        print("  " + json.dumps(spec, indent=2, ensure_ascii=False).replace("\n", "\n  "))
     for name in written:
         print(f"app/subagents/{agent_id}/{name}")
     if args.remote:
@@ -266,6 +288,12 @@ def main() -> int:
         folder.mkdir(parents=True)
         for name, body in written.items():
             (folder / name).write_text(body)
+
+    if existing:
+        # Their config, untouched. The whole point of this path.
+        print(f"\nDone. app/subagents/{agent_id}/ now implements the entry you already "
+              f"wrote; workflow.json was not modified.")
+        return 0
 
     workflow["agents"][agent_id] = spec
     WORKFLOW.write_text(json.dumps(workflow, indent=2, ensure_ascii=False) + "\n")

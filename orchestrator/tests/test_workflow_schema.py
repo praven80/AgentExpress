@@ -33,7 +33,7 @@ import subprocess
 import sys
 
 import pytest
-from conftest import ORCH_ROOT
+from conftest import ORCH_ROOT, some_agent, some_tool
 
 jsonschema = pytest.importorskip("jsonschema", reason="dev-only; see requirements-dev.txt")
 
@@ -100,7 +100,7 @@ def test_a_foreign_workflow_validates_too():
         "orchestrator": {"defaultModel": "us.anthropic.claude-haiku-4-5-20251001-v1:0"},
         "ui": {"title": "Claims Adjudicator", "defaultTopic": "Assess claim CL-4471"},
         "tools": {
-            "claims_db": {
+            "claimsDb": {
                 "type": "lambda",
                 "description": "Claim lookup against the policy warehouse.",
                 "lambdaArn": "arn:aws:lambda:us-east-1:123456789012:function:ClaimsLookup",
@@ -113,7 +113,7 @@ def test_a_foreign_workflow_validates_too():
         },
         "agents": {
             "triage": {"name": "Claim Triage", "runtime": "main", "produces": "claim-triage",
-                       "maxTokens": 2000, "tool": "claims_db"},
+                       "maxTokens": 2000, "tool": "claimsDb"},
             "fraud_check": {"name": "Partner Fraud Check", "runtime": "a2a",
                             "produces": "fraud-assessment",
                             "agentCard": "https://agents.partner.example/fraud",
@@ -140,54 +140,78 @@ def test_a_foreign_workflow_validates_too():
 # catching it too is what makes the editor's silence trustworthy: nothing that passes
 # here should fail at plan/synth/start, and nothing that fails there should pass here.
 
+# EVERY TARGET BELOW IS RESOLVED FROM THE WORKFLOW UNDER TEST, not named.
+#
+# These used to say `w["agents"]["analysis"]` and `w["tools"]["kb"]`. Measured against a
+# foreign five-agent insurance workflow, 23 of them failed with `KeyError: 'analysis'` —
+# in a file whose own docstring says it is about the framework. A framework test that
+# needs a remote agent to mutate needs *a* remote agent, and taking it from the config is
+# both portable and a stronger check, because it exercises whatever the customer actually
+# wrote. `some_agent`/`some_tool` skip cleanly when a workflow has nothing of that kind.
+
+def a_remote(w):
+    return w["agents"][some_agent(runtime="a2a")]
+
+
+def a_local(w):
+    return w["agents"][some_agent(runtime="main")]
+
+
+def a_kb_tool(w):
+    return w["tools"][some_tool("kb")]
+
+
+def an_mcp_tool(w):
+    return w["tools"][some_tool("mcp")]
+
+
+def a_lambda_tool(w):
+    return w["tools"][some_tool("lambda")]
+
+
+def with_agentcore(w, block: str):
+    """A local agent that has `block` configured, so the mutation lands somewhere real."""
+    for spec in (w.get("agents") or {}).values():
+        if isinstance((spec.get("agentcore") or {}).get(block), dict):
+            return spec["agentcore"][block]
+    pytest.skip(f"no agent in this workflow configures agentcore.{block}")
+
+
 @pytest.mark.parametrize("label,edit", [
     # --- placement keys that would read as settings and control nothing -------
-    ("maxTokens on a remote agent",
-     lambda w: w["agents"]["analysis"].update(maxTokens=6000)),
-    ("tool on a remote agent",
-     lambda w: w["agents"]["analysis"].update(tool="kb")),
-    ("model on a remote agent",
-     lambda w: w["agents"]["analysis"].update(model="anthropic.claude-3")),
-    ("agentCard on a local agent",
-     lambda w: w["agents"]["intake"].update(agentCard="https://x.example")),
-    ("skill on a local agent",
-     lambda w: w["agents"]["intake"].update(skill="analysis")),
+    ("maxTokens on a remote agent", lambda w: a_remote(w).update(maxTokens=6000)),
+    ("tool on a remote agent", lambda w: a_remote(w).update(tool=some_tool())),
+    ("model on a remote agent", lambda w: a_remote(w).update(model="anthropic.claude-3")),
+    ("agentCard on a local agent", lambda w: a_local(w).update(agentCard="https://x.example")),
+    ("skill on a local agent", lambda w: a_local(w).update(skill="compliance")),
     # --- exactly-one rules ----------------------------------------------------
     ("a remote agent with BOTH agentCard and source",
-     lambda w: w["agents"]["analysis"].update(agentCard="https://x.example")),
+     lambda w: a_remote(w).update(agentCard="https://x.example", source="a2a_lambda")),
     ("a remote agent with NEITHER",
-     lambda w: w["agents"]["analysis"].pop("source")),
+     lambda w: [a_remote(w).pop("source", None), a_remote(w).pop("agentCard", None)]),
     ("a lambda tool with BOTH lambdaArn and source",
-     lambda w: w["tools"]["pricing"].update(
+     lambda w: a_lambda_tool(w).update(
+         source="tool_lambda",
          lambdaArn="arn:aws:lambda:us-east-1:123456789012:function:f")),
     ("a step with both agent and parallel",
-     lambda w: w["steps"][0].update(parallel=["intake"])),
+     lambda w: w["steps"][0].update(agent=next(iter(w["agents"])),
+                                    parallel=[next(iter(w["agents"]))])),
     # --- required ------------------------------------------------------------
-    ("a local agent with no maxTokens",
-     lambda w: w["agents"]["intake"].pop("maxTokens")),
-    ("an mcp tool with no endpoint",
-     lambda w: w["tools"]["docs"].pop("endpoint")),
-    ("a kb tool with no corpora",
-     lambda w: w["tools"]["kb"].pop("corpora")),
+    ("a local agent with no maxTokens", lambda w: a_local(w).pop("maxTokens")),
+    ("an mcp tool with no endpoint", lambda w: an_mcp_tool(w).pop("endpoint")),
+    ("a kb tool with no corpora", lambda w: a_kb_tool(w).pop("corpora")),
     ("a denied topic with no definition",
      lambda w: w["guardrail"]["deniedTopics"].append({"name": "X"})),
     # --- closed value sets ---------------------------------------------------
-    ("a misspelled runtime",
-     lambda w: w["agents"]["intake"].update(runtime="Main")),
-    ("an unknown a2a skill",
-     lambda w: w["agents"]["analysis"].update(skill="pricing")),
-    ("an unknown a2a auth mode",
-     lambda w: w["agents"]["analysis"].update(auth="basic")),
-    ("an unknown tool type",
-     lambda w: w["tools"]["kb"].update(type="graphql")),
-    ("a lower-case listingMode",
-     lambda w: w["tools"]["docs"].update(listingMode="dynamic")),
+    ("a misspelled runtime", lambda w: a_local(w).update(runtime="Main")),
+    ("an unknown a2a skill", lambda w: a_remote(w).update(skill="not_a_skill")),
+    ("an unknown a2a auth mode", lambda w: a_remote(w).update(auth="basic")),
+    ("an unknown tool type", lambda w: w["tools"][some_tool()].update(type="graphql")),
+    ("a lower-case listingMode", lambda w: an_mcp_tool(w).update(listingMode="dynamic")),
     ("an unprovisioned memory strategy",
-     lambda w: w["agents"]["analysis"]["agentcore"]["memory"].update(
-         longTerm=["userPreference"])),
+     lambda w: with_agentcore(w, "memory").update(longTerm=["userPreference"])),
     ("an evaluator with no Builtin/Custom prefix",
-     lambda w: w["agents"]["intake"]["agentcore"]["evaluations"].update(
-         evaluators=["Faithfulness"])),
+     lambda w: with_agentcore(w, "evaluations").update(evaluators=["Faithfulness"])),
     ("an unknown authorization action",
      lambda w: w["authorization"]["actions"].update(approve=["approvers"])),
     ("an invalid guardrail strength",
@@ -195,18 +219,15 @@ def test_a_foreign_workflow_validates_too():
     ("an invalid PII action",
      lambda w: w["guardrail"]["piiEntities"].update(EMAIL="REDACT")),
     # --- typos, which are the everyday case ----------------------------------
-    ("a typo'd agent key",
-     lambda w: w["agents"]["intake"].update(maxTokenz=3000)),
+    ("a typo'd agent key", lambda w: a_local(w).update(maxTokenz=3000)),
     ("a typo'd agentcore block",
-     lambda w: w["agents"]["intake"]["agentcore"].update(guardrail={"input": True})),
-    ("a typo'd step key",
-     lambda w: w["steps"][0].update(hilt=True)),
+     lambda w: a_local(w).setdefault("agentcore", {}).update(guardrail={"input": True})),
+    ("a typo'd step key", lambda w: w["steps"][0].update(hilt=True)),
     ("a typo'd tool key",
-     lambda w: w["tools"]["docs"].update(endpont="https://x.example")),
-    ("an unknown top-level block",
-     lambda w: w.update(agentz={})),
+     lambda w: w["tools"][some_tool()].update(endpont="https://x.example")),
+    ("an unknown top-level block", lambda w: w.update(agentz={})),
     ("an agent id with a hyphen",
-     lambda w: w["agents"].update({"cost-research": w["agents"]["cost_research"]})),
+     lambda w: w["agents"].update({"not-a-valid-id": dict(a_local(w))})),
 ])
 def test_the_schema_rejects(label, edit):
     assert errors(wf_with(edit)), f"the schema ACCEPTED {label}"
@@ -400,13 +421,14 @@ def test_the_formatter_refuses_to_write_if_reordering_changed_anything():
     seqs = fw.key_sequences(doc)
     assert seqs, "key_sequences found nothing to compare, so the guard is vacuous"
     # Dropping a key must be visible to the guard's own comparison.
+    victim = next(iter(doc["agents"]))
     damaged = copy.deepcopy(doc)
-    damaged["agents"]["intake"].pop("produces")
+    damaged["agents"][victim].pop("name")
     assert fw.key_sequences(damaged) != seqs
     # And so must a pure reorder, which `==` on the documents would not catch.
     shuffled = copy.deepcopy(doc)
-    intake = shuffled["agents"]["intake"]
-    shuffled["agents"]["intake"] = dict(reversed(list(intake.items())))
+    entry = shuffled["agents"][victim]
+    shuffled["agents"][victim] = dict(reversed(list(entry.items())))
     assert shuffled == doc, "the premise: these compare equal as dicts"
     assert fw.key_sequences(shuffled) != seqs, "but their key order differs"
 
@@ -425,3 +447,88 @@ def test_an_unrecognised_key_is_kept_by_the_formatter_not_silently_dropped():
     out = fw.reorder(entry, fw.canonical_order("agent"))
     assert list(out) == ["name", "runtime", "agentcore", "maxTokenz"]
     assert out["maxTokenz"] == 1
+
+
+# ---------------------------------------------------------------------------
+# A tool key is a Gateway target name
+# ---------------------------------------------------------------------------
+# FOUND BY DEPLOYING A FOREIGN WORKFLOW, and it is the worst place to find anything: a
+# tool named `policyDocs` passed this schema, `registry.validate_tool_types`, and
+# `cdk synth` (148 resources, no error), and was then refused by CloudFormation when the
+# change set was created — "does not match pattern ^([0-9a-zA-Z][-]?){1,100}$".
+#
+# Every tool in the shipped sample is a single word (kb, websearch, docs, pricing), so
+# nothing had ever exercised an underscore. `policyDocs` is the obvious name for a
+# Knowledge Base of policy wordings, which is exactly why this was worth fixing rather
+# than documenting.
+
+ILLEGAL_TOOL_KEYS = ("policy_docs", "policy-docs")
+
+
+@pytest.mark.parametrize("bad", ILLEGAL_TOOL_KEYS)
+def test_the_schema_rejects_a_tool_key_aws_will_not_accept(bad):
+    doc = copy.deepcopy(SHIPPED)
+    name = some_tool()
+    doc["tools"][bad] = doc["tools"].pop(name)
+    for spec in doc["agents"].values():
+        if spec.get("tool") == name:
+            spec["tool"] = bad
+    messages = errors(doc)
+    assert messages, f"the schema accepted tools.{bad}, which CloudFormation refuses"
+    assert any("does not match" in m for m in messages), messages
+
+
+def test_every_shipped_tool_key_is_deployable():
+    """The other direction: whatever this workflow declares must survive BOTH AWS rules."""
+    import re
+
+    from app.orchestrator.registry import TARGET_NAME_RE
+
+    gateway_target = re.compile(r"^([0-9a-zA-Z][-]?){1,100}$")
+    cedar_policy = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+    for name in (SHIPPED.get("tools") or {}):
+        assert TARGET_NAME_RE.match(name), f"tools.{name} fails the framework's own rule"
+        # And the two AWS constraints it is the intersection of, asserted independently so
+        # this test would notice if the framework's rule drifted away from either.
+        assert gateway_target.match(name), f"tools.{name} is not a legal Gateway target name"
+        assert cedar_policy.match(f"permit_{name}"), (
+            f"permit_{name} is not a legal Cedar policy name")
+
+
+@pytest.mark.parametrize("bad", ILLEGAL_TOOL_KEYS)
+def test_the_registry_refuses_it_too_and_explains_the_contradiction(bad):
+    """All three planes, because a customer meets whichever they run first — and the
+    message has to explain WHY both separators are out, or the rule looks arbitrary and
+    the obvious workaround (swap _ for -) is the other failure."""
+    from conftest import workflow
+
+    defn = {
+        "orchestrator": {},
+        "tools": {bad: {"type": "kb", "corpora": ["x"]}},
+        "agents": {"a": {"name": "A", "runtime": "dedicated", "maxTokens": 100, "tool": bad}},
+        "steps": [{"agent": "a"}],
+    }
+    with workflow(defn) as imp:
+        registry = imp("app.orchestrator.registry")
+        with pytest.raises(ValueError) as caught:
+            registry.validate_tool_types()
+    message = str(caught.value)
+    assert bad in message
+    assert "policyDocs" in message               # the camelCase rename to make
+    assert "Gateway target" in message and "Cedar policy" in message
+    assert "underscores" in message and "hyphens" in message
+    # And that an agent id is NOT subject to the same rule, because that asymmetry is the
+    # first thing a reader will doubt.
+    assert "agent id" in message.lower()
+
+
+def test_all_three_planes_carry_the_same_rule():
+    """A rule one plane enforces and another does not is the drift app/vocabulary.json
+    exists to prevent — here it would mean `cdk synth` accepting what `terraform plan`
+    rejects, with CloudFormation as the tie-breaker."""
+    pattern = "[A-Za-z][A-Za-z0-9]*"
+    for path in (ORCH_ROOT / "app" / "orchestrator" / "registry.py",
+                 ORCH_ROOT / "cdk" / "lib" / "orchestrator-stack.ts",
+                 ORCH_ROOT / "terraform" / "tools.tf",
+                 ORCH_ROOT / "app" / "workflow.schema.json"):
+        assert pattern in path.read_text(), f"{path.name} does not carry the tool-key rule"

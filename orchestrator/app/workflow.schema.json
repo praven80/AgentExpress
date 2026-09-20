@@ -713,6 +713,10 @@
     "tools": {
       "type": "object",
       "description": "One entry per data source.\n\nOne entry per data source, keyed by the tool's label. THE KEY IS BOTH the Gateway target name AND what an agent binds to with its `tool` field, so the two can never drift. Every tool has `type` and `description`; after that the keys depend on the type, because each type is a different kind of Gateway target with different infrastructure. The `call` group is shared by every target that publishes more than one tool. To reach something none of the five types covers — a warehouse, an RDBMS, a VPC service — put it behind a Lambda and use type=\"lambda\": that is the escape hatch, and it needs no framework change.",
+      "propertyNames": {
+        "pattern": "^[A-Za-z][A-Za-z0-9]*$",
+        "description": "A tool's key must be letters and digits, starting with a letter — it builds both the Gateway target name (no underscores) and the Cedar policy name permit_<key> (no hyphens), so neither separator survives both. Use camelCase, e.g. \"policyDocs\". An agent id is different and may contain underscores."
+      },
       "additionalProperties": {
         "type": "object",
         "additionalProperties": false,

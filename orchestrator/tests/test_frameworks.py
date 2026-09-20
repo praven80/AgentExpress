@@ -36,6 +36,13 @@ import json
 import threading
 
 import pytest
+from conftest import needs_agent
+
+# ABOUT THE TWO SAMPLE AGENTS THAT REASON INSIDE STRANDS / A NESTED LANGGRAPH.
+# Skipped, not deleted, when this workflow does not have those agents: the tests
+# below are what makes the sample worth copying, and they are meaningless without
+# their subject. A customer who keeps the agent keeps its tests.
+pytestmark = needs_agent("web_search", "knowledge_research")
 
 BRIEF = json.dumps({
     "title": "Design a Serverless Data Pipeline",

@@ -26,6 +26,13 @@ import asyncio
 import json
 
 import pytest
+from conftest import needs_agent
+
+# ABOUT THE SAMPLE'S COST AGENT: JUDGEMENT TO THE MODEL, ARITHMETIC TO CODE.
+# Skipped, not deleted, when this workflow does not have those agents: the tests
+# below are what makes the sample worth copying, and they are meaningless without
+# their subject. A customer who keeps the agent keeps its tests.
+pytestmark = needs_agent("cost_research")
 
 BRIEF = json.dumps({
     "title": "Build an Agentic AI Application",

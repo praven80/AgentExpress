@@ -272,6 +272,17 @@ describe("the tool plane", () => {
    * `Fn::GetAtt` resolved at deploy time — so the fragments have to be concatenated
    * before the policy text can be read.
    */
+  // TOOL NAMES RESOLVED BY TYPE, not written down. These tests said `shipped.tools.kb`
+  // and `"docs"`, which made them assertions about the SAMPLE's tool set: a foreign
+  // workflow with one `policy_docs` Knowledge Base and no web search failed three of
+  // them, reporting a framework defect where there was none. `itIfTool` skips instead,
+  // because "this deployment has no MCP target" is not a bug.
+  const toolOfType = (t: string): string | undefined =>
+    Object.keys(shipped.tools ?? {}).find(
+      (n) => String(shipped.tools[n].type ?? "").toLowerCase() === t
+    );
+  const itIfTool = (t: string) => (toolOfType(t) ? it : it.skip);
+
   function cedarStatements(): string[] {
     return Object.values<any>(template.findResources("AWS::BedrockAgentCore::Policy")).map((p) => {
       const s = p.Properties.Definition.Cedar.Statement;
@@ -293,25 +304,33 @@ describe("the tool plane", () => {
     }
   });
 
-  it("permits web search BY NAME and the MCP target at target level", () => {
+  itIfTool("websearch")("permits web search BY NAME and the MCP target at target level", () => {
     // Not cosmetic. Measured on a live gateway: a target-level permit did NOT
     // authorize the connector's tool — `action in AgentCore::Action::"websearch"`
     // produced ToolDenied for websearch___WebSearch. A remote MCP server's tool
     // names are unknown at deploy time, so that one has to stay target-level.
     const statements = cedarStatements();
+    const ws = toolOfType("websearch")!;
     expect(
-      statements.some((s) => s.includes('action == AgentCore::Action::"websearch___WebSearch"'))
+      statements.some((s) => s.includes(`action == AgentCore::Action::"${ws}___WebSearch"`))
     ).toBe(true);
-    expect(statements.some((s) => s.includes('action in AgentCore::Action::"docs"'))).toBe(true);
-    expect(statements.some((s) => s.includes('action == AgentCore::Action::"kb___retrieve"'))).toBe(
-      true
-    );
+    const mcp = toolOfType("mcp");
+    if (mcp) {
+      expect(statements.some((s) => s.includes(`action in AgentCore::Action::"${mcp}"`))).toBe(true);
+    }
+    const kb = toolOfType("kb");
+    if (kb) {
+      expect(
+        statements.some((s) => s.includes(`action == AgentCore::Action::"${kb}___retrieve"`))
+      ).toBe(true);
+    }
   });
 
-  it("carries the kb corpus restriction into the permit", () => {
-    const kb = cedarStatements().find((s) => s.includes("kb___retrieve"))!;
+  itIfTool("kb")("carries the kb corpus restriction into the permit", () => {
+    const name = toolOfType("kb")!;
+    const kb = cedarStatements().find((s) => s.includes(`${name}___retrieve`))!;
     expect(kb).toBeDefined();
-    for (const corpus of shipped.tools.kb.corpora) expect(kb).toContain(corpus);
+    for (const corpus of shipped.tools[name].corpora) expect(kb).toContain(corpus);
     expect(kb).toContain("context.input has filter");
   });
 
@@ -321,11 +340,12 @@ describe("the tool plane", () => {
     }
   });
 
-  it("sets the MCP target's listingMode from config", () => {
-    const docs = Object.values<any>(
+  itIfTool("mcp")("sets the MCP target's listingMode from config", () => {
+    const name = toolOfType("mcp")!;
+    const target = Object.values<any>(
       template.findResources("AWS::BedrockAgentCore::GatewayTarget")
-    ).find((t) => t.Properties.Name === "docs");
-    expect(JSON.stringify(docs)).toContain(shipped.tools.docs.listingMode);
+    ).find((t) => t.Properties.Name === name);
+    expect(JSON.stringify(target)).toContain(shipped.tools[name].listingMode ?? "DEFAULT");
   });
 });
 

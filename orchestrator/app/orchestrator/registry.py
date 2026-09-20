@@ -109,6 +109,26 @@ A2A_SOURCES = vocabulary.A2A_SOURCES
 A2A_LAMBDA_SKILLS = vocabulary.A2A_LAMBDA_SKILLS
 
 
+#: What a `tools` KEY may be, and it is narrower than either AWS constraint on its own,
+#: because the key is used to build TWO names with INCOMPATIBLE rules:
+#:
+#:   the Gateway target      `<key>`            ^([0-9a-zA-Z][-]?){1,100}$   no underscores
+#:   the Cedar policy        `permit_<key>`     ^[A-Za-z][A-Za-z0-9_]*$      no hyphens
+#:
+#: So `policy_docs` is refused by the first and `policy-docs` by the second, and the
+#: intersection is alphanumeric. Which is no real imposition — camelCase is already the
+#: house style throughout workflow.json (`maxTokens`, `agentCard`, `gateId`), so
+#: `policyDocs` is the form that matches the rest of the file anyway.
+#:
+#: BOTH of these were found by deploying a foreign workflow, one after the other, each
+#: after a clean `cdk synth`: CloudFormation refused the change set, which is the last
+#: possible place to learn it. Every tool in the shipped sample is a single alphanumeric
+#: word, so nothing had ever exercised a separator.
+#:
+#: Mirrored in cdk/lib/orchestrator-stack.ts, terraform/tools.tf and the generated schema.
+TARGET_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*$")
+
+
 def validate_tool_types() -> None:
     """Reject a `tools` entry whose `type` this app does not know how to call.
 
@@ -120,6 +140,25 @@ def validate_tool_types() -> None:
     from app.common.config import TOOLS
 
     for label, spec in (TOOLS or {}).items():
+        # The tool key becomes the Gateway TARGET name, which AWS restricts to letters,
+        # digits and hyphens. Underscores pass every local check — the JSON schema, both
+        # IaC synths — and are then refused by CloudFormation when the change set is
+        # created, which is the latest possible place to find out. Checked here too so a
+        # local run fails the same way a deploy would.
+        if not TARGET_NAME_RE.match(label):
+            suggestion = re.sub(r"[_-](\w)", lambda m: m.group(1).upper(),
+                                re.sub(r"[^A-Za-z0-9_-]", "", label)) or "myTool"
+            raise ValueError(
+                f"workflow.json tools.{label!r} — a tool's key must match "
+                f"{TARGET_NAME_RE.pattern} (letters and digits, starting with a letter). "
+                f"Try {suggestion!r}, and update the `tool` field of any agent bound to it.\n"
+                f"WHY IT IS THIS NARROW: the key is used to build two AWS names whose rules "
+                f"contradict each other — the Gateway target is `{label}` and forbids "
+                f"underscores, while the Cedar policy is `permit_{label}` and forbids "
+                f"hyphens. So neither separator survives both, and the intersection is "
+                f"alphanumeric. camelCase matches the rest of workflow.json anyway "
+                f"(`maxTokens`, `agentCard`). Note an AGENT id is different and may contain "
+                f"underscores, because it becomes part of a runtime name instead.")
         declared = str((spec or {}).get("type") or "")
         if declared.lower() not in TOOL_TYPES:
             raise ValueError(

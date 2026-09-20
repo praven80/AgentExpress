@@ -47,6 +47,22 @@ const BUILTIN_LAMBDA_SOURCE = vocab.BUILTIN_LAMBDA_SOURCE;
  * terraform/tools.tf so both IaC paths reject the same mistakes with the same
  * message — at synth, before anything is deployed.
  */
+/**
+ * What a `tools` KEY may be — narrower than either AWS constraint alone, because the key
+ * builds TWO names with INCOMPATIBLE rules:
+ *
+ *   Gateway target   `<key>`          ^([0-9a-zA-Z][-]?){1,100}$   no underscores
+ *   Cedar policy     `permit_<key>`   ^[A-Za-z][A-Za-z0-9_]*$      no hyphens
+ *
+ * Neither separator survives both, so the intersection is alphanumeric. camelCase is
+ * already the house style in workflow.json, so this costs a customer nothing.
+ *
+ * Both constraints were found by DEPLOYING a foreign workflow, one after the other, each
+ * after a clean `cdk synth` — CloudFormation refused the change set, the last possible
+ * place to find out. Every tool in the shipped sample is one alphanumeric word.
+ */
+export const TARGET_NAME_RE = /^[A-Za-z][A-Za-z0-9]*$/;
+
 export function validateTools(
   raw: Record<string, any>,
   agents: Record<string, any>,
@@ -54,6 +70,23 @@ export function validateTools(
 ): Record<string, ToolSpec> {
   const tools: Record<string, ToolSpec> = {};
   for (const [name, t] of Object.entries(raw)) {
+    // A TOOL KEY MUST BE ALPHANUMERIC. See TARGET_NAME_RE above for why it is that
+    // narrow; checked here because otherwise CloudFormation is the first thing to say so.
+    if (!TARGET_NAME_RE.test(name)) {
+      const suggestion =
+        name.replace(/[^A-Za-z0-9_-]/g, "").replace(/[_-](\w)/g, (_m, c) => c.toUpperCase()) ||
+        "myTool";
+      throw new Error(
+        `workflow.json tools.${name} — a tool's key must match ${TARGET_NAME_RE.source} ` +
+          `(letters and digits, starting with a letter). Try "${suggestion}", and update ` +
+          `the \`tool\` field of any agent bound to it.\nWHY IT IS THIS NARROW: the key ` +
+          `builds two AWS names whose rules contradict each other — the Gateway target is ` +
+          `"${name}" and forbids underscores, while the Cedar policy is "permit_${name}" ` +
+          `and forbids hyphens. camelCase matches the rest of workflow.json anyway. An ` +
+          `AGENT id is different and may contain underscores, because it becomes part of a ` +
+          `runtime name instead.`
+      );
+    }
     if (!TOOL_TYPES.includes(t?.type)) {
       throw new Error(`workflow.json tools.${name} needs "type" = ${TOOL_TYPES.join(" | ")}.`);
     }

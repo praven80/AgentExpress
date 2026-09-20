@@ -145,12 +145,21 @@ def _run_report_agent(monkeypatch, *, truncated: list[str]):
     """
     import json
 
+    from conftest import ORCH_ROOT, expected_last
+
     from app.subagents._shared import synthesis
 
-    # `app.subagents.report.agent` is the Agent INSTANCE, not the module: the package's
-    # __init__ does `from .agent import agent`, which shadows the submodule name.
-    from app.subagents.report import agent as report_agent
-    from app.subagents.report.prompts import SECTIONS
+    # ABOUT A SECTIONED REPORT, which is this sample's terminal deliverable — resolved
+    # from the topology, and skipped when the terminal agent produces something else: a
+    # letter, a decision record, a dashboard payload. `isComplete` is that agent's rule,
+    # not the framework's, and the framework's half of truncation is asserted above.
+    last = expected_last(json.loads((ORCH_ROOT / "app" / "workflow.json").read_text()))
+    try:
+        SECTIONS = __import__(f"app.subagents.{last}.prompts",
+                              fromlist=["SECTIONS"]).SECTIONS
+        report_agent = __import__(f"app.subagents.{last}", fromlist=["agent"]).agent
+    except (ModuleNotFoundError, AttributeError):
+        pytest.skip(f"terminal agent {last!r} does not build a sectioned report")
 
     payload = {
         "title": "T",

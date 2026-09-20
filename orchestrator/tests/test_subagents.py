@@ -37,7 +37,7 @@ import subprocess
 import sys
 
 import pytest
-from conftest import ORCH_ROOT
+from conftest import ORCH_ROOT, some_agent, some_tool
 
 SUBAGENTS = ORCH_ROOT / "app" / "subagents"
 SHIPPED = json.loads((ORCH_ROOT / "app" / "workflow.json").read_text())
@@ -224,7 +224,8 @@ def test_the_scaffold_writes_an_agent_that_actually_loads_and_runs():
     before = workflow_path.read_text()
     folder = SUBAGENTS / agent_id
     try:
-        result = scaffold(agent_id, "--tool", "kb")
+        kb = some_tool("kb")
+        result = scaffold(agent_id, "--tool", kb)
         assert result.returncode == 0, result.stderr
 
         # The three files, and the contract.
@@ -242,7 +243,7 @@ def test_the_scaffold_writes_an_agent_that_actually_loads_and_runs():
             assert type(built).run is not imp("app.common.base").Agent.run
             assert built.id == agent_id
             assert built.max_tokens == 4000      # from the entry it wrote, not a default
-            assert built.tool == "kb"
+            assert built.tool == kb
             assert built.system_prompt
 
         # The entry it wrote is valid config, in canonical order, with the corpus filled
@@ -250,7 +251,7 @@ def test_the_scaffold_writes_an_agent_that_actually_loads_and_runs():
         # never what someone means and is invisible when it is wrong.
         spec = doc["agents"][agent_id]
         assert list(spec) == ["name", "runtime", "produces", "maxTokens", "tool", "corpus"]
-        assert spec["corpus"] in doc["tools"]["kb"]["corpora"]
+        assert spec["corpus"] in doc["tools"][kb]["corpora"]
 
         import jsonschema
         schema = json.loads((ORCH_ROOT / "app" / "workflow.schema.json").read_text())
@@ -270,7 +271,7 @@ def test_the_scaffold_writes_an_agent_that_actually_loads_and_runs():
 def test_the_scaffold_refuses_the_mistakes_worth_refusing():
     for args, expect in (
         (("cost-research", "--dry-run"), "no hyphens"),
-        (("intake", "--dry-run"), "already in workflow.json"),
+        ((some_agent(runtime="main"), "--dry-run"), "already exists"),
         (("fine", "--tool", "nope", "--dry-run"), "not a key in the `tools` block"),
     ):
         result = scaffold(*args)
@@ -318,7 +319,7 @@ def test_the_previewed_entry_is_already_in_canonical_order():
     finally:
         sys.path.pop(0)
 
-    result = scaffold("order_probe", "--tool", "kb", "--dry-run")
+    result = scaffold("order_probe", "--tool", some_tool("kb"), "--dry-run")
     assert result.returncode == 0, result.stderr
     previewed = re.findall(r'^\s+"(\w+)":', result.stdout, re.MULTILINE)
     assert previewed, result.stdout

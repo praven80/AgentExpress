@@ -182,3 +182,83 @@ def shipped_ids() -> dict:
     """
     defn = json.loads((ORCH_ROOT / "app" / "workflow.json").read_text())
     return {"first": expected_first(defn), "last": expected_last(defn)}
+
+
+# ---------------------------------------------------------------------------
+# Tests about the SAMPLE's own agents, vs tests about the FRAMEWORK
+# ---------------------------------------------------------------------------
+#
+# The promise is that a customer edits `workflow.json` + `app/subagents/<id>/` and has
+# "no test to fix". That was measured and it was FALSE: replacing the shipped eight-agent
+# workflow with a five-agent insurance-claims pipeline produced 93 failures out of 734,
+# and every single one of them named a deleted sample agent or tool. Not one was a
+# framework defect — the framework was fine, and the suite was telling the customer their
+# config was broken.
+#
+# Two different kinds of test were tangled together:
+#
+#   FRAMEWORK tests must pass against ANY workflow. Where one needs a concrete agent to
+#   mutate or a tool to bind to, it takes it FROM the workflow under test (see
+#   `some_agent` / `some_tool` below) instead of naming one.
+#
+#   SAMPLE tests are about this sample's editorial choices — that `cost_research` reads
+#   tool ROWS rather than paraphrasing them, that `web_search` reasons inside Strands,
+#   that the report agent orders its sections. Those are worth keeping, because they are
+#   what makes the sample worth copying, and they are meaningless when the agent is gone.
+#   They SKIP, with a reason that says so.
+#
+# Skipping rather than deleting, and skipping rather than failing: a customer who keeps
+# `cost_research` still gets its tests, and one who replaces it is not handed a red suite
+# to interpret.
+
+
+def _shipped() -> dict:
+    return json.loads((ORCH_ROOT / "app" / "workflow.json").read_text())
+
+
+def needs_agent(*agent_ids: str):
+    """Skip unless every named agent is in the workflow. For a test about THAT agent."""
+    present = set(_shipped().get("agents") or {})
+    missing = [a for a in agent_ids if a not in present]
+    return pytest.mark.skipif(
+        bool(missing),
+        reason=(f"about the sample agent(s) {', '.join(missing)}, which this workflow does "
+                f"not have. The framework's own behaviour is covered elsewhere."))
+
+
+def needs_tool(*tool_names: str):
+    """Skip unless every named tool is declared. For a test about THAT tool's shape."""
+    present = set(_shipped().get("tools") or {})
+    missing = [t for t in tool_names if t not in present]
+    return pytest.mark.skipif(
+        bool(missing),
+        reason=(f"about the sample tool(s) {', '.join(missing)}, which this workflow does "
+                f"not declare."))
+
+
+def some_agent(*, runtime: str = "", with_tool: bool | None = None) -> str:
+    """ANY agent id from the shipped workflow that matches, for a FRAMEWORK test.
+
+    A framework test that needs something to mutate — "rejects maxTokens on a remote
+    agent" — needs *a* remote agent, not a particular one. Naming `analysis` made those
+    tests part of the customer-editable surface: 23 of the 93 failures above were exactly
+    this, in a file whose own docstring says it is about the framework.
+    """
+    for agent_id, spec in (_shipped().get("agents") or {}).items():
+        if runtime and str(spec.get("runtime") or "main") != runtime:
+            continue
+        if with_tool is True and not spec.get("tool"):
+            continue
+        if with_tool is False and spec.get("tool"):
+            continue
+        return agent_id
+    pytest.skip(f"this workflow has no agent with runtime={runtime or 'any'!r}, "
+                f"with_tool={with_tool}")
+
+
+def some_tool(tool_type: str = "") -> str:
+    """ANY tool name of the given type, for a FRAMEWORK test."""
+    for name, spec in (_shipped().get("tools") or {}).items():
+        if not tool_type or str(spec.get("type") or "").lower() == tool_type:
+            return name
+    pytest.skip(f"this workflow declares no tool of type {tool_type!r}")

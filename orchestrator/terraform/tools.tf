@@ -470,6 +470,19 @@ resource "terraform_data" "tools_validation" {
 
   lifecycle {
     precondition {
+      # A tool's KEY must be ALPHANUMERIC, which is narrower than either AWS rule alone
+      # because the key builds two names whose constraints contradict each other: the
+      # Gateway target `<key>` forbids underscores, and the Cedar policy `permit_<key>`
+      # forbids hyphens. Checked at plan because otherwise CloudFormation is the first
+      # thing to mention it — both halves of this were found that way, one after the
+      # other, each after a clean synth. Every tool in the shipped sample is one
+      # alphanumeric word, so nothing had exercised a separator.
+      condition = alltrue([
+        for n, t in local.tools : can(regex("^[A-Za-z][A-Za-z0-9]*$", n))
+      ])
+      error_message = "A workflow.json tools KEY must match ^[A-Za-z][A-Za-z0-9]*$ - letters and digits, starting with a letter. Offending: ${join(", ", [for n, t in local.tools : n if !can(regex("^[A-Za-z][A-Za-z0-9]*$", n))])}. WHY IT IS THIS NARROW: the key builds two AWS names whose rules contradict each other - the Gateway target is \"<key>\" and forbids underscores, while the Cedar policy is \"permit_<key>\" and forbids hyphens, so neither separator survives both. Use camelCase (\"policyDocs\"), which matches the rest of workflow.json anyway, and update the `tool` field of any agent bound to it. An AGENT id is different and may contain underscores, because it becomes part of a runtime name instead."
+    }
+    precondition {
       condition = alltrue([
         for n, t in local.tools : contains(local.vocab.toolTypes.values, t.type)
       ])

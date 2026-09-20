@@ -115,9 +115,17 @@ def test_scope_defaults_to_empty_rather_than_none():
 
 def test_the_first_agents_schema_asks_for_the_structured_scope(shipped_ids):
     """The schema and the contract must agree, or the model is guessing. The agent's
-    folder is resolved from the topology, not named."""
+    folder is resolved from the topology, not named.
+
+    ABOUT THE SAMPLE'S RequestBrief: `inScope`/`outOfScope` is this workflow's scope
+    vocabulary, not the framework's. A first agent that emits a different brief — a
+    claim, a ticket, a patient record — has no reason to carry either word, so this
+    skips rather than telling a customer their intake agent is wrong.
+    """
     schema = importlib.import_module(
         f"app.subagents.{shipped_ids['first']}.prompts").SCHEMA
+    if '"scope"' not in schema:
+        pytest.skip("this workflow's first agent does not emit a `scope` object")
     assert '"inScope"' in schema and '"outOfScope"' in schema
 
 
@@ -164,12 +172,22 @@ def terminal(shipped_ids):
 
 @pytest.fixture()
 def sections(terminal):
-    return terminal[0]._sections
+    """The terminal agent's section coercion — for a workflow whose deliverable IS a
+    sectioned report. A terminal agent that emits a letter, a decision record or a
+    dashboard payload has no sections, and the tests below are about the shape rather
+    than about the framework."""
+    fn = getattr(terminal[0], "_sections", None)
+    if fn is None:
+        pytest.skip("this workflow's terminal agent does not build a sectioned report")
+    return fn
 
 
 @pytest.fixture()
 def SECTIONS(terminal):
-    return terminal[1].SECTIONS
+    names = getattr(terminal[1], "SECTIONS", None)
+    if names is None:
+        pytest.skip("this workflow's terminal agent declares no SECTIONS vocabulary")
+    return names
 
 
 def test_expected_sections_come_back_in_canonical_order(sections, SECTIONS):
