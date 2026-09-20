@@ -1,0 +1,249 @@
+/* The graph canvas. Every colour and radius is a Cloudscape design token
+   (awsui-* custom properties), so this bespoke markup inherits the theme — including
+   dark mode and visual refreshes — instead of hardcoding a palette beside it. */
+
+.sfn-canvas {
+  position: relative;
+  border: 1px solid var(--awsui-color-border-divider-default, #e9ebed);
+  border-radius: var(--awsui-border-radius-item, 8px);
+  background-color: var(--awsui-color-background-layout-main, #f2f3f3);
+  /* The dot grid is what makes this read as a workflow canvas rather than a list. */
+  background-image: radial-gradient(
+    var(--awsui-color-border-divider-default, #d5dbdb) 1px, transparent 1px);
+  background-size: 16px 16px;
+  padding: 20px 0 28px;
+  overflow: auto;
+  max-height: 72vh;
+}
+
+.sfn-toolbar {
+  position: sticky;
+  top: 0;
+  float: right;
+  right: 12px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: 12px;
+  padding: 2px 4px;
+  background: var(--awsui-color-background-container-content, #fff);
+  border: 1px solid var(--awsui-color-border-input-default, #c6c6cd);
+  border-radius: var(--awsui-border-radius-input, 8px);
+  box-shadow: 0 1px 4px 1px rgba(0, 7, 22, 0.1);
+}
+.sfn-zoom-label {
+  min-width: 44px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--awsui-color-text-status-inactive, #656871);
+  font-variant-numeric: tabular-nums;
+}
+
+.sfn-flow {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  transform-origin: top center;
+  transition: transform 0.12s ease;
+  min-width: max-content;
+  padding: 0 24px;
+}
+.sfn-stage-wrap { display: flex; flex-direction: column; align-items: center; }
+
+/* --- the connector between stages --------------------------------------- */
+.sfn-connector {
+  width: 2px;
+  height: 30px;
+  background: var(--awsui-color-border-control-default, #8c8c94);
+  position: relative;
+}
+.sfn-connector::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -1px;
+  transform: translateX(-50%);
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 7px solid var(--awsui-color-border-control-default, #8c8c94);
+}
+
+/* --- a stage ------------------------------------------------------------ */
+.sfn-stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 0 52px;
+}
+.sfn-stage-num {
+  position: absolute;
+  left: 4px;
+  top: 6px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--awsui-color-background-container-content, #fff);
+  border: 1px solid var(--awsui-color-border-input-default, #c6c6cd);
+  color: var(--awsui-color-text-body-secondary, #424650);
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Annotations sit in normal flow above the stage, right-aligned. Absolute
+   positioning put them outside the container and the split panel clipped them. */
+.sfn-annotations {
+  align-self: stretch;
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  min-height: 20px;
+}
+.sfn-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 700;
+  padding: 2px 10px;
+  border-radius: 16px;
+  cursor: help;
+  white-space: nowrap;
+}
+.sfn-pill-gate {
+  background: #fbf4e6;
+  color: var(--awsui-color-text-status-warning, #8d6605);
+  border: 1px solid #f0d99a;
+}
+.sfn-pill-branch {
+  background: #f2f8fd;
+  color: var(--awsui-color-text-status-info, #0972d3);
+  border: 1px solid #b8d9f5;
+}
+
+/* --- a Parallel / Sequence frame --------------------------------------- */
+.sfn-frame {
+  position: relative;
+  border: 1px dashed var(--awsui-color-border-input-default, #c6c6cd);
+  border-radius: var(--awsui-border-radius-container, 16px);
+  background: var(--awsui-color-background-container-content, #fff);
+  padding: 26px 20px 20px;
+}
+.sfn-frame-label {
+  position: absolute;
+  top: -11px;
+  left: 16px;
+  background: var(--awsui-color-background-container-content, #fff);
+  border: 1px solid var(--awsui-color-border-input-default, #c6c6cd);
+  border-radius: 16px;
+  padding: 1px 10px;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 700;
+  color: var(--awsui-color-text-body-secondary, #424650);
+  white-space: nowrap;
+}
+.sfn-frame-grid { display: grid; gap: 16px; justify-content: center; }
+.sfn-frame-row { display: flex; align-items: stretch; }
+.sfn-seq-item { display: flex; align-items: center; }
+.sfn-seq-arrow {
+  width: 32px;
+  height: 2px;
+  background: var(--awsui-color-border-control-default, #8c8c94);
+  position: relative;
+  flex: 0 0 auto;
+}
+.sfn-seq-arrow::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: -1px;
+  transform: translateY(-50%);
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 7px solid var(--awsui-color-border-control-default, #8c8c94);
+}
+
+/* --- a state box ------------------------------------------------------- */
+.sfn-state {
+  width: 240px;
+  background: var(--awsui-color-background-container-content, #fff);
+  border: 2px solid var(--awsui-color-border-control-default, #8c8c94);
+  border-radius: var(--awsui-border-radius-item, 8px);
+  padding: 12px 14px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
+}
+.sfn-state:hover { box-shadow: 0 4px 20px 1px rgba(0, 7, 22, 0.1); }
+.sfn-state:focus-visible {
+  outline: 2px solid var(--awsui-color-text-link-default, #0972d3);
+  outline-offset: 2px;
+}
+
+/* Status on the left edge, as Step Functions colours a state. */
+.sfn-done          { border-left: 6px solid var(--awsui-color-text-status-success, #00802f); }
+.sfn-running       { border-left: 6px solid var(--awsui-color-text-status-info, #0972d3); }
+.sfn-waiting_human { border-left: 6px solid var(--awsui-color-text-status-warning, #8d6605); }
+.sfn-failed,
+.sfn-denied        { border-left: 6px solid var(--awsui-color-text-status-error, #db0000); }
+.sfn-cancelled,
+.sfn-cancelling    { border-left: 6px solid var(--awsui-color-text-status-inactive, #656871); }
+.sfn-skipped       { border-left: 6px solid var(--awsui-color-text-status-inactive, #656871); opacity: 0.6; }
+.sfn-pending       { border-color: var(--awsui-color-border-divider-default, #e9ebed); }
+
+.sfn-selected {
+  border-color: var(--awsui-color-text-link-default, #0972d3);
+  box-shadow: 0 0 0 3px rgba(9, 114, 211, 0.2);
+  background: #f0fbff;
+}
+/* With one state focused the others recede, so the selection is unmistakable. */
+.sfn-has-selection .sfn-state:not(.sfn-selected) { opacity: 0.55; }
+
+.sfn-state-head { display: flex; align-items: center; gap: 10px; }
+.sfn-mono {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 4px;
+  background: #e9f3fd;
+  border: 1px solid #c6dbf0;
+  color: var(--awsui-color-text-link-default, #0972d3);
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.sfn-state-name {
+  font-weight: 700;
+  font-size: 14px;
+  line-height: 18px;
+  color: var(--awsui-color-text-heading-default, #0f141a);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.sfn-state-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.sfn-state-status { margin-top: 2px; }
+
+.sfn-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--awsui-color-border-divider-default, #e9ebed);
+  overflow: hidden;
+}
+.sfn-bar > i {
+  display: block;
+  height: 100%;
+  background: var(--awsui-color-text-status-info, #0972d3);
+  transition: width 0.4s ease;
+}

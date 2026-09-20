@@ -1816,9 +1816,71 @@ export class OrchestratorStack extends cdk.Stack {
       distribution,
       distributionPaths: ["/*"],
       sources: [
-        s3deploy.Source.asset(path.join(ORCH_ROOT, "web"), { exclude: ["*.tftpl"] }),
+        // web/ is a Vite + React + Cloudscape app, so what ships is the BUILD OUTPUT.
+        // `bundling` runs the build inside the asset staging step, which means the same
+        // npm script CI runs produces the bundle here — a stale dist/ cannot be deployed
+        // by accident, and `tsc --noEmit` inside `npm run build` fails the synth rather
+        // than shipping a broken page.
+        s3deploy.Source.asset(path.join(ORCH_ROOT, "web"), {
+          // Only the sources: node_modules and a previous dist/ must not become part of
+          // the asset hash, or every local build would invalidate the deployment.
+          exclude: ["node_modules", "dist", "*.tftpl", ".vite"],
+          bundling: {
+            // A Node image, because the build is npm. The version tracks the one the
+            // package.json engines field expects.
+            image: cdk.DockerImage.fromRegistry("public.ecr.aws/docker/library/node:22-alpine"),
+            command: [
+              "sh", "-c",
+              [
+                "cd /asset-input",
+                // A writable HOME for npm's cache inside the container.
+                "export HOME=/tmp npm_config_cache=/tmp/.npm",
+                "if [ -f package-lock.json ]; then npm ci --no-fund --no-audit; " +
+                  "else npm install --no-fund --no-audit; fi",
+                "npm run build",
+                // The Observability tab is still the legacy island; it is copied in
+                // beside the bundle rather than imported, so it is served as its own
+                // file exactly as before.
+                "cp legacy/observability.js dist/observability.js",
+                "cp -r dist/. /asset-output/",
+              ].join(" && "),
+            ],
+            // Falls back to a local build when no container engine is available, which
+            // keeps `cdk synth` working on a machine without Docker/Finch.
+            local: {
+              tryBundle(outputDir: string): boolean {
+                const { spawnSync } = require("node:child_process") as typeof import("node:child_process");
+                const web = path.join(ORCH_ROOT, "web");
+                const run = (cmd: string, args: string[]) =>
+                  spawnSync(cmd, args, { cwd: web, stdio: "inherit", shell: false });
+                if (spawnSync("npm", ["--version"], { stdio: "ignore" }).status !== 0) return false;
+                const install = fs.existsSync(path.join(web, "package-lock.json"))
+                  ? ["ci", "--no-fund", "--no-audit"]
+                  : ["install", "--no-fund", "--no-audit"];
+                if (run("npm", install).status !== 0) return false;
+                if (run("npm", ["run", "build"]).status !== 0) return false;
+                fs.cpSync(path.join(web, "dist"), outputDir, { recursive: true });
+                fs.copyFileSync(
+                  path.join(web, "legacy", "observability.js"),
+                  path.join(outputDir, "observability.js"));
+                return true;
+              },
+            },
+          },
+        }),
         s3deploy.Source.data("auth-config.js", authConfigJs),
       ],
+      // ONE deployment, everything `no-cache`, and that is a deliberate simplification.
+      // The tempting version is two deployments — hashed assets cached `immutable`,
+      // index.html revalidating — but they would fight over `prune`: the pruning one
+      // deletes whatever the other just uploaded, and CDK does not order them unless you
+      // say so. A revalidation request per asset returning 304 is a small price for
+      // removing that class of bug from a reference sample, and CloudFront still caches
+      // at the edge under its own TTL. Terraform's ui.tf does split the two, because
+      // there each object is declared individually and the ordering question does not
+      // arise.
+      cacheControl: [s3deploy.CacheControl.fromString("no-cache")],
+      prune: true,
     });
 
     // ---- CloudWatch Transaction Search --------------------------------------

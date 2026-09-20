@@ -18,10 +18,34 @@
   "use strict";
 
   // ---- small helpers (reuse index.html globals when present) ----------------
-  const $ = (id) => document.getElementById(id);
+  /* The element the React shell mounts us into. Set by mount(); every lookup is
+     scoped to it so this module cannot reach into Cloudscape's DOM. Falls back to the
+     document for the modal, which is appended to <body> on purpose. */
+  let host = null;
+  /* NOT CSS.escape(): this module already declares `const CSS` for its stylesheet, so
+     that name resolves to a string here and `.escape` is undefined. Every id below is a
+     plain identifier anyway, so no escaping is needed. */
+  const $ = (id) =>
+    (host ? host.querySelector("#" + id) : null) || document.getElementById(id);
   const esc = window.esc || ((s) => String(s == null ? "" : s).replace(/[&<>"']/g,
     (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m])));
-  const api = (p, o) => window.api(p, o);
+  let authToken = null;
+  /* Same shape as the old window.api: resolves the JSON body or throws with the BFF's
+     own message, which is what names the group a 403 wanted. */
+  const api = async (p, o) => {
+    const opts = o || {};
+    const headers = Object.assign({}, opts.headers || {});
+    if (authToken) headers["Authorization"] = "Bearer " + authToken;
+    if (opts.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
+    const res = await fetch(p, Object.assign({}, opts, { headers }));
+    if (!res.ok) {
+      let detail = res.statusText;
+      try { const b = await res.json(); detail = b.error || b.message || detail; } catch (e) { /* non-JSON */ }
+      throw new Error(detail);
+    }
+    if (res.status === 204) return undefined;
+    return res.json();
+  };
   // RBAC (workflow.json -> authorization), enforced server-side in bff/authz.py.
   // These only stop the panel offering a control that would 403. Both fall back to
   // "allowed" when index.html hasn't defined them, so this file still works alone.
@@ -516,10 +540,30 @@
 
   // ---- chart lifecycle -------------------------------------------------------
   const charts = {};
+  /* Chart.js used to come from a <script> tag in the old index.html. The island loads it
+     on demand, once, and degrades to the tables if the CDN is unreachable — they carry
+     the same numbers, so a missing chart must never block the view. */
+  const CHART_CDN = "https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js";
+  let chartLoading = null;
+  function ensureChart() {
+    if (window.Chart) return Promise.resolve();
+    if (!chartLoading) {
+      chartLoading = new Promise((resolve) => {
+        const el = document.createElement("script");
+        el.src = CHART_CDN;
+        el.onload = () => resolve();
+        el.onerror = () => resolve();
+        document.head.appendChild(el);
+      });
+    }
+    return chartLoading;
+  }
   function draw(id, config) {
-    if (!window.Chart) return;
+    const canvas = $(id);
+    if (!canvas) return;
+    if (!window.Chart) { void ensureChart().then(() => draw(id, config)); return; }
     if (charts[id]) charts[id].destroy();
-    charts[id] = new window.Chart($(id), config);
+    charts[id] = new window.Chart(canvas, config);
   }
   const PALETTE = ["#2563eb", "#7c3aed", "#059669", "#d97706", "#dc2626", "#0891b2",
                    "#db2777", "#65a30d", "#4f46e5", "#ea580c", "#0d9488", "#9333ea", "#e11d48"];
@@ -531,7 +575,8 @@
     if (built) return; built = true;
     const todayStr = etDateStr();                       // ET "today"
     const fromStr = shiftDays(todayStr, -29);           // 30-day default window
-    $("obsView").innerHTML = `
+    host.innerHTML = `
+     <div class="obs-view" id="obsView">
      <div class="obs-inner">
       <div class="obs-hero">
         <div class="obs-hero-ic">📊</div>
@@ -635,22 +680,31 @@
         </div>
         <div class="obs-card"><div id="obsInsightsBody"><div class="obs-note" style="margin:0">Loading…</div></div></div>
       </section>
+     </div>
      </div>`;
     wireCombo();
   }
 
   // ---- view toggle -----------------------------------------------------------
+  /* Kept because the module's own inline handlers reference them, but they no longer
+     show or hide anything: which VIEW is on screen is the React shell's decision, and a
+     module reaching for document.querySelector("main") to hide it is exactly what an
+     island must not do. showObs now only (re)builds and selects the inner tab. */
   function showObs() {
     build();
-    document.querySelector("main").style.display = "none";
-    $("obsView").style.display = "flex";
-    $("navObs").classList.add("active"); $("navCampaigns").classList.remove("active");
     goto(tab);
   }
-  function showCampaigns() {
-    $("obsView").style.display = "none";
-    document.querySelector("main").style.display = "";
-    $("navCampaigns").classList.add("active"); $("navObs").classList.remove("active");
+  function showCampaigns() { /* the shell navigates; nothing to do here */ }
+
+  /* The island's entry point. Called by src/views/Observability.tsx with the element to
+     render into and the IdP token to call the API with. Idempotent: mounting twice
+     re-renders into the new host rather than duplicating anything. */
+  function mount(el, token) {
+    host = el;
+    authToken = token || null;
+    built = false;
+    build();
+    goto(tab);
   }
   function goto(t) {
     tab = t;
@@ -1677,7 +1731,10 @@
     }
   }
 
-  // ---- expose the handlers the inline HTML calls -----------------------------
+  // ---- the island's contract with the React shell ---------------------------
+  window.ObservabilityIsland = { mount: mount };
+
+  // ---- the handlers this module's own inline HTML calls ---------------------
   window.showObsView = showObs;
   window.showCampaignsView = showCampaigns;
   window.obsGoto = goto;

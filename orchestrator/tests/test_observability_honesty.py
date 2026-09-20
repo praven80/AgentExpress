@@ -127,7 +127,7 @@ def test_the_telemetry_row_carries_the_flag():
 def test_the_ui_marks_an_estimated_rate_and_exports_the_flag():
     from conftest import ORCH_ROOT
 
-    js = (ORCH_ROOT / "web" / "observability.js").read_text()
+    js = (ORCH_ROOT / "web" / "legacy" / "observability.js").read_text()
     assert "c.rates_known === false" in js, "the rate column does not mark an estimate"
     assert '"rates_known"' in js, "the CSV/JSON export drops the flag"
     assert "orchestrator.modelRates" in js, "the tooltip does not say how to fix it"

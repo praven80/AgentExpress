@@ -1,12 +1,7 @@
-# --- Observability UI asset (served from the UI bucket) --------------------
-resource "aws_s3_object" "observability_js" {
-  bucket        = aws_s3_bucket.ui.id
-  key           = "observability.js"
-  source        = "${path.module}/../web/observability.js"
-  content_type  = "application/javascript"
-  cache_control = "no-cache"
-  etag          = filemd5("${path.module}/../web/observability.js")
-}
+# The Observability UI asset is no longer uploaded here. `web/legacy/observability.js` is
+# copied into the UI's build output by the build step in ui.tf, and uploaded with every
+# other file by `aws_s3_object.ui_asset` — so there is one uploader rather than two, and
+# one place that knows what the bundle contains.
 
 # --- Observability: telemetry store + access -------------------------------
 # One row per model / tool / memory / guardrail / policy / eval / compute event

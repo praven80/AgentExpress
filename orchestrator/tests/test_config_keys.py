@@ -183,11 +183,15 @@ def test_ui_strings_shipped_to_the_browser_are_actually_read_there():
     import re
     import sys
 
-    index = (ORCH_ROOT / "web" / "index.html").read_text()
+    # The UI is a Cloudscape React app, so a `ui` key is read somewhere under web/src/
+    # rather than in one page. Searching the whole source tree is the honest check: the
+    # question is "does anything read this", not "does one particular file read it".
+    src = "\n".join(
+        p.read_text() for p in sorted((ORCH_ROOT / "web" / "src").rglob("*.ts*")))
     for key in UI_KEYS:
         # Any accessor: ui.<key>, uiCfg.<key>, cfg.<key>, ui["<key>"].
-        assert re.search(rf"[.\[]\s*\"?{re.escape(key)}\b", index), (
-            f"ui.{key} is declared in UI_KEYS but index.html never reads it")
+        assert re.search(rf"[.\[]\s*\"?{re.escape(key)}\b", src), (
+            f"ui.{key} is declared in UI_KEYS but nothing under web/src/ reads it")
 
     sys.modules.pop("workflow", None)
     from workflow import project

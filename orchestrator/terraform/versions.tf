@@ -44,6 +44,14 @@ terraform {
       source  = "hashicorp/time"
       version = ">= 0.11"
     }
+    # Reads the list of files the UI build produced (ui.tf). A data source is used
+    # rather than `fileset()` because fileset is evaluated at PLAN time, before the
+    # build has run — so on a first apply the directory does not exist yet. With
+    # `depends_on` this defers to apply time, which is when the answer exists.
+    external = {
+      source  = "hashicorp/external"
+      version = ">= 2.3"
+    }
   }
 }
 

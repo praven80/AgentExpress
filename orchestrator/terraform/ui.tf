@@ -14,13 +14,95 @@ resource "aws_s3_bucket_public_access_block" "ui" {
   restrict_public_buckets = true
 }
 
-resource "aws_s3_object" "index" {
-  bucket        = aws_s3_bucket.ui.id
-  key           = "index.html"
-  source        = "${path.module}/../web/index.html"
-  content_type  = "text/html"
-  cache_control = "no-cache" # HTML must revalidate so UI updates land immediately
-  etag          = filemd5("${path.module}/../web/index.html")
+# --- build the UI ----------------------------------------------------------
+# web/ is a Vite + React + Cloudscape app, so there is a build step now. It runs here
+# rather than being a thing you have to remember: `terraform apply` produces the same
+# bundle as CI, and a stale dist/ cannot be uploaded by accident.
+#
+# The trigger is a hash of the SOURCE, not a timestamp, so an apply that changes nothing
+# in web/ does not rebuild — and one that changes a single component does.
+locals {
+  ui_src_files = [
+    for f in fileset("${path.module}/../web", "{src,legacy}/**") : f
+  ]
+  ui_src_hash = sha1(join("", concat(
+    [
+      filesha1("${path.module}/../web/package.json"),
+      filesha1("${path.module}/../web/vite.config.ts"),
+      filesha1("${path.module}/../web/tsconfig.json"),
+      filesha1("${path.module}/../web/index.html"),
+    ],
+    [for f in sort(local.ui_src_files) : filesha1("${path.module}/../web/${f}")]
+  )))
+  ui_dist = "${path.module}/../web/dist"
+}
+
+resource "null_resource" "ui_build" {
+  triggers = { src = local.ui_src_hash }
+
+  provisioner "local-exec" {
+    working_dir = "${path.module}/../web"
+    # `npm ci` when the lockfile is present, so a deploy installs exactly what was
+    # tested. The build runs `tsc --noEmit` first, so a type error fails the apply
+    # instead of shipping a broken bundle.
+    command     = <<-EOT
+      set -e
+      if [ -f package-lock.json ]; then npm ci --no-fund --no-audit; else npm install --no-fund --no-audit; fi
+      npm run build
+      cp legacy/observability.js dist/observability.js
+    EOT
+    interpreter = ["/bin/bash", "-c"]
+  }
+}
+
+# --- upload the built bundle -----------------------------------------------
+# Every file Vite emitted. `for_each` over a fileset computed AFTER the build, so the
+# hashed asset names are picked up without being listed anywhere.
+data "external" "ui_dist" {
+  depends_on = [null_resource.ui_build]
+  program = ["/bin/bash", "-c", <<-EOT
+    cd "${local.ui_dist}" 2>/dev/null || { echo '{}'; exit 0; }
+    # name -> md5, as a flat JSON object (the only shape `external` accepts).
+    printf '{'
+    first=1
+    while IFS= read -r f; do
+      f="$${f#./}"
+      [ $first -eq 0 ] && printf ','
+      first=0
+      printf '"%s":"%s"' "$f" "$(md5 -q "$f" 2>/dev/null || md5sum "$f" | cut -d' ' -f1)"
+    done < <(find . -type f | sort)
+    printf '}'
+  EOT
+  ]
+}
+
+resource "aws_s3_object" "ui_asset" {
+  for_each = data.external.ui_dist.result
+
+  bucket = aws_s3_bucket.ui.id
+  key    = each.key
+  source = "${local.ui_dist}/${each.key}"
+  etag   = each.value
+
+  content_type = lookup({
+    "html"  = "text/html",
+    "js"    = "application/javascript",
+    "css"   = "text/css",
+    "map"   = "application/json",
+    "json"  = "application/json",
+    "svg"   = "image/svg+xml",
+    "png"   = "image/png",
+    "ico"   = "image/x-icon",
+    "woff"  = "font/woff",
+    "woff2" = "font/woff2",
+  }, element(reverse(split(".", each.key)), 0), "application/octet-stream")
+
+  # index.html must revalidate so a deploy lands immediately. Everything else carries a
+  # content hash in its NAME, so it can be cached hard — which is the whole point of
+  # hashed asset names, and what stops a stale bundle being served against fresh HTML.
+  cache_control = each.key == "index.html" ? "no-cache" : (
+    each.key == "observability.js" ? "no-cache" : "public, max-age=31536000, immutable"
+  )
 }
 
 # Non-secret Cognito settings injected into the SPA at deploy time. Rendered from
