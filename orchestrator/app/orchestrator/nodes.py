@@ -9,7 +9,7 @@ store) uniformly for every agent.
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 
-from app.common import branching, clock
+from app.common import branching, clock, grounding
 from app.common.base import Agent
 from app.common.config import AGENTS
 from app.common.context import AgentContext
@@ -52,6 +52,37 @@ def _guardrail_input(ctx: AgentContext) -> str:
     if ctx.feedback:
         parts.append(ctx.feedback)
     return "\n\n".join(p for p in parts if p)
+
+
+async def _check_grounding(ctx: AgentContext, agent: Agent, state: dict, out: str) -> None:
+    """Warn on the timeline when this asset carries a figure nothing upstream supports.
+
+    Placed HERE, in the node wrapper, for the same reason the guardrails and the memory
+    lifecycle are: it then applies to every placement. The agents that invented figures
+    in practice are `runtime: "a2a"` ones whose model call happens in another account
+    entirely, so a check living in the synthesis runner would have missed exactly the
+    case it was written for.
+
+    AN AGENT WITH A TOOL IS EXEMPT, and that is the whole test — a tool is a live
+    evidence source, so introducing a figure no upstream asset knows is its JOB. The
+    real AWS rate `cost_research` returns and the real EOL date `lifecycle_research`
+    returns are both new to the run by design. An agent with no tool has no such
+    source: its inputs are the other assets and the request, so a figure in neither
+    came from the model. No new config key expresses this because `tool` already does.
+    """
+    if agent.tool:
+        return
+    upstream = [*(state.get("outputs") or {}).values(), ctx.topic or ""]
+    unsupported = grounding.ungrounded(out, upstream)
+    if not unsupported:
+        return
+    shown = ", ".join(f'"{p}"' for p in unsupported[:6])
+    more = f" (+{len(unsupported) - 6} more)" if len(unsupported) > 6 else ""
+    await emit(ctx.session_id, {
+        "type": "log", "node": agent.id,
+        "log": (f"Ungrounded figures in {agent.name}: {shown}{more}. No upstream asset "
+                f"or the request carries these numbers, so treat them as the model's "
+                f"own until confirmed.")})
 
 
 def make_agent_node(agent: Agent):
@@ -172,6 +203,7 @@ def make_agent_node(agent: Agent):
         await emit(ctx.session_id, {"type": "node_status", "node": agent.id,
                                     "status": "done", "output": out, "history": history,
                                     "log": f"{agent.name} complete (v{version})"})
+        await _check_grounding(ctx, agent, state, out)
         return {"status": {agent.id: "done"}, "outputs": {agent.id: out},
                 "history": {agent.id: history}}
 

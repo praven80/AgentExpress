@@ -239,6 +239,24 @@ different boundaries, both config-driven.
   the shipped stand-in's replies against them. That is the one place the check can
   live, because the framework cannot validate a remote reply against a contract class
   for code it does not own.
+- **Figures are checked against the assets they came from, not just asked for.**
+  Every synthesis prompt carries the rule "no figure that is not in an upstream asset,
+  not even as an illustration", and for three releases that rule was only ever stated.
+  A measured run showed the cost: the analysis asset wrote in its own `limitations`
+  that the evidence "does not supply numerical thresholds" for Lambda cold starts, and
+  the recommendation built from it then advised measuring against "typically
+  100–1000 ms". The same workflow on a second deployment invented nothing, which is the
+  tell — a prompt edit would not have fixed it. `app/common/grounding.py` now extracts
+  the unit-bearing figures from each asset and warns on the session timeline about any
+  whose value appears in no upstream asset and not in the request, which puts it in
+  front of the reviewer at the next HITL gate. It runs in the **node wrapper**, so it
+  covers `runtime: "a2a"` agents whose model call happens in another account — the
+  placement the defect was actually found in. **An agent with a `tool` is exempt**, and
+  that is the whole test: a tool is a live evidence source, so a real AWS rate or EOL
+  date that no upstream asset knows is its job. No new config key expresses this
+  because `tool` already does, and it warns rather than failing — the matcher is a
+  strong signal, not a proof, and ending a five-minute run on one would trade a
+  reviewable warning for a lost run.
 - **The agentic framework inside an agent is per-agent and is the author's choice.**
   `run()` is a plain `async def`, so an agent may drive Strands, CrewAI, LlamaIndex,
   a graph of its own, or nothing. `research.synthesize` exposes this as a `think`
@@ -583,12 +601,12 @@ runtime, a policy engine) is provisioned from this one source of truth.
 Two suites, one per language, both fast enough for a pre-commit hook and needing
 neither AWS credentials nor a container builder:
 
-- **`orchestrator/tests/`** (pytest, 757 tests, a few seconds) — the runtime side:
+- **`orchestrator/tests/`** (pytest, 827 tests, a few seconds) — the runtime side:
   topology derivation, graph compilation across 14 step shapes, branch rules and
   routing, rewind planning, tool argument shapes, Gateway tool-name resolution,
-  citation verification, contract coercion, and the RBAC rules plus their wiring on
-  every mutating route.
-- **`orchestrator/cdk/test/`** (jest, 138 tests) — the IaC side: the projections
+  citation verification, figure grounding, contract coercion, and the RBAC rules plus
+  their wiring on every mutating route.
+- **`orchestrator/cdk/test/`** (jest, 168 tests) — the IaC side: the projections
   and validators, the synthesized template (Cognito groups, route set + authorizer,
   BFF environment, Gateway targets, Cedar policies), and **Terraform ↔ CDK parity**.
 

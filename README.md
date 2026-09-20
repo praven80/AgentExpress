@@ -70,7 +70,7 @@ for your use case.
 > different 4-agent workflow in another domain — renamed agents, a different topology,
 > its own tool, guardrail and branding — and separately renaming a shipped agent by
 > touching only `workflow.json` and its own folder. Both compile the graph and pass
-> the full suite (757 Python + 138 TypeScript), `terraform validate` and `cdk synth`
+> the full suite (827 Python + 168 TypeScript), `terraform validate` and `cdk synth`
 > with no other change.
 >
 > **Two couplings remain**, neither of which blocks a typical use case: the five tool

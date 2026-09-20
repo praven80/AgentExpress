@@ -43,8 +43,14 @@ that makes the total wrong.
 
 So this agent publishes the RATES and names the volumes a total would need. If a
 later agent then states a total, it must have got the volumes from somewhere real —
-and if it invented them, `unsupported-figure` catches it, because the figure will
-not appear in any upstream asset. The pipeline's existing guardrail does the rest.
+and if it invented them, `app/common/grounding.py` flags it on the timeline, because
+the figure appears in no upstream asset.
+
+This paragraph used to claim `unsupported-figure` caught that. It never could:
+`EvidenceClass` is sourced-fact | calculation | assumption | agent-interpretation, so
+the value could not occur and nothing was checking figures at all. A comment
+describing a guardrail that does not exist is worse than no comment, because it stops
+anyone looking for the real one.
 """
 from __future__ import annotations
 
