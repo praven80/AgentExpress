@@ -45,13 +45,26 @@ for your use case.
 > **And `workflow.json` explains itself as you type.** It carries
 > `"$schema": "./workflow.schema.json"`, so your editor completes only the keys legal
 > for the `runtime` or tool `type` you chose, enumerates the allowed values for each,
-> flags a missing required key, and shows on hover what a key does *and* which code
-> reads it. Every agent, tool and step is written in the same key order — an agent goes
+> flags a missing required key, and shows on hover what a key does, which code
+> reads it, **and what it defaults to if you leave it out** — per variant where that
+> differs, so `maxResults` shows 5 on a `kb` tool and 10 on a `websearch` one. Every
+> agent, tool and step is written in the same key order — an agent goes
 > identity → how it reasons → what it may read → features — and `python3
 > format_workflow.py` enforces that rather than your discipline. The schema is
 > generated from `app/keys.json` + `app/vocabulary.json`, so it cannot drift from what
 > the three planes actually enforce; a test asserts it rejects all 29 mistakes they
 > reject.
+>
+> **One home per fact, and it is enforced rather than intended.** `app/keys.json` holds
+> which keys exist and what each defaults to, `app/vocabulary.json` holds the allowed
+> values, and every plane reads those files instead of carrying a copy. A test fails if
+> any Python, HCL or TypeScript fallback hardcodes a default the spec already declares.
+> That matters because a drifted default is silent in a way a drifted value is not: an
+> illegal value is rejected at plan or synth with a message, while a default that differs
+> between the Terraform and CDK paths deploys cleanly on both and simply behaves
+> differently. It had already happened — `runtime: "main"` was written out fifteen times
+> across the three planes, and `maxResults` carried two different defaults inside one
+> Terraform file, where only one of them reached the Knowledge Base Lambda.
 >
 > Verified rather than asserted. Two checks are run against this repo: swapping in a
 > different 4-agent workflow in another domain — renamed agents, a different topology,
@@ -507,10 +520,16 @@ orchestrator/
 ├── bff/chatbot.py              # in-app assistant: Bedrock Converse tool-use loop (config-driven tools,
 │                               #   action tools withheld from callers authz denies)
 ├── kb_lambda/handler.py        # Gateway Lambda target: Bedrock KB retrieve
+├── app/defaults.json           # GENERATED from keys.json: every key's DEFAULT, and the one of
+│                               #   these three that SHIPS — keys.json is 40 KB of prose kept out
+│                               #   of the image, so the values cross the boundary on their own.
+│                               #   Read by app/common/defaults.py, cdk/lib/defaults.ts and
+│                               #   local.key_defaults; no plane may restate a default as a literal
 ├── app/keys.json               # FRAMEWORK-OWNED: which keys workflow.json may contain, where each
 │                               #   is legal, and what reads it. Its key order IS the canonical order
 ├── app/vocabulary.json         # FRAMEWORK-OWNED: the closed VALUE sets, read by all three planes
-├── app/workflow.schema.json    # GENERATED from those two — what your editor validates against
+├── app/workflow.schema.json    # GENERATED from those two — what your editor validates against,
+│                               #   carrying each key DOC, allowed VALUES and DEFAULT for hover
 ├── format_workflow.py          # canonical key order + readable formatting (--check for CI)
 ├── build_schema.py             # regenerate workflow.schema.json (--check for CI)
 ├── scaffold.py                 # `scaffold.py agent <id>` — writes the workflow.json entry AND

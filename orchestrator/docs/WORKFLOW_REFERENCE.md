@@ -53,6 +53,28 @@ not before.
 For scale: the shipped nine-agent sample uses **6 keys per agent** on average and 11
 distinct agent keys in total. The full tables below are a reference, not a checklist.
 
+**You do not have to read this file to find a default.** Every optional key's default is
+declared once in `app/keys.json`, and because `default` is a real JSON Schema keyword the
+generated schema carries it — so your editor shows the value on hover and offers it in
+completion. Where one key legitimately defaults differently per variant it says so per
+variant: `maxResults` shows **5** on a `type: "kb"` tool (retrieval depth) and **10** on a
+`type: "websearch"` one (page size).
+
+That single home is enforced, not just intended. No plane may restate a declared default
+as a literal — `tests/test_config_keys.py` fails on any fallback in Python, HCL or
+TypeScript whose right-hand side is a hardcoded value instead of the accessor
+(`app/common/defaults.py`, `cdk/lib/defaults.ts`, `local.key_defaults`). The values reach
+the running code through `app/defaults.json`, which `python3 build_schema.py` projects out
+of `keys.json`; `keys.json` itself is 40 KB of prose and deliberately does not ship in the
+container image.
+
+The reason for the rule is that a drifted default is quieter than a drifted value. A value
+this framework does not allow is rejected at plan or synth with a message naming it. A
+default that differs between the Terraform and CDK paths deploys cleanly on both and
+behaves differently — which is indistinguishable from the feature working. That had already
+happened inside a single file: `maxResults` carried both `10` and `5` in
+`terraform/tools.tf`, and only one of them reached the Knowledge Base Lambda.
+
 ## Two commands
 
 ```bash
