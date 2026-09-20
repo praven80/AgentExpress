@@ -428,7 +428,19 @@ control that didn't exist.
 ## `tools.<name>`
 
 The key is **both** the Gateway target name **and** the label an agent binds to via
-`tool`, so the two can never drift. Five types:
+`tool`, so the two can never drift.
+
+> **The key must be letters and digits, starting with a letter** — `policyDocs`, not
+> `policy_docs` and not `policy-docs`. Narrower than an agent id, which *may* contain
+> underscores, and the reason is worth knowing because the rule looks arbitrary
+> otherwise: the key builds two AWS names whose constraints contradict each other. The
+> Gateway target is `<key>` and forbids underscores; the Cedar policy is `permit_<key>`
+> and forbids hyphens. Neither separator survives both. camelCase matches the rest of
+> this file anyway (`maxTokens`, `agentCard`, `gateId`). All four planes reject a bad key
+> up front — that was worth adding, because both halves of this were originally found by
+> CloudFormation refusing a change set *after* a clean `cdk synth`.
+
+Five types:
 
 | `type` | Backend | Required keys |
 |---|---|---|

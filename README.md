@@ -31,6 +31,14 @@ for your use case.
 > `workflow.json` fails at `terraform plan` / `cdk synth` with a message naming the
 > offending entry, rather than at deploy or at run time.
 >
+> That "no test to fix" line was measured rather than assumed, and the first time it was
+> measured it was **false** — swapping the sample for a five-agent insurance-claims
+> pipeline produced 93 failures out of 734, every one of them naming a deleted sample
+> agent and not one a real defect. The suite is split now: tests about the framework take
+> whatever agent or tool they need *from* your config, and tests about this sample's own
+> editorial choices skip when the agent they are about is gone, saying so. Delete
+> `cost_research` and its 31 tests skip; keep it and they run.
+>
 > **And `workflow.json` explains itself as you type.** It carries
 > `"$schema": "./workflow.schema.json"`, so your editor completes only the keys legal
 > for the `runtime` or tool `type` you chose, enumerates the allowed values for each,
@@ -46,7 +54,7 @@ for your use case.
 > different 4-agent workflow in another domain — renamed agents, a different topology,
 > its own tool, guardrail and branding — and separately renaming a shipped agent by
 > touching only `workflow.json` and its own folder. Both compile the graph and pass
-> the full suite (704 Python + 132 TypeScript), `terraform validate` and `cdk synth`
+> the full suite (757 Python + 138 TypeScript), `terraform validate` and `cdk synth`
 > with no other change.
 >
 > Four couplings remain, none of which blocks a typical use case: the five tool

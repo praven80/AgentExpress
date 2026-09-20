@@ -571,12 +571,12 @@ runtime, a policy engine) is provisioned from this one source of truth.
 Two suites, one per language, both fast enough for a pre-commit hook and needing
 neither AWS credentials nor a container builder:
 
-- **`orchestrator/tests/`** (pytest, 652 tests, a few seconds) — the runtime side:
+- **`orchestrator/tests/`** (pytest, 757 tests, a few seconds) — the runtime side:
   topology derivation, graph compilation across 14 step shapes, branch rules and
   routing, rewind planning, tool argument shapes, Gateway tool-name resolution,
   citation verification, contract coercion, and the RBAC rules plus their wiring on
   every mutating route.
-- **`orchestrator/cdk/test/`** (jest, 132 tests) — the IaC side: the projections
+- **`orchestrator/cdk/test/`** (jest, 138 tests) — the IaC side: the projections
   and validators, the synthesized template (Cognito groups, route set + authorizer,
   BFF environment, Gateway targets, Cedar policies), and **Terraform ↔ CDK parity**.
 
