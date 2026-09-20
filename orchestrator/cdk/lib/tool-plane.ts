@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as cdk from "aws-cdk-lib";
 import { Construct } from "constructs";
+import * as vocab from "./vocabulary";
 import {
   aws_dynamodb as dynamodb,
   aws_iam as iam,
@@ -63,6 +64,27 @@ export interface ToolSpec {
    * zero rows and reports "nothing found" for a response that was full of data.
    */
   rowPath?: string;
+  /**
+   * type=kb: which Bedrock model embeds the corpus. Defaults to the first entry in
+   * `embeddingModels` (vocabulary.json). Changing it REPLACES the index and the KB,
+   * which the digest-derived names make work rather than fail.
+   */
+  embeddingModel?: string;
+  /** type=kb: embedding vector size. Defaults to the chosen model's first dimension. */
+  dimensions?: number;
+  /** type=kb: metadata attribute an agent's `corpus` is matched against ("doc_type"). */
+  corpusKey?: string;
+  /** type=kb: how `corpus` is compared. Single-value operators only — see vocabulary.json. */
+  corpusOperator?: string;
+  /**
+   * type=kb: a Bedrock-shaped retrieval filter applied to EVERY call, set on the target
+   * and invisible to the agent. ANDed with the agent's corpus filter, so it can only
+   * narrow. This is where multi-condition narrowing goes; the agent's own filter stays a
+   * scalar so the generated Cedar permit can still enforce it.
+   */
+  filter?: Record<string, any>;
+  /** type=kb: rerank retrieved chunks with a second model. `{ model, count }`. */
+  rerank?: { model?: string; count?: number };
   /** type=mcp: the MCP server's Streamable HTTP URL. Change this, nothing else. */
   endpoint?: string;
   /** type=openapi: s3:// URI of the OpenAPI schema. */
@@ -212,14 +234,35 @@ export class ToolPlane extends Construct {
     const { agentName, orchRoot, tools } = props;
     const dashName = agentName.replace(/_/g, "-");
 
-    const KB_DIMS = 1024; // Titan Text Embeddings V2 default
-    const embedModel = `arn:aws:bedrock:${region}::foundation-model/amazon.titan-embed-text-v2:0`;
 
     // ---- Split the declared tools by type ---------------------------------
     const entries = Object.entries(tools);
     const byType = (t: ToolType) => entries.filter(([, v]) => v.type === t);
     const kbEntry = byType("kb")[0];
     const kbName = kbEntry?.[0] ?? "";
+
+    // ---- Embedding model + dimension, from config -------------------------
+    // Both were hardcoded here and in terraform/kb.tf. They are a PAIR: a model supports
+    // only certain dimensions, and a mismatch is not rejected at deploy — it fails at
+    // Bedrock INGESTION afterwards, while the deploy reports success and the corpus is
+    // silently empty. So the model is closed to a known set (vocabulary.json) and the
+    // dimension defaults from it, which means declaring `embeddingModel` alone is enough
+    // and declaring neither keeps the previous behaviour exactly.
+    // Mirrors local.kb_embed_model_id / local.kb_dims in terraform/kb.tf.
+    const kbSpec: ToolSpec = (kbEntry?.[1] ?? {}) as ToolSpec;
+    const embedModelId = kbSpec.embeddingModel ?? vocab.EMBEDDING_MODELS[0];
+    const allowedDims = vocab.embeddingDimensions(embedModelId);
+    const KB_DIMS = kbSpec.dimensions ?? allowedDims[0];
+    if (kbName && !allowedDims.includes(KB_DIMS)) {
+      throw new Error(
+        `workflow.json tools.${kbName} has "dimensions": ${KB_DIMS}, which ` +
+          `"embeddingModel": ${JSON.stringify(embedModelId)} does not support — it accepts ` +
+          `${JSON.stringify(allowedDims)} (first is the default, so omitting "dimensions" ` +
+          `is usually right). A mismatch is NOT rejected at deploy time: Bedrock fails at ` +
+          `ingestion afterwards while the deploy reports success, leaving an empty corpus.`
+      );
+    }
+    const embedModel = `arn:aws:bedrock:${region}::foundation-model/${embedModelId}`;
 
     // ======================================================================
     // Gateway service role
@@ -563,12 +606,35 @@ export class ToolPlane extends Construct {
           // deployed function — while `tools.<websearch>.maxResults` was a config key.
           // Same key name on both tool types now. Mirrors local.kb_max_results in
           // terraform/tools.tf.
-          KB_NUM_RESULTS: String(kbEntry?.[1]?.maxResults ?? 5),
+          KB_NUM_RESULTS: String(kbSpec.maxResults ?? 5),
+          // The rest of the retrieval shape, also from the tool's entry. An empty string
+          // means "keep the handler's default", so this block does not restate defaults
+          // that already have one documented home (kb_lambda/handler.py).
+          // Mirrors the same five env vars in terraform/kb.tf.
+          KB_CORPUS_KEY: kbSpec.corpusKey ?? "doc_type",
+          KB_CORPUS_OPERATOR: kbSpec.corpusOperator ?? "equals",
+          KB_STATIC_FILTER: kbSpec.filter ? JSON.stringify(kbSpec.filter) : "",
+          KB_RERANK: kbSpec.rerank ? JSON.stringify(kbSpec.rerank) : "",
         },
       });
       kbLambda.addToRolePolicy(
         new iam.PolicyStatement({ actions: ["bedrock:Retrieve"], resources: [kb.attrKnowledgeBaseArn] })
       );
+      // Reranking is a SECOND model call Bedrock makes on this function's behalf, so the
+      // function's own role needs it — granted only when the tool asks for reranking, and
+      // on exactly the model it named rather than foundation-model/*.
+      if (kbSpec.rerank?.model) {
+        const m = kbSpec.rerank.model;
+        kbLambda.addToRolePolicy(
+          new iam.PolicyStatement({
+            sid: "InvokeRerankingModel",
+            actions: ["bedrock:Rerank", "bedrock:InvokeModel"],
+            resources: [
+              m.startsWith("arn:") ? m : `arn:aws:bedrock:${region}::foundation-model/${m}`,
+            ],
+          })
+        );
+      }
       gatewayRole.addToPolicy(
         new iam.PolicyStatement({ actions: ["lambda:InvokeFunction"], resources: [kbLambda.functionArn] })
       );

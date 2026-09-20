@@ -658,6 +658,25 @@ export function validateWorkflow(workflow: any, orchRoot: string, agentName: str
         `characters or fewer. Too long: ${tooLong.join(", ")}. Shorten agentName or the agent id.`
     );
   }
+  // A dedicated agent also gets its OWN execution role now, and that name is the TIGHTER
+  // of the two limits: the role carries an 18-character prefix where the runtime name
+  // carries none, so for a 23-character agentName an id of 23-24 characters passes the
+  // check above and fails this one. Both are reported from here so a customer gets the
+  // real constraint at validation rather than part of it now and the rest at synth.
+  //
+  // Checked, never truncated: a shortened role name can collide with another agent's, and
+  // two runtimes sharing one role is exactly what per-agent roles exist to prevent.
+  const roleTooLong = Object.entries(agents)
+    .filter(([, a]) => (a.runtime ?? "main") === "dedicated")
+    .map(([id]) => `AgentCoreSubagent-${agentName}-${id}`)
+    .filter((n) => n.length > 64);
+  if (roleTooLong.length) {
+    throw new Error(
+      `A dedicated agent's execution role is named "AgentCoreSubagent-<agentName>-<agent id>" ` +
+        `and must be 64 characters or fewer, which is IAM's limit. Too long: ` +
+        `${roleTooLong.join(", ")}. Shorten agentName or the agent id.`
+    );
+  }
 
   // Corpora must be real top-level folders under kb_docs/, or the generated Cedar
   // permit filters on a doc_type no chunk carries and retrieval returns NOTHING
@@ -1333,23 +1352,42 @@ export class OrchestratorStack extends cdk.Stack {
     ];
 
     // ---- Dedicated agent runtimes (one per `dedicated` agent) ---------------
-    const subagentRole = new iam.Role(this, "SubagentRole", {
-      roleName: `AgentCoreSubagent-${agentName}`,
-      assumedBy: agentcorePrincipal,
-    });
-    image.repository.grantPull(subagentRole);
-    [
-      bedrockInvoke,
-      ...observabilityPerms(`${agentName}*`),
-      // A dedicated agent applies guardrails and uses long-term memory exactly
-      // like an in-process one when its workflow.json config enables them.
-      guardrailApply,
-      longTermMemory,
-    ].forEach((s) => subagentRole.addToPolicy(s));
-    telemetryTable.grantWriteData(subagentRole);
-
+    // ONE EXECUTION ROLE PER AGENT, scoped to what that agent's workflow.json entry asks
+    // for. This was a single shared role, so an agent that enables nothing still carried
+    // the union of every other agent's permissions — in the shipped workflow
+    // `knowledge_research` uses no guardrails and no dedicated agent uses long-term
+    // memory, yet all three could call ApplyGuardrail and read the semantic memory store.
+    //
+    // Nothing here is for the customer to write: the grants are DERIVED from the same
+    // config that switches the feature on. Mirrors aws_iam_role.subagent in
+    // terraform/subagent_runtimes.tf.
     const dedicatedArns: Record<string, string> = {};
     for (const id of dedicatedIds) {
+      const ac = agents[id].agentcore ?? {};
+      // IAM caps a role name at 64 characters, and this one carries the agent id where
+      // the shared name did not. Checked rather than truncated: a silently shortened name
+      // can collide with another agent's, and two runtimes sharing a role is exactly what
+      // this change exists to stop.
+      // Length is validated in validateWorkflow, alongside the runtime-name limit, so both
+      // name rules are reported from one place.
+      const roleName = `AgentCoreSubagent-${agentName}-${id}`;
+      const subagentRole = new iam.Role(this, `SubagentRole-${id}`, {
+        roleName,
+        assumedBy: agentcorePrincipal,
+      });
+      image.repository.grantPull(subagentRole);
+      // Unconditional: every dedicated container pulls the image, emits spans and metrics,
+      // calls a model, and writes a telemetry row per model call.
+      [bedrockInvoke, ...observabilityPerms(`${agentName}*`)].forEach((s) =>
+        subagentRole.addToPolicy(s)
+      );
+      telemetryTable.grantWriteData(subagentRole);
+      // Feature-gated: granted only because THIS agent's config enables the feature.
+      // Without the grant, GUARDRAIL_ID still resolves and ApplyGuardrail is denied —
+      // the correct outcome for an agent that never calls it.
+      if (ac.guardrails?.input || ac.guardrails?.output) subagentRole.addToPolicy(guardrailApply);
+      if ((ac.memory?.longTerm ?? []).length) subagentRole.addToPolicy(longTermMemory);
+
       const rt = new cdk.CfnResource(this, `Subagent-${id}`, {
         type: "AWS::BedrockAgentCore::Runtime",
         properties: {

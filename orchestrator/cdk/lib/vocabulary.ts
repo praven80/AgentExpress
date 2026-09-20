@@ -60,3 +60,25 @@ export const WEB_SEARCH_REGIONS = values("webSearchRegions");
 export const GUARDRAIL_FILTER_STRENGTHS = values("guardrailFilterStrengths");
 export const GUARDRAIL_PII_ACTIONS = values("guardrailPiiActions");
 export const BUILTIN_LAMBDA_SOURCE = values("builtinLambdaSource")[0];
+export const EMBEDDING_MODELS = values("embeddingModels");
+export const KB_CORPUS_OPERATORS = values("kbCorpusOperators");
+
+/**
+ * The embedding dimensions a model supports, FIRST being its default.
+ *
+ * A second shape in the same file, because this one is a map rather than a list: the
+ * model and the dimension have to agree, and holding the pairing anywhere else would
+ * put it in two planes again (see terraform/kb.tf, which reads the same key). Throws on
+ * an unknown model for the same reason `values` does — silently defaulting the dimension
+ * of a model nobody validated is how an empty corpus gets deployed successfully.
+ */
+export function embeddingDimensions(model: string): number[] {
+  const dims = (RAW.embeddingModels as any)?.dimensionsByModel?.[model];
+  if (!Array.isArray(dims) || !dims.length) {
+    throw new Error(
+      `"${model}" has no dimensionsByModel entry in app/vocabulary.json. ` +
+        `Declared: ${EMBEDDING_MODELS.join(", ")}`
+    );
+  }
+  return dims;
+}

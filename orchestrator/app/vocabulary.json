@@ -71,6 +71,27 @@
     "values": ["BLOCK", "ANONYMIZE"]
   },
 
+  "embeddingModels": {
+    "$comment": "The embedding model a `type: \"kb\"` tool's vector store is built with. Closed because the model and the index DIMENSION have to agree and neither can be changed in place - a mismatch is not a validation error at deploy, it is a Bedrock ingestion that fails later while the deploy reports success. `dimensionsByModel` below gives the dimensions each model supports, FIRST being its default, so declaring only `embeddingModel` is enough. Add a model by adding it here and to that map; nothing else reads these names.",
+    "values": [
+      "amazon.titan-embed-text-v2:0",
+      "amazon.titan-embed-text-v1",
+      "cohere.embed-english-v3",
+      "cohere.embed-multilingual-v3"
+    ],
+    "dimensionsByModel": {
+      "amazon.titan-embed-text-v2:0": [1024, 512, 256],
+      "amazon.titan-embed-text-v1": [1536],
+      "cohere.embed-english-v3": [1024],
+      "cohere.embed-multilingual-v3": [1024]
+    }
+  },
+
+  "kbCorpusOperators": {
+    "$comment": "How a `type: \"kb\"` tool matches an agent's `corpus` against the metadata attribute named by `corpusKey`. DELIBERATELY ONLY SINGLE-VALUE OPERATORS: the corpus an agent may read is enforced by the generated Cedar permit, which is a scalar value match (`[\"reference\"].contains(context.input.filter)`). A list-valued operator like `in` would make the agent-supplied argument a list, which that permit cannot express - so the boundary would silently weaken to \"has a filter at all\". Multi-condition narrowing belongs in the tool's target-level `filter`, which the agent cannot influence.",
+    "values": ["equals", "notEquals", "startsWith", "stringContains"]
+  },
+
   "builtinLambdaSource": {
     "$comment": "A `type: \"lambda\"` tool's `source`: the folder under orchestrator/app/tools/ whose code the framework zips and deploys. Closed to the one the repo ships, because a framework-deployed function needs an execution role config cannot express - the role that exists grants logs plus read-only on the PUBLIC AWS price list, which is right for that function and wrong for a connector that needs VPC config or a secret. Your own function is deployed by you and declared with `lambdaArn`; the framework only registers it as a Gateway target. NOTE this closes `source` for type=\"lambda\" ONLY, via `vocabularyFor` in app/keys.json. A type=\"openapi\" `source` is deliberately OPEN: the framework only uploads a file, which needs no permissions, so closing it would force a customer to edit this framework-owned file to add a schema of their own. That one is checked by whether app/tools/<source>/openapi.json exists.",
     "values": ["pricing"]

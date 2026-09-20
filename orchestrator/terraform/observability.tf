@@ -73,10 +73,13 @@ resource "aws_iam_role_policy" "runtime_telemetry" {
 }
 
 # Dedicated per-agent runtimes write telemetry too (only when any exist).
+# One per dedicated agent, following the per-agent roles in subagent_runtimes.tf. Every
+# dedicated container writes a telemetry row per model call, so unlike the feature-gated
+# statements there this one is unconditional — it is just no longer shared.
 resource "aws_iam_role_policy" "subagent_telemetry" {
-  count = length(local.dedicated_agents) > 0 ? 1 : 0
-  name  = "TelemetryWrite-${var.agent_name}-subagent"
-  role  = aws_iam_role.subagent[0].id
+  for_each = local.dedicated_agents
+  name     = "TelemetryWrite-${var.agent_name}-${each.key}"
+  role     = aws_iam_role.subagent[each.key].id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{

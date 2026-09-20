@@ -346,3 +346,74 @@ describe("the shipped workflow.json", () => {
   });
 
 });
+
+describe("the kb tool's retrieval settings", () => {
+  /**
+   * Both IaC planes build the KB Lambda's environment independently — `local.kb_*` in
+   * terraform/kb.tf and the `environment` block in cdk/lib/tool-plane.ts — and the handler
+   * reads it as `os.environ`. Three implementations of one decision, which is the shape
+   * that has already drifted twice in this repo (`publishedFrom`/`publishedTo`, then
+   * `rowPath`), both times silently and both times found by a human reading wrong output.
+   *
+   * The failure mode here is worse than a dropped tuning knob. `KB_STATIC_FILTER` is the
+   * target-level retrieval filter — the one the agent cannot influence and therefore the
+   * one that is a security boundary. A plane that forgets to set it retrieves from OUTSIDE
+   * the configured scope, successfully, with no error anywhere.
+   */
+  const HANDLER_ENV = [
+    "KB_NUM_RESULTS",
+    "KB_CORPUS_KEY",
+    "KB_CORPUS_OPERATOR",
+    "KB_STATIC_FILTER",
+    "KB_RERANK",
+  ];
+
+  it("is read from the environment by the handler, for every variable both planes set", () => {
+    const handler = read(path.join(ORCH_ROOT, "kb_lambda", "handler.py"));
+    for (const key of HANDLER_ENV) {
+      expect(handler).toContain(key);
+    }
+  });
+
+  it("is set by BOTH IaC planes, so neither silently drops a setting", () => {
+    const planes = {
+      "terraform/kb.tf": read(path.join(TF, "kb.tf")),
+      "cdk/lib/tool-plane.ts": read(path.join(__dirname, "..", "lib", "tool-plane.ts")),
+    };
+    for (const key of HANDLER_ENV) {
+      for (const [where, text] of Object.entries(planes)) {
+        expect(text.includes(key)).toBe(true);
+        if (!text.includes(key)) throw new Error(`${where} never sets ${key}`);
+      }
+    }
+  });
+
+  it("derives the embedding model and dimension from the vocabulary in both planes", () => {
+    // The pair is the dangerous one: a mismatch is not rejected at deploy, Bedrock fails
+    // at INGESTION afterwards while the stack reports success and the corpus is empty. So
+    // the per-model dimension table has to be the same table on both sides.
+    expect(read(path.join(TF, "kb.tf"))).toContain("dimensionsByModel");
+    expect(read(path.join(__dirname, "..", "lib", "vocabulary.ts"))).toContain("dimensionsByModel");
+    const vocab = JSON.parse(read(path.join(ORCH_ROOT, "app", "vocabulary.json")));
+    for (const model of vocab.embeddingModels.values) {
+      const dims = vocab.embeddingModels.dimensionsByModel[model];
+      expect(Array.isArray(dims) && dims.length).toBeTruthy();
+    }
+  });
+
+  it("gives each dedicated agent its own role in both planes", () => {
+    // Terraform uses for_each on the agents map; CDK creates the Role inside the
+    // per-agent loop. Either reverting to one shared role would be invisible without this.
+    expect(read(path.join(TF, "subagent_runtimes.tf"))).toContain(
+      "for_each = local.dedicated_agents"
+    );
+    expect(read(path.join(TF, "subagent_runtimes.tf"))).toContain(
+      "aws_iam_role.subagent[each.key].arn"
+    );
+    const stack = read(path.join(__dirname, "..", "lib", "orchestrator-stack.ts"));
+    expect(stack).toContain("`SubagentRole-${id}`");
+    // And the feature gates, which are what makes the split worth having.
+    expect(read(path.join(TF, "subagent_runtimes.tf"))).toContain("subagent_features");
+    expect(stack).toMatch(/ac\.guardrails\?\.input \|\| ac\.guardrails\?\.output/);
+  });
+});

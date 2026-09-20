@@ -14,7 +14,18 @@
 locals {
   # Provisioned only when workflow.json declares a tool with type="kb".
   kb_enabled = local.kb_tool_name != ""
-  kb_dims    = 1024 # Titan Text Embeddings v2 default
+  # The kb tool's own entry, so the retrieval settings below read from ONE place.
+  kb_spec = local.kb_enabled ? local.tools_raw[local.kb_tool_name] : {}
+
+  # --- Embedding model + dimension, from config -----------------------------
+  # Both were hardcoded here and in cdk/lib/tool-plane.ts. They are a PAIR: a model
+  # supports only certain dimensions, and a mismatch is not rejected at deploy - it
+  # fails at Bedrock INGESTION, after a deploy that reported success. So the model is
+  # closed to a known set and the dimension is defaulted from it, which means declaring
+  # `embeddingModel` alone is enough and declaring neither keeps today's behaviour.
+  kb_embed_model_id = try(local.kb_spec.embeddingModel, local.vocab.embeddingModels.values[0])
+  kb_allowed_dims   = try(local.vocab.embeddingModels.dimensionsByModel[local.kb_embed_model_id], [])
+  kb_dims           = try(local.kb_spec.dimensions, try(local.kb_allowed_dims[0], 1024))
   # S3 Vectors caps FILTERABLE metadata at 2048 bytes per vector, and both of these
   # grow with the document, so both must be excluded. Mirrors KB_NON_FILTERABLE in
   # cdk/lib/tool-plane.ts.
@@ -28,7 +39,26 @@ locals {
   # and is immutable, so replacing the index replaces the KB too. Matches
   # knowledgeBaseName() in cdk/lib/tool-plane.ts.
   kb_name     = "${replace(var.agent_name, "_", "-")}-kb-${local.kb_storage_digest}"
-  embed_model = "arn:aws:bedrock:${var.region}::foundation-model/amazon.titan-embed-text-v2:0"
+  embed_model = "arn:aws:bedrock:${var.region}::foundation-model/${local.kb_embed_model_id}"
+
+  # --- Retrieval settings passed to the KB Lambda ---------------------------
+  # Defaults live in kb_lambda/handler.py, so an absent key sends an empty string and
+  # the function keeps its documented default rather than this file restating it.
+  kb_corpus_key      = try(local.kb_spec.corpusKey, "doc_type")
+  kb_corpus_operator = try(local.kb_spec.corpusOperator, "equals")
+  # Target-level, agent-invisible. See the kb_lambda docstring: the agent's filter is a
+  # scalar the Cedar permit enforces, THIS one may be arbitrary because nothing the
+  # caller sends can influence it.
+  kb_static_filter = try(jsonencode(local.kb_spec.filter), "")
+  kb_rerank        = try(jsonencode(local.kb_spec.rerank), "")
+  # The reranking model, for the IAM grant. Empty when reranking is off, so the
+  # statement is omitted rather than granted on a resource nobody calls.
+  kb_rerank_model = try(local.kb_spec.rerank.model, "")
+  kb_rerank_arn = local.kb_rerank_model == "" ? "" : (
+    startswith(local.kb_rerank_model, "arn:")
+    ? local.kb_rerank_model
+    : "arn:aws:bedrock:${var.region}::foundation-model/${local.kb_rerank_model}"
+  )
 
   # Corpus files, recursive (subfolders included), excluding macOS noise that
   # Bedrock ingestion would reject.
@@ -253,7 +283,7 @@ resource "aws_iam_role_policy" "kb_lambda" {
   role  = aws_iam_role.kb_lambda[0].id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat([
       {
         Effect   = "Allow"
         Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
@@ -263,8 +293,18 @@ resource "aws_iam_role_policy" "kb_lambda" {
         Effect   = "Allow"
         Action   = ["bedrock:Retrieve"]
         Resource = [aws_bedrockagent_knowledge_base.kb[0].arn]
+      },
+      ], local.kb_rerank_arn == "" ? [] : [
+      {
+        # Reranking is a SECOND model call made by Bedrock on this function's behalf, so
+        # the function's own role needs it. Granted only when the tool asks for
+        # reranking, and on exactly the model it named — not on foundation-model/* .
+        Sid      = "InvokeRerankingModel"
+        Effect   = "Allow"
+        Action   = ["bedrock:Rerank", "bedrock:InvokeModel"]
+        Resource = [local.kb_rerank_arn]
       }
-    ]
+    ])
   })
 }
 
@@ -294,6 +334,13 @@ resource "aws_lambda_function" "kb_retrieve" {
       # function — while `tools.<websearch>.maxResults` was a config key. Same key
       # name on both tool types now.
       KB_NUM_RESULTS = tostring(local.kb_max_results)
+      # The rest of the retrieval shape, also from the tool's entry. Empty means "keep
+      # the handler's default", so this block does not restate defaults that already
+      # have one documented home.
+      KB_CORPUS_KEY      = local.kb_corpus_key
+      KB_CORPUS_OPERATOR = local.kb_corpus_operator
+      KB_STATIC_FILTER   = local.kb_static_filter
+      KB_RERANK          = local.kb_rerank
     }
   }
 }

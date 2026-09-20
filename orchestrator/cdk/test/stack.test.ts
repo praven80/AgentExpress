@@ -507,3 +507,121 @@ describe("the stand-in A2A agent", () => {
     expect(names).not.toContain("A2AAgent-multiagent_orchestrator");
   });
 });
+
+// ===========================================================================
+// One execution role per dedicated agent
+// ===========================================================================
+// This was a SINGLE shared role for every dedicated runtime, and nothing anywhere
+// asserted its contents — so the shape was invisible and the drift below went unnoticed:
+// an agent that enables no features still carried the union of every other agent's
+// permissions. In the shipped workflow `knowledge_research` uses no guardrails and NO
+// dedicated agent uses long-term memory, yet all three could call ApplyGuardrail and read
+// the semantic memory store.
+//
+// What makes this the framework's job rather than the customer's is that the grants are
+// DERIVED from the same config that switches the feature on. A customer enables memory for
+// an agent; the framework grants that agent memory. There is no IAM to write.
+describe("dedicated agent execution roles", () => {
+  const roles = (t: Template) =>
+    Object.entries<any>(t.findResources("AWS::IAM::Role")).filter(([, r]) =>
+      String(r.Properties.RoleName ?? "").startsWith("AgentCoreSubagent-")
+    );
+  /** The inline policy document attached to the role at logical id `logicalId`. */
+  const policyFor = (t: Template, logicalId: string) =>
+    JSON.stringify(
+      Object.values<any>(t.findResources("AWS::IAM::Policy")).find((p) =>
+        JSON.stringify(p.Properties.Roles ?? []).includes(logicalId)
+      )?.Properties.PolicyDocument ?? {}
+    );
+
+  const dedicated = Object.entries<any>(shipped.agents)
+    .filter(([, a]) => (a.runtime ?? "main") === "dedicated")
+    .map(([id]) => id);
+
+  it("creates one role per dedicated agent, named for that agent", () => {
+    const names = roles(template).map(([, r]) => r.Properties.RoleName);
+    expect(names).toHaveLength(dedicated.length);
+    for (const id of dedicated) {
+      expect(names).toContain(`AgentCoreSubagent-multiagent_orchestrator-${id}`);
+    }
+  });
+
+  it("gives each runtime its OWN role, not a shared one", () => {
+    // The property this whole change buys. If two runtimes point at one role, scoping the
+    // role per agent achieves nothing.
+    const used = Object.values<any>(template.findResources("AWS::BedrockAgentCore::Runtime"))
+      .filter((r) => String(r.Properties.AgentRuntimeName).includes("_"))
+      .map((r) => JSON.stringify(r.Properties.RoleArn));
+    expect(new Set(used).size).toEqual(used.length);
+  });
+
+  it("grants ApplyGuardrail only to agents whose config enables guardrails", () => {
+    for (const [logicalId] of roles(template)) {
+      const id = dedicated.find((a) => logicalId.includes(a.replace(/_/g, "")));
+      const ac = shipped.agents[id!].agentcore ?? {};
+      const wants = Boolean(ac.guardrails?.input || ac.guardrails?.output);
+      expect(policyFor(template, logicalId).includes("bedrock:ApplyGuardrail")).toEqual(wants);
+    }
+    // And the sample really does exercise both branches, or the test above is vacuous.
+    const flags = dedicated.map((id) => {
+      const g = (shipped.agents[id].agentcore ?? {}).guardrails ?? {};
+      return Boolean(g.input || g.output);
+    });
+    expect(new Set(flags).size).toBeGreaterThan(1);
+  });
+
+  it("grants long-term memory only to agents that declare it", () => {
+    for (const [logicalId] of roles(template)) {
+      const id = dedicated.find((a) => logicalId.includes(a.replace(/_/g, "")));
+      const wants = ((shipped.agents[id!].agentcore ?? {}).memory?.longTerm ?? []).length > 0;
+      expect(policyFor(template, logicalId).includes("RetrieveMemoryRecords")).toEqual(wants);
+    }
+  });
+
+  it("still grants every agent what it unconditionally needs", () => {
+    // Scoping down must not remove the permissions a container needs merely to run: pull
+    // the image, emit spans and metrics, call a model, write its telemetry row.
+    for (const [logicalId] of roles(template)) {
+      const doc = policyFor(template, logicalId);
+      for (const needed of [
+        "ecr:BatchGetImage",
+        "logs:PutLogEvents",
+        "xray:PutTraceSegments",
+        "cloudwatch:PutMetricData",
+        "bedrock:InvokeModel",
+        "dynamodb:PutItem",
+      ]) {
+        expect(doc).toContain(needed);
+      }
+    }
+  });
+
+  it("scopes model invocation to inference profiles, never account-wide bedrock:*", () => {
+    // The Terraform side of this role carried "arn:aws:bedrock:<region>:<acct>:*", which
+    // also covered custom models, provisioned throughput, agents, guardrails and prompts —
+    // broader than the CDK role AND broader than Terraform's own orchestrator role, so it
+    // was drift rather than a decision. Asserted here so the two cannot diverge again.
+    for (const [logicalId] of roles(template)) {
+      const doc = policyFor(template, logicalId);
+      expect(doc).toContain("inference-profile/*");
+      expect(doc).not.toMatch(/"arn:aws:bedrock:us-east-1:123456789012:\*"/);
+    }
+  });
+
+  it("refuses an agent id that fits the runtime name but not the role name", () => {
+    // The role name is the TIGHTER limit, and this is the window that proves it matters:
+    // "AgentCoreSubagent-" is an 18-character prefix the runtime name does not carry, so
+    // with a 23-character agentName an id of 23 passes the 48-char runtime check and
+    // overruns IAM's 64. Caught rather than truncated, because a shortened name can
+    // collide with another agent's and put two runtimes back on one role.
+    const id = "a".repeat(23);
+    expect(`multiagent_orchestrator_${id}`.length).toBeLessThanOrEqual(48);
+    expect(`AgentCoreSubagent-multiagent_orchestrator-${id}`.length).toBeGreaterThan(64);
+    const wf = {
+      ...shipped,
+      agents: { ...shipped.agents, [id]: { name: "X", runtime: "dedicated" } },
+      steps: [...shipped.steps, { agent: id }],
+    };
+    expect(() => synth({ workflow: wf })).toThrow(/must be 64 characters or fewer/);
+  });
+});

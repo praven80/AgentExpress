@@ -511,3 +511,100 @@ describe("type=openapi", () => {
     expect(JSON.stringify(policies)).toContain("permit_lifecycle");
   });
 });
+
+// ===========================================================================
+// type=kb — embedding model, dimensions, and the retrieval shape
+// ===========================================================================
+// All of this was hardcoded: the embedding model and dimension here and in
+// terraform/kb.tf, and the retrieval request shape inside kb_lambda/handler.py. The
+// dimension is the dangerous one to get wrong, because a model/dimension mismatch is not
+// rejected at deploy — Bedrock fails at INGESTION afterwards, so the stack reports success
+// and the corpus is silently empty. That is why the pair is validated at synth.
+describe("type=kb config", () => {
+  const kb = (over: Record<string, any> = {}): Record<string, ToolSpec> => ({
+    kb: { type: "kb", description: "Corpus", corpora: ["reference"], ...over } as ToolSpec,
+  });
+  const kbLambdaEnv = (template: Template) =>
+    Object.values<any>(template.findResources("AWS::Lambda::Function")).find((f) =>
+      String(f.Properties.FunctionName ?? "").includes("KBRetrieve")
+    ).Properties.Environment.Variables;
+
+  it("defaults to Titan v2 at 1024 dimensions when nothing is declared", () => {
+    // The previous hardcoded values, so an existing workflow.json deploys unchanged.
+    const template = plane(kb());
+    template.hasResourceProperties("AWS::S3Vectors::Index", { Dimension: 1024 });
+    const knowledgeBase = Object.values<any>(
+      template.findResources("AWS::Bedrock::KnowledgeBase")
+    )[0];
+    expect(
+      JSON.stringify(knowledgeBase.Properties.KnowledgeBaseConfiguration)
+    ).toContain("amazon.titan-embed-text-v2:0");
+  });
+
+  it("takes the model and dimension from config", () => {
+    const template = plane(kb({ embeddingModel: "amazon.titan-embed-text-v2:0", dimensions: 256 }));
+    template.hasResourceProperties("AWS::S3Vectors::Index", { Dimension: 256 });
+  });
+
+  it("derives the index and KB names from the dimension, so a change REPLACES them", () => {
+    // Neither the dimension nor the model can be altered in place, and CloudFormation
+    // refuses to replace a resource with a fixed custom name. Digest-derived names are
+    // what make changing the embedding model a working deploy instead of a stuck one.
+    const nameOf = (t: Template, type: string, prop: string) =>
+      Object.values<any>(t.findResources(type))[0].Properties[prop];
+    const a = plane(kb({ dimensions: 1024 }));
+    const b = plane(kb({ dimensions: 256 }));
+    expect(nameOf(a, "AWS::S3Vectors::Index", "IndexName")).not.toEqual(
+      nameOf(b, "AWS::S3Vectors::Index", "IndexName")
+    );
+    expect(nameOf(a, "AWS::Bedrock::KnowledgeBase", "Name")).not.toEqual(
+      nameOf(b, "AWS::Bedrock::KnowledgeBase", "Name")
+    );
+  });
+
+  it("refuses a dimension the chosen model does not support", () => {
+    // Caught at synth because the alternative is a green deploy and an empty corpus.
+    expect(() => plane(kb({ embeddingModel: "cohere.embed-english-v3", dimensions: 256 }))).toThrow(
+      /does not support .* accepts \[1024\]/s
+    );
+    // Titan v1 is 1536-only, so even the usual default is wrong for it — which is the
+    // case a per-model dimension table exists to catch.
+    expect(() => plane(kb({ embeddingModel: "amazon.titan-embed-text-v1", dimensions: 1024 }))).toThrow(
+      /does not support/
+    );
+    expect(() => plane(kb({ embeddingModel: "amazon.titan-embed-text-v1" }))).not.toThrow();
+  });
+
+  it("passes the retrieval shape to the Lambda, with documented defaults", () => {
+    const env = kbLambdaEnv(plane(kb()));
+    expect(env.KB_CORPUS_KEY).toEqual("doc_type");
+    expect(env.KB_CORPUS_OPERATOR).toEqual("equals");
+    // Empty means "keep the handler's default", so the IaC does not restate a default
+    // that already has one home. Mirrors terraform/kb.tf.
+    expect(env.KB_STATIC_FILTER).toEqual("");
+    expect(env.KB_RERANK).toEqual("");
+  });
+
+  it("passes a configured corpus key and target filter through", () => {
+    const filter = { andAll: [{ equals: { key: "tier", value: "public" } }] };
+    const env = kbLambdaEnv(
+      plane(kb({ corpusKey: "product_line", corpusOperator: "startsWith", filter }))
+    );
+    expect(env.KB_CORPUS_KEY).toEqual("product_line");
+    expect(env.KB_CORPUS_OPERATOR).toEqual("startsWith");
+    expect(JSON.parse(env.KB_STATIC_FILTER)).toEqual(filter);
+  });
+
+  it("grants the reranking model only when reranking is configured, and only that model", () => {
+    // Reranking is a second model call Bedrock makes on the function's behalf, so the
+    // function's own role needs it — but granting foundation-model/* to a retrieve Lambda
+    // would hand it every model in the account.
+    const withRerank = plane(kb({ rerank: { model: "amazon.rerank-v1:0", count: 3 } }));
+    const grant = statements(withRerank).find((s) => s.Sid === "InvokeRerankingModel");
+    expect(grant).toBeDefined();
+    expect(asList(grant.Resource)[0]).toContain("foundation-model/amazon.rerank-v1:0");
+    expect(JSON.stringify(grant.Resource)).not.toContain("foundation-model/*");
+
+    expect(statements(plane(kb())).find((s) => s.Sid === "InvokeRerankingModel")).toBeUndefined();
+  });
+});

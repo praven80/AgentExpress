@@ -20,14 +20,50 @@ locals {
   ) : ["arn:aws:bedrock-agentcore:${var.region}:${local.account_id}:runtime/none"]
 }
 
-# Shared execution role for the dedicated agent runtimes. Narrower than the
-# orchestrator's: no Memory checkpointer, no DynamoDB progress store — a
-# dedicated agent just runs its model, writes telemetry (see observability.tf), and
-# makes any Gateway tool calls — which use the IdP's client-credentials token from
-# env (Cognito or Auth0), not IAM.
+# ONE EXECUTION ROLE PER DEDICATED AGENT, scoped to what that agent's workflow.json
+# entry actually asks for. This was a single shared role, which meant an agent that
+# enables nothing carried the union of every other agent's permissions — in the shipped
+# workflow, `knowledge_research` does not use guardrails and no dedicated agent uses
+# long-term memory, yet every one of them could call ApplyGuardrail and read the
+# semantic memory store.
+#
+# Nothing here is for the customer to write. The grants are DERIVED from the same
+# config that switches the feature on, so enabling memory for an agent grants that
+# agent memory access and enabling it for no one grants it to no one.
+#
+# Still narrower than the orchestrator's role in every case: no Memory checkpointer, no
+# DynamoDB progress store, no Evaluations. And tool access needs no IAM at all — a
+# Gateway call carries the IdP's client-credentials token from env (Cognito or Auth0).
+locals {
+  # Per-agent feature flags, read once so the role and its policy agree by construction.
+  subagent_features = {
+    for id, a in local.dedicated_agents : id => {
+      guardrails = try(a.agentcore.guardrails.input, false) || try(a.agentcore.guardrails.output, false)
+      memory     = length(try(a.agentcore.memory.longTerm, [])) > 0
+      # Workload identity is the outbound-token plumbing an agent uses to reach the
+      # Gateway, so it follows from having a tool at all rather than from a feature flag.
+      tool = try(a.tool, "") != ""
+    }
+  }
+  # IAM role names cap at 64 characters and this one carries the agent id, which the
+  # shared name did not. Checked rather than truncated: a silently shortened name can
+  # collide with another agent's, and two runtimes sharing a role is the thing this
+  # change exists to stop.
+  subagent_role_names = {
+    for id in keys(local.dedicated_agents) : id => "AgentCoreSubagent-${var.agent_name}-${id}"
+  }
+}
+
 resource "aws_iam_role" "subagent" {
-  count = length(local.dedicated_agents) > 0 ? 1 : 0
-  name  = "AgentCoreSubagent-${var.agent_name}"
+  for_each = local.dedicated_agents
+  name     = local.subagent_role_names[each.key]
+
+  lifecycle {
+    precondition {
+      condition     = length(local.subagent_role_names[each.key]) <= 64
+      error_message = "The execution role name for dedicated agent \"${each.key}\" would be \"${local.subagent_role_names[each.key]}\" (${length(local.subagent_role_names[each.key])} chars), over IAM's 64-character limit. Shorten var.agent_name or the agent id."
+    }
+  }
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -44,13 +80,13 @@ resource "aws_iam_role" "subagent" {
 }
 
 resource "aws_iam_role_policy" "subagent" {
-  count = length(local.dedicated_agents) > 0 ? 1 : 0
-  name  = "AgentCoreSubagentPolicy-${var.agent_name}"
-  role  = aws_iam_role.subagent[0].id
+  for_each = local.dedicated_agents
+  name     = "AgentCoreSubagentPolicy-${var.agent_name}-${each.key}"
+  role     = aws_iam_role.subagent[each.key].id
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat([
       {
         Sid      = "ECRImageAccess"
         Effect   = "Allow"
@@ -88,53 +124,72 @@ resource "aws_iam_role_policy" "subagent" {
         Condition = { StringEquals = { "cloudwatch:namespace" = "bedrock-agentcore" } }
       },
       {
-        # Long-term memory: a dedicated agent recalls/stores exactly like an
-        # in-process one when memory is enabled for it in workflow.json.
-        Sid    = "AgentCoreLongTermMemory"
-        Effect = "Allow"
-        Action = [
-          "bedrock-agentcore:CreateEvent",
-          "bedrock-agentcore:RetrieveMemories",
-          "bedrock-agentcore:RetrieveMemoryRecords",
-          "bedrock-agentcore:ListMemoryRecords",
-          "bedrock-agentcore:GetMemoryRecord"
-        ]
-        Resource = [
-          awscc_bedrockagentcore_memory.semantic.memory_arn,
-          "${awscc_bedrockagentcore_memory.semantic.memory_arn}/*"
-        ]
-      },
-      {
-        Sid    = "AgentCoreWorkloadIdentity"
-        Effect = "Allow"
-        Action = ["bedrock-agentcore:GetWorkloadAccessToken", "bedrock-agentcore:GetWorkloadAccessTokenForJWT", "bedrock-agentcore:GetWorkloadAccessTokenForUserId"]
-        Resource = [
-          "arn:aws:bedrock-agentcore:${var.region}:${local.account_id}:workload-identity-directory/default",
-          "arn:aws:bedrock-agentcore:${var.region}:${local.account_id}:workload-identity-directory/default/workload-identity/${var.agent_name}*"
-        ]
-      },
-      {
         Sid    = "BedrockModelInvocation"
         Effect = "Allow"
         Action = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream", "bedrock:CountTokens"]
+        # Inference profiles, NOT the account-wide "arn:aws:bedrock:<region>:<acct>:*"
+        # this used to carry. That wildcard also covered custom models, provisioned
+        # throughput, agents, guardrails and prompts, none of which a sub-agent calls —
+        # and it was broader than both the CDK sub-agent role and Terraform's own
+        # orchestrator role, so it was a drift rather than a decision.
         Resource = [
           "arn:aws:bedrock:*::foundation-model/*",
-          "arn:aws:bedrock:${var.region}:${local.account_id}:*"
+          "arn:aws:bedrock:${var.region}:${local.account_id}:inference-profile/*",
+          "arn:aws:bedrock:${var.region}:${local.account_id}:application-inference-profile/*"
         ]
       },
-      {
-        # Content safety for dedicated agents that enable guardrails (matches the
-        # orchestrator role in main.tf). Without this the GUARDRAIL_ID env would
-        # resolve but ApplyGuardrail would be denied.
-        Sid      = "BedrockGuardrails"
-        Effect   = "Allow"
-        Action   = ["bedrock:ApplyGuardrail"]
-        Resource = [aws_bedrock_guardrail.main.guardrail_arn]
-      }
-    ]
+      ],
+      # --- Below: granted only to agents whose own config asks for it ---------
+      # Outbound-token plumbing for reaching the Gateway. Follows from HAVING a tool,
+      # because an agent with none never calls one.
+      !local.subagent_features[each.key].tool ? [] : [
+        {
+          Sid    = "AgentCoreWorkloadIdentity"
+          Effect = "Allow"
+          Action = ["bedrock-agentcore:GetWorkloadAccessToken", "bedrock-agentcore:GetWorkloadAccessTokenForJWT", "bedrock-agentcore:GetWorkloadAccessTokenForUserId"]
+          Resource = [
+            "arn:aws:bedrock-agentcore:${var.region}:${local.account_id}:workload-identity-directory/default",
+            "arn:aws:bedrock-agentcore:${var.region}:${local.account_id}:workload-identity-directory/default/workload-identity/${var.agent_name}*"
+          ]
+        }
+      ],
+      # Long-term memory: only for an agent that declares agentcore.memory.longTerm.
+      # No dedicated agent in the shipped workflow does, so this statement now appears
+      # on no sub-agent role at all — it was previously on every one of them.
+      !local.subagent_features[each.key].memory ? [] : [
+        {
+          Sid    = "AgentCoreLongTermMemory"
+          Effect = "Allow"
+          Action = [
+            "bedrock-agentcore:CreateEvent",
+            "bedrock-agentcore:RetrieveMemories",
+            "bedrock-agentcore:RetrieveMemoryRecords",
+            "bedrock-agentcore:ListMemoryRecords",
+            "bedrock-agentcore:GetMemoryRecord"
+          ]
+          Resource = [
+            awscc_bedrockagentcore_memory.semantic.memory_arn,
+            "${awscc_bedrockagentcore_memory.semantic.memory_arn}/*"
+          ]
+        }
+      ],
+      # Content safety: only for an agent with agentcore.guardrails.input or .output.
+      # Without it the GUARDRAIL_ID env resolves and ApplyGuardrail is denied — which is
+      # the correct outcome for an agent that never calls it.
+      !local.subagent_features[each.key].guardrails ? [] : [
+        {
+          Sid      = "BedrockGuardrails"
+          Effect   = "Allow"
+          Action   = ["bedrock:ApplyGuardrail"]
+          Resource = [aws_bedrock_guardrail.main.guardrail_arn]
+        }
+    ])
   })
 }
 
+# Waits on EVERY per-agent policy, not one. With `for_each` roles a single-resource
+# depends_on would let a runtime validate against a role whose policy had not propagated,
+# which fails the create with an unhelpful "role cannot be assumed".
 resource "time_sleep" "subagent_iam_propagation" {
   count           = length(local.dedicated_agents) > 0 ? 1 : 0
   depends_on      = [aws_iam_role_policy.subagent]
@@ -149,7 +204,7 @@ resource "awscc_bedrockagentcore_runtime" "subagent" {
   # runtime's traces by matching the "_<agent id>" suffix, so the two must agree.
   agent_runtime_name = "${var.agent_name}_${each.key}"
   description        = "Dedicated runtime for agent ${each.key} (${each.value.name})"
-  role_arn           = aws_iam_role.subagent[0].arn
+  role_arn           = aws_iam_role.subagent[each.key].arn
 
   agent_runtime_artifact = {
     container_configuration = {

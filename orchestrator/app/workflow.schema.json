@@ -743,6 +743,53 @@
               "type": "string"
             }
           },
+          "embeddingModel": {
+            "description": "Which Bedrock model embeds the corpus. Defaults to amazon.titan-embed-text-v2:0. Changing it REPLACES the vector index and the Knowledge Base, because neither the model nor the dimension can be altered in place — both IaC paths derive their names from a digest of these properties so that replacement just works instead of failing the deploy.\n\nRead by: kb.tf embed_model, tool-plane.ts embedModel\n\nAllowed values (embeddingModels in app/vocabulary.json): 'amazon.titan-embed-text-v2:0', 'amazon.titan-embed-text-v1', 'cohere.embed-english-v3', 'cohere.embed-multilingual-v3'",
+            "type": "string",
+            "enum": [
+              "amazon.titan-embed-text-v2:0",
+              "amazon.titan-embed-text-v1",
+              "cohere.embed-english-v3",
+              "cohere.embed-multilingual-v3"
+            ]
+          },
+          "dimensions": {
+            "description": "Embedding vector size. Defaults to the first dimension the chosen model lists in vocabulary.json (1024 for Titan v2). Only a value that model supports is accepted: a mismatch is not rejected by Bedrock at deploy time, it fails at INGESTION while the deploy reports success. Lower is cheaper to store and search and slightly less accurate.\n\nRead by: kb.tf kb_dims, tool-plane.ts KB_DIMS",
+            "type": "integer"
+          },
+          "corpusKey": {
+            "description": "The metadata attribute an agent's `corpus` is matched against. Defaults to \"doc_type\", which is what this framework's ingestion sidecars write. Set it when your documents are already tagged with something else — a customer id, a product line, a classification — so a corpus need not be a folder name.\n\nRead by: KB_CORPUS_KEY -> kb_lambda/handler.py; the generated Cedar permit",
+            "type": "string"
+          },
+          "corpusOperator": {
+            "description": "How `corpus` is compared against `corpusKey`. Defaults to \"equals\". Single-value operators only, and that is a boundary rather than an omission: the corpus an agent may read is enforced by a Cedar permit that matches a scalar, so a list-valued operator would weaken it to \"has a filter at all\".\n\nRead by: KB_CORPUS_OPERATOR -> kb_lambda/handler.py\n\nAllowed values (kbCorpusOperators in app/vocabulary.json): 'equals', 'notEquals', 'startsWith', 'stringContains'",
+            "type": "string",
+            "enum": [
+              "equals",
+              "notEquals",
+              "startsWith",
+              "stringContains"
+            ]
+          },
+          "filter": {
+            "description": "A retrieval filter applied to EVERY call, in Bedrock's own filter shape (andAll / orAll / equals / greaterThan / in / ...). This is where multi-condition narrowing goes. It is set on the TARGET and is invisible to the agent, which is the whole point: a filter the agent cannot supply is a boundary, whereas one it passes as an argument is only scoping. ANDed with the agent's own corpus filter, so it narrows and can never widen.\n\nRead by: KB_STATIC_FILTER -> kb_lambda/handler.py",
+            "type": "object"
+          },
+          "rerank": {
+            "description": "Rerank retrieved chunks with a second model before they reach the agent. Costs an extra model call per retrieval and usually improves which chunks land in the prompt. Omit for no reranking.\n\nRead by: KB_RERANK -> kb_lambda/handler.py; kb.tf / tool-plane.ts grant the model",
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "model": {
+                "type": "string",
+                "description": "Reranking model id, e.g. \"amazon.rerank-v1:0\" or \"cohere.rerank-v3-5:0\". Must be available in the deployment region."
+              },
+              "count": {
+                "type": "integer",
+                "description": "How many of the retrieved chunks survive reranking. Defaults to `maxResults`. Retrieve more than you keep, or there is nothing for the reranker to reorder."
+              }
+            }
+          },
           "endpoint": {
             "description": "The remote MCP server's Streamable HTTP URL.\n\nRead by: tools.tf, tool-plane.ts",
             "type": "string"
@@ -946,9 +993,41 @@
                     "type": "string"
                   }
                 },
+                "corpusKey": {
+                  "description": "The metadata attribute an agent's `corpus` is matched against. Defaults to \"doc_type\", which is what this framework's ingestion sidecars write. Set it when your documents are already tagged with something else — a customer id, a product line, a classification — so a corpus need not be a folder name.\n\nRead by: KB_CORPUS_KEY -> kb_lambda/handler.py; the generated Cedar permit",
+                  "type": "string"
+                },
+                "corpusOperator": {
+                  "description": "How `corpus` is compared against `corpusKey`. Defaults to \"equals\". Single-value operators only, and that is a boundary rather than an omission: the corpus an agent may read is enforced by a Cedar permit that matches a scalar, so a list-valued operator would weaken it to \"has a filter at all\".\n\nRead by: KB_CORPUS_OPERATOR -> kb_lambda/handler.py\n\nAllowed values (kbCorpusOperators in app/vocabulary.json): 'equals', 'notEquals', 'startsWith', 'stringContains'",
+                  "type": "string",
+                  "enum": [
+                    "equals",
+                    "notEquals",
+                    "startsWith",
+                    "stringContains"
+                  ]
+                },
                 "description": {
                   "description": "Becomes the Gateway target's description. Truncated to 190 characters on deploy.\n\nRead by: tools.tf, tool-plane.ts",
                   "type": "string"
+                },
+                "dimensions": {
+                  "description": "Embedding vector size. Defaults to the first dimension the chosen model lists in vocabulary.json (1024 for Titan v2). Only a value that model supports is accepted: a mismatch is not rejected by Bedrock at deploy time, it fails at INGESTION while the deploy reports success. Lower is cheaper to store and search and slightly less accurate.\n\nRead by: kb.tf kb_dims, tool-plane.ts KB_DIMS",
+                  "type": "integer"
+                },
+                "embeddingModel": {
+                  "description": "Which Bedrock model embeds the corpus. Defaults to amazon.titan-embed-text-v2:0. Changing it REPLACES the vector index and the Knowledge Base, because neither the model nor the dimension can be altered in place — both IaC paths derive their names from a digest of these properties so that replacement just works instead of failing the deploy.\n\nRead by: kb.tf embed_model, tool-plane.ts embedModel\n\nAllowed values (embeddingModels in app/vocabulary.json): 'amazon.titan-embed-text-v2:0', 'amazon.titan-embed-text-v1', 'cohere.embed-english-v3', 'cohere.embed-multilingual-v3'",
+                  "type": "string",
+                  "enum": [
+                    "amazon.titan-embed-text-v2:0",
+                    "amazon.titan-embed-text-v1",
+                    "cohere.embed-english-v3",
+                    "cohere.embed-multilingual-v3"
+                  ]
+                },
+                "filter": {
+                  "description": "A retrieval filter applied to EVERY call, in Bedrock's own filter shape (andAll / orAll / equals / greaterThan / in / ...). This is where multi-condition narrowing goes. It is set on the TARGET and is invisible to the agent, which is the whole point: a filter the agent cannot supply is a boundary, whereas one it passes as an argument is only scoping. ANDed with the agent's own corpus filter, so it narrows and can never widen.\n\nRead by: KB_STATIC_FILTER -> kb_lambda/handler.py",
+                  "type": "object"
                 },
                 "maxResults": {
                   "description": "How many results to return — retrieval depth for a kb, page size for websearch. Raising it costs tokens on every call, which is why it is config and not a constant.\n\nRead by: kb: KB_NUM_RESULTS in kb.tf / tool-plane.ts. websearch: TOOLS_JSON -> gateway/client.py",
@@ -969,6 +1048,21 @@
                     "permit": {
                       "description": "false registers the target but deliberately does NOT permit it — useful for proving default-deny. Defaults to true.\n\nRead by: tools.tf permitted_tools, tool-plane.ts",
                       "type": "boolean"
+                    }
+                  }
+                },
+                "rerank": {
+                  "description": "Rerank retrieved chunks with a second model before they reach the agent. Costs an extra model call per retrieval and usually improves which chunks land in the prompt. Omit for no reranking.\n\nRead by: KB_RERANK -> kb_lambda/handler.py; kb.tf / tool-plane.ts grant the model",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "model": {
+                      "type": "string",
+                      "description": "Reranking model id, e.g. \"amazon.rerank-v1:0\" or \"cohere.rerank-v3-5:0\". Must be available in the deployment region."
+                    },
+                    "count": {
+                      "type": "integer",
+                      "description": "How many of the retrieved chunks survive reranking. Defaults to `maxResults`. Retrieve more than you keep, or there is nothing for the reranker to reorder."
                     }
                   }
                 },

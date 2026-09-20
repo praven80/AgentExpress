@@ -527,6 +527,14 @@ resource "terraform_data" "tools_validation" {
       condition     = alltrue([for n, t in local.mcp_tools : t.endpoint != ""])
       error_message = "A tools entry with type=\"mcp\" requires \"endpoint\" (your MCP server's Streamable HTTP URL)."
     }
+    # --- type=kb ----------------------------------------------------------
+    precondition {
+      # The embedding model and the index dimension are a PAIR, and a mismatch is the
+      # worst kind of config error: Bedrock accepts the deploy and then fails at
+      # INGESTION, so the stack reports success and the corpus is silently empty.
+      condition     = !local.kb_enabled || contains(local.kb_allowed_dims, local.kb_dims)
+      error_message = "A type=\"kb\" tool's \"dimensions\" (${local.kb_dims}) is not supported by \"embeddingModel\" = \"${local.kb_embed_model_id}\", which accepts ${jsonencode(local.kb_allowed_dims)} (first is the default, so omitting \"dimensions\" is usually right). A mismatch is NOT rejected at deploy time - Bedrock fails at ingestion afterwards while the deploy reports success, leaving an empty corpus."
+    }
     # --- type=openapi -----------------------------------------------------
     precondition {
       # Exactly one source of truth for WHICH schema object to load. The Gateway can
