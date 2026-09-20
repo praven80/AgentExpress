@@ -4,6 +4,7 @@ import * as path from "path";
 import * as cdk from "aws-cdk-lib";
 import { Construct } from "constructs";
 import * as vocab from "./vocabulary";
+import { keyDefault, keyDefaultFor } from "./defaults";
 import {
   aws_dynamodb as dynamodb,
   aws_iam as iam,
@@ -606,13 +607,13 @@ export class ToolPlane extends Construct {
           // deployed function — while `tools.<websearch>.maxResults` was a config key.
           // Same key name on both tool types now. Mirrors local.kb_max_results in
           // terraform/tools.tf.
-          KB_NUM_RESULTS: String(kbSpec.maxResults ?? 5),
+          KB_NUM_RESULTS: String(kbSpec.maxResults ?? keyDefaultFor<number>("tool", "maxResults", "kb")),
           // The rest of the retrieval shape, also from the tool's entry. An empty string
           // means "keep the handler's default", so this block does not restate defaults
           // that already have one documented home (kb_lambda/handler.py).
           // Mirrors the same five env vars in terraform/kb.tf.
-          KB_CORPUS_KEY: kbSpec.corpusKey ?? "doc_type",
-          KB_CORPUS_OPERATOR: kbSpec.corpusOperator ?? "equals",
+          KB_CORPUS_KEY: kbSpec.corpusKey ?? keyDefault<string>("tool", "corpusKey"),
+          KB_CORPUS_OPERATOR: kbSpec.corpusOperator ?? keyDefault<string>("tool", "corpusOperator"),
           KB_STATIC_FILTER: kbSpec.filter ? JSON.stringify(kbSpec.filter) : "",
           KB_RERANK: kbSpec.rerank ? JSON.stringify(kbSpec.rerank) : "",
         },
@@ -911,7 +912,7 @@ export class ToolPlane extends Construct {
     // a prompt-injected instruction invents — is refused by Cedar's default-deny.
     if (policyEngine) {
       for (const [name, spec] of entries) {
-        if (spec.policy?.permit === false) continue; // registered but deliberately denied
+        if ((spec.policy?.permit ?? keyDefault<boolean>("tool", "policy.permit")) === false) continue;
         const policy = new agentcore.CfnPolicy(this, `Policy-${name}`, {
           name: `permit_${name}`,
           description: `Generated from workflow.json tools.${name}. Anything not permitted here is denied by Cedar's default-deny.`,
@@ -998,7 +999,7 @@ export class ToolPlane extends Construct {
             configurations: [
               {
                 name: "WebSearch",
-                description: truncate(spec.description ?? "AgentCore Web Search", 190),
+                description: truncate(spec.description ?? `Tool target ${name}`, 190),
                 // REQUIRED, even when empty. The API DISCARDS a configuration entry
                 // that has no parameterValues and then reports "Connector
                 // configurations must not be empty" — which reads as if the list
@@ -1018,7 +1019,7 @@ export class ToolPlane extends Construct {
         return {
           mcpServer: {
             endpoint: spec.endpoint,
-            listingMode: spec.listingMode ?? "DEFAULT",
+            listingMode: spec.listingMode ?? keyDefault<string>("tool", "listingMode"),
           },
         };
 
@@ -1119,7 +1120,7 @@ export function cedarStatement(name: string, spec: ToolSpec, gatewayArn: string)
   // argument to be PRESENT: a real constraint (a call with no query is refused)
   // and enough to make the permit acceptable.
   if (conditions.length === 0) {
-    conditions.push(`  context.input has ${spec.arg || "query"}`);
+    conditions.push(`  context.input has ${spec.arg || keyDefault<string>("tool", "arg")}`);
   }
   const head = [
     "permit(",

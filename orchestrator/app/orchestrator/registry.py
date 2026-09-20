@@ -22,7 +22,7 @@ agents to reason over, whereas this replaces the agent.
 import importlib
 import re
 
-from app.common import vocabulary
+from app.common import defaults, vocabulary
 from app.common.a2a_agent import A2AAgent
 from app.common.agentcore_agent import AgentCoreRuntimeAgent
 from app.common.base import Agent
@@ -33,14 +33,14 @@ def _configure(agent: Agent, agent_id: str, spec: dict) -> Agent:
     """Copy the workflow.json spec onto an Agent instance."""
     agent.id = agent_id
     agent.name = spec.get("name", agent_id)
-    agent.kind = spec.get("kind", "sync")
-    agent.runtime = spec.get("runtime", "main")
+    agent.kind = spec.get("kind", defaults.get("agent", "kind"))
+    agent.runtime = spec.get("runtime", defaults.get("agent", "runtime"))
     # The tool this agent is bound to (a key in the workflow.json `tools`
     # block), and for a Knowledge Base tool the corpus it is scoped to.
     agent.tool = spec.get("tool")
     agent.corpus = spec.get("corpus")
     agent.model = spec.get("model")  # None -> config.MODEL_ID default
-    agent.temperature = spec.get("temperature", 0)
+    agent.temperature = spec.get("temperature", defaults.get("agent", "temperature"))
     # Output budget for this agent's model calls, in tokens. camelCase to match the
     # rest of workflow.json (the old snake_case `max_tokens` key was never set by
     # any config, so every agent silently used the 300 default and then overrode it
@@ -50,7 +50,7 @@ def _configure(agent: Agent, agent_id: str, spec: dict) -> Agent:
     # with several classified findings, and a budget that is too small truncates it
     # MID-JSON, which surfaces as "the model returned no parseable research JSON"
     # rather than as an obvious limit problem.
-    agent.max_tokens = int(spec.get("maxTokens") or 4000)
+    agent.max_tokens = int(spec.get("maxTokens") or defaults.get("agent", "maxTokens"))
     # AgentCore feature flags (memory, guardrails, evaluations, policy, …).
     # AgentContext reads these to decide which features apply to this agent.
     agent.agentcore = dict(spec.get("agentcore") or {})
@@ -58,7 +58,7 @@ def _configure(agent: Agent, agent_id: str, spec: dict) -> Agent:
     # Set unconditionally so the attributes are never missing; they are read only by
     # A2AAgent, and validated at load for exactly the agents that use them.
     agent.agent_card = str(spec.get("agentCard") or "")
-    agent.auth = str(spec.get("auth") or "none").lower()
+    agent.auth = str(spec.get("auth") or defaults.get("agent", "auth")).lower()
     return agent
 
 
@@ -221,7 +221,7 @@ def validate_runtimes() -> None:
     the agents before it.
     """
     for agent_id, spec in AGENTS.items():
-        placement = str(spec.get("runtime") or "main")
+        placement = str(spec.get("runtime") or defaults.get("agent", "runtime"))
         if placement not in RUNTIMES:
             raise ValueError(
                 f"agent {agent_id!r} has runtime {placement!r}; valid values are "
@@ -396,7 +396,7 @@ def load_agents() -> dict[str, Agent]:
     validate_features()
     registry: dict[str, Agent] = {}
     for agent_id, spec in AGENTS.items():
-        placement = spec.get("runtime", "main")
+        placement = spec.get("runtime", defaults.get("agent", "runtime"))
         if placement == "dedicated":
             agent: Agent = AgentCoreRuntimeAgent()
             _configure(agent, agent_id, spec)

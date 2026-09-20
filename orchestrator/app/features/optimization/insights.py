@@ -23,6 +23,7 @@ import os
 import time
 from datetime import UTC
 
+from app.common import defaults
 from app.common.config import INSIGHTS as CONFIG_INSIGHTS
 from app.common.config import REGION
 
@@ -39,10 +40,12 @@ _INSIGHT_IDS = [
 # with no config block at all — evaluations, guardrails, policy, memory and the chatbot
 # all have one — so a customer whose runs take longer than fifteen minutes to analyse,
 # or who wants a different default window, had to edit this file.
-_INSIGHTS_CFG = CONFIG_INSIGHTS
-_POLL_TIMEOUT = int(_INSIGHTS_CFG.get("pollTimeoutSeconds") or 900)
-_POLL_INTERVAL = int(_INSIGHTS_CFG.get("pollIntervalSeconds") or 20)
-_DEFAULT_LOOKBACK_HOURS = int(_INSIGHTS_CFG.get("lookbackHours") or 168)  # 7 days of runs
+# Defaults from app/defaults.json (generated from app/keys.json), so the numbers a
+# customer would override are declared beside the key they belong to rather than here.
+_INSIGHTS_CFG = {**defaults.get("orchestrator", "insights"), **CONFIG_INSIGHTS}
+_POLL_TIMEOUT = int(_INSIGHTS_CFG["pollTimeoutSeconds"])
+_POLL_INTERVAL = int(_INSIGHTS_CFG["pollIntervalSeconds"])
+_DEFAULT_LOOKBACK_HOURS = int(_INSIGHTS_CFG["lookbackHours"])
 _TERMINAL = ("COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "STOPPED")
 
 

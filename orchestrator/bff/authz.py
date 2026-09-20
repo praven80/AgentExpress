@@ -49,6 +49,13 @@ _VOCAB_PATH = Path(__file__).resolve().parent / "vocabulary.json"
 if not _VOCAB_PATH.exists():  # a source checkout, where nothing has staged a copy yet
     _VOCAB_PATH = Path(__file__).resolve().parent.parent / "app" / "vocabulary.json"
 _VOCAB = json.loads(_VOCAB_PATH.read_text())
+# Every key's DEFAULT, from app/defaults.json — generated from app/keys.json and read by
+# all three planes. Staged beside this module by both IaC paths, same as the vocabulary
+# above, because a Lambda bundle cannot reach app/.
+_DEFAULTS_PATH = Path(__file__).resolve().parent / "defaults.json"
+if not _DEFAULTS_PATH.exists():  # a source checkout
+    _DEFAULTS_PATH = Path(__file__).resolve().parent.parent / "app" / "defaults.json"
+_DEFAULTS = json.loads(_DEFAULTS_PATH.read_text())
 
 # The mutating actions this module knows about. Keys are what workflow.json uses.
 # `delete` (removing a completed run and its timeline) is included because it is
@@ -60,7 +67,7 @@ ACTIONS = tuple(_VOCAB["authorizationActions"]["values"])
 # server-side, and the projection exists to limit what LEAVES the server. Reading
 # them from the projection would couple enforcement to a display concern.
 _AUTHZ = workflow.RAW.get("authorization") or {}
-GROUPS_CLAIM: str = _AUTHZ.get("groupsClaim") or "cognito:groups"
+GROUPS_CLAIM: str = _AUTHZ.get("groupsClaim") or _DEFAULTS["authorization"]["groupsClaim"]
 # action -> list of groups permitted. Absent key = unrestricted.
 _RULES: dict = _AUTHZ.get("actions") or {}
 
@@ -83,7 +90,7 @@ def claims(event: dict) -> dict:
 def groups_of(event: dict) -> list[str]:
     """The caller's groups, tolerating the several shapes this claim arrives in.
 
-    A list already ("cognito:groups" via a JWT authorizer), a JSON array encoded as
+    A list already (defaults.get("authorization", "groupsClaim") via a JWT authorizer), a JSON array encoded as
     a string, or a space/comma-separated string — API Gateway and the two providers
     are not consistent about this, so normalise rather than assume.
     """

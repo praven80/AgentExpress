@@ -25,6 +25,7 @@ import time
 import urllib.parse
 import urllib.request
 
+from app.common import defaults
 from app.common.config import (
     GATEWAY_AUDIENCE,
     GATEWAY_AUTH_FLOW,
@@ -348,7 +349,7 @@ def _tool_arguments(tool_key: str, query: str) -> dict:
     """
     spec = TOOLS.get(tool_key) or {}
     kind = str(spec.get("type", "mcp")).lower()
-    arg_name = str(spec.get("arg") or "query")
+    arg_name = str(spec.get("arg") or defaults.get("tool", "arg"))
     fixed = dict(spec.get("args") or {})
 
     if kind == "websearch":

@@ -333,7 +333,7 @@ resource "awscc_bedrockagentcore_runtime" "orchestrator" {
     # var.a2a_tokens (sensitive) and never from workflow.json.
     A2A_TOKENS = jsonencode({
       for id in local.a2a_agent_ids : id => var.a2a_tokens[id]
-      if lower(try(local.workflow_def.agents[id].auth, "none")) == "bearer"
+      if lower(try(local.workflow_def.agents[id].auth, local.agent_defaults.auth)) == "bearer"
     })
     # Map of agent_id -> endpoint, for a `runtime = "a2a"` agent whose URL only exists
     # AFTER a deploy (the stand-in's Function URL). Injected rather than committed, for

@@ -42,6 +42,12 @@ data "archive_file" "bff" {
     content  = file("${path.module}/../app/vocabulary.json")
     filename = "vocabulary.json"
   }
+  # Every key's DEFAULT (generated from app/keys.json by build_schema.py). bff/authz.py
+  # reads groupsClaim's default from here rather than keeping a fourth copy of it.
+  source {
+    content  = file("${path.module}/../app/defaults.json")
+    filename = "defaults.json"
+  }
 }
 
 resource "aws_iam_role" "bff" {

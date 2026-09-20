@@ -44,8 +44,8 @@ locals {
   # --- Retrieval settings passed to the KB Lambda ---------------------------
   # Defaults live in kb_lambda/handler.py, so an absent key sends an empty string and
   # the function keeps its documented default rather than this file restating it.
-  kb_corpus_key      = try(local.kb_spec.corpusKey, "doc_type")
-  kb_corpus_operator = try(local.kb_spec.corpusOperator, "equals")
+  kb_corpus_key      = try(local.kb_spec.corpusKey, local.tool_defaults.corpusKey)
+  kb_corpus_operator = try(local.kb_spec.corpusOperator, local.tool_defaults.corpusOperator)
   # Target-level, agent-invisible. See the kb_lambda docstring: the agent's filter is a
   # scalar the Cedar permit enforces, THIS one may be arbitrary because nothing the
   # caller sends can influence it.

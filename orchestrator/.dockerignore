@@ -54,8 +54,14 @@ build_schema.py
 # EDITOR-FACING, not runtime. app/keys.json describes which keys workflow.json may
 # contain and app/workflow.schema.json is generated from it for your editor — together
 # ~40 KB of documentation that nothing in the container reads (the runtime reads
-# workflow.json and vocabulary.json, which DO ship). Excluded for the same reason
-# tests/ is: editing a doc string should not invalidate the image layer and trigger a
-# rebuild and redeploy.
+# workflow.json, vocabulary.json and defaults.json, which DO ship). Excluded for the same
+# reason tests/ is: editing a doc string should not invalidate the image layer and trigger
+# a rebuild and redeploy.
+#
+# app/defaults.json exists BECAUSE of this exclusion. keys.json is where every key's
+# default is authored, but the running code needs those values, so build_schema.py
+# projects them into a 1.6 KB file that ships. It changes when a default changes and never
+# when a comment does, so both properties hold: one authored home, and no image churn from
+# editing prose.
 app/keys.json
 app/workflow.schema.json

@@ -8,7 +8,7 @@ locals {
   workflow_def = jsondecode(file("${path.module}/../app/workflow.json"))
   dedicated_agents = {
     for id, a in local.workflow_def.agents : id => a
-    if lookup(a, "runtime", "main") == "dedicated"
+    if lookup(a, "runtime", local.agent_defaults.runtime) == "dedicated"
   }
 
   subagent_runtime_arns = [for r in awscc_bedrockagentcore_runtime.subagent : r.agent_runtime_arn]

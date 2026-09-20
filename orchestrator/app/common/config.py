@@ -13,6 +13,8 @@ import json
 import os
 from pathlib import Path
 
+from app.common import defaults
+
 _CONFIG_PATH = Path(__file__).resolve().parent.parent / "workflow.json"
 
 
@@ -82,8 +84,7 @@ ORCHESTRATOR: dict = WORKFLOW.get("orchestrator", {})
 #   readTimeoutSeconds  how long to wait for the agent's response. Must exceed the
 #                       slowest agent's wall-clock or you will time out mid-answer
 #                       and, with maxAttempts 1, lose the run.
-_RUNTIME_INVOKE_DEFAULTS = {"maxAttempts": 1, "readTimeoutSeconds": 120}
-RUNTIME_INVOKE: dict = {**_RUNTIME_INVOKE_DEFAULTS,
+RUNTIME_INVOKE: dict = {**defaults.get("orchestrator", "runtimeInvoke"),
                         **(ORCHESTRATOR.get("runtimeInvoke") or {})}
 
 # How the orchestrator calls a REMOTE agent over A2A (app/common/a2a_agent.py) — an
@@ -103,8 +104,8 @@ RUNTIME_INVOKE: dict = {**_RUNTIME_INVOKE_DEFAULTS,
 #                       last state we saw. Bounded rather than open-ended: a task
 #                       that never leaves "working" would otherwise hold the whole
 #                       workflow until the runtime's own 8-hour ceiling.
-_A2A_INVOKE_DEFAULTS = {"timeoutSeconds": 30, "pollIntervalSeconds": 2, "maxPollSeconds": 300}
-A2A_INVOKE: dict = {**_A2A_INVOKE_DEFAULTS, **(ORCHESTRATOR.get("a2aInvoke") or {})}
+A2A_INVOKE: dict = {**defaults.get("orchestrator", "a2aInvoke"),
+                    **(ORCHESTRATOR.get("a2aInvoke") or {})}
 # Per-model token rates for the cost figures in the observability UI, keyed by a
 # substring of the model id:
 #
@@ -133,7 +134,7 @@ DEFAULT_TOPIC: str = str(UI.get("defaultTopic") or "")
 
 MODEL_ID = (os.getenv("BEDROCK_MODEL_ID")
             or ORCHESTRATOR.get("defaultModel")
-            or "us.anthropic.claude-haiku-4-5-20251001-v1:0")
+            or defaults.get("orchestrator", "defaultModel"))
 REGION = os.getenv("AWS_REGION", "us-east-1")
 MEMORY_ID = os.getenv("MEMORY_ID")
 STATUS_TABLE = os.getenv("STATUS_TABLE")

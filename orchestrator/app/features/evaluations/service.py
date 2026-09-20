@@ -28,6 +28,7 @@ import json
 import os
 import time
 
+from app.common import defaults
 from app.common.config import AGENTS, REGION
 
 # Where OTEL spans land. This deployment keeps spans in the agent runtime's own
@@ -39,7 +40,8 @@ _SPANS_LOG_GROUP = "aws/spans"
 # id-suffixed name is only known after the runtime exists, so we discover the
 # matching groups at query time.
 _RUNTIME_LOG_PREFIX = os.getenv("SPAN_LOG_GROUP_PREFIX", "")
-_DEFAULT_EVALUATORS = ["Builtin.Faithfulness"]
+#: From app/defaults.json (generated from app/keys.json), where the key is documented.
+_DEFAULT_EVALUATORS = defaults.get("agentcore", "evaluations.evaluators")
 
 # How long to keep retrying for the agent span to appear (spans reach CloudWatch
 # a little after the agent finishes, and Logs Insights indexing is not instant).

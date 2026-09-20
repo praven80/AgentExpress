@@ -17,7 +17,7 @@ locals {
   # Agents that want the shipped stand-in, and which skill each one is.
   a2a_lambda_agents = {
     for id in local.a2a_agent_ids : id => lower(try(
-    local.workflow_def.agents[id].skill, "compliance"))
+    local.workflow_def.agents[id].skill, local.agent_defaults.skill))
     if try(local.workflow_def.agents[id].source, "") == "a2a_lambda"
   }
   a2a_lambda_enabled = length(local.a2a_lambda_agents) > 0 ? 1 : 0

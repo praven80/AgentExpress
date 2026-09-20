@@ -73,7 +73,7 @@ locals {
           ]
         }
       ]
-      max_results = try(t.maxResults, 10)
+      max_results = try(t.maxResults, local.tool_defaults_by_type.maxResults[lower(try(t.type, ""))])
       # Which domains web search may return. ONE key, applied on the target: hidden
       # from the agent and enforced on every request. It replaced four keys — a
       # request-level includeDomains/excludeDomains pair and a target-level
@@ -110,7 +110,7 @@ locals {
       # Either works. When verifying with tools/list, remember the response is
       # PAGINATED — follow nextCursor, or a target whose tools sit on page two
       # looks empty.
-      listing_mode = upper(try(t.listingMode, "DEFAULT"))
+      listing_mode = upper(try(t.listingMode, local.tool_defaults.listingMode))
 
       # OUTBOUND auth from the Gateway to the tool's endpoint:
       #   none   — a public endpoint (the default)
@@ -139,7 +139,7 @@ locals {
       policy_restrict = try(t.policy.restrictTo, {})
       # Set policy = false (or policy.permit = false) to register the target but
       # deliberately NOT permit it — useful for demonstrating default-deny.
-      policy_permit = try(t.policy.permit, true)
+      policy_permit = try(t.policy.permit, local.tool_defaults["policy.permit"])
     }
     if var.enable_gateway
   }
@@ -153,13 +153,27 @@ locals {
   # written out here as well as in Python and TypeScript, and a copy that drifted meant a
   # value one plane accepted and another rejected.
   vocab = jsondecode(file("${path.module}/../app/vocabulary.json"))
+  # Every key's DEFAULT, from app/defaults.json — generated from app/keys.json by
+  # build_schema.py and read by all three planes (app/common/defaults.py,
+  # cdk/lib/defaults.ts, here). Same reason as local.vocab above, and the same history: a
+  # default written out per plane drifts, and it drifts SILENTLY. `runtime = "main"` was
+  # written fifteen times across the three planes, and `maxResults` carried both 5 and 10
+  # in THIS file, where only one of them reached the KB Lambda.
+  #
+  # Declared in one place here so every other *.tf can reference local.key_defaults rather
+  # than decoding the file again (kb.tf already consumes local.vocab this way).
+  key_defaults = jsondecode(file("${path.module}/../app/defaults.json"))
+  # Shorthands, so the read at each point of use is short enough not to tempt a literal.
+  agent_defaults        = local.key_defaults.agent
+  tool_defaults         = local.key_defaults.tool
+  tool_defaults_by_type = local.key_defaults.perType.tool
 
   kb_tool_name = length(local.kb_tools) > 0 ? keys(local.kb_tools)[0] : ""
   # The corpora (doc_type tags) the KB agent(s) may retrieve from.
   kb_corpora = local.kb_tool_name != "" ? local.kb_tools[local.kb_tool_name].corpora : []
   # Retrieval depth for the KB Lambda (KB_NUM_RESULTS in kb.tf). Same `maxResults`
   # key a websearch tool uses, so the two tool types read the same way.
-  kb_max_results = local.kb_tool_name != "" ? try(local.kb_tools[local.kb_tool_name].maxResults, 5) : 5
+  kb_max_results = local.kb_tool_name != "" ? local.kb_tools[local.kb_tool_name].max_results : local.tool_defaults_by_type.maxResults.kb
 
   websearch_tools = { for n, t in local.tools : n => t if t.type == "websearch" }
   mcp_tools       = { for n, t in local.tools : n => t if t.type == "mcp" }
@@ -249,7 +263,7 @@ locals {
         n, t.policy_tool, local.gateway_arn_for_policy,
         length(keys(t.policy_restrict)) == 0
         # No declared restriction: require the query parameter to be present.
-        ? format("  context.input has %s", t.arg != "" ? t.arg : "query")
+        ? format("  context.input has %s", t.arg != "" ? t.arg : local.tool_defaults.arg)
         : join(" &&\n", [
           for arg, allowed in t.policy_restrict :
           format("  context.input has %s && %s.contains(context.input.%s)",
@@ -372,11 +386,11 @@ locals {
 
   # A misspelled runtime falls through to "main" and dies on a missing module.
   bad_runtimes = [
-    for id, a in local.workflow_def.agents : "${id}=${try(a.runtime, "main")}"
-    if !contains(local.a2a_runtimes, try(a.runtime, "main"))
+    for id, a in local.workflow_def.agents : "${id}=${try(a.runtime, local.agent_defaults.runtime)}"
+    if !contains(local.a2a_runtimes, try(a.runtime, local.agent_defaults.runtime))
   ]
   a2a_agent_ids = [
-    for id, a in local.workflow_def.agents : id if try(a.runtime, "main") == "a2a"
+    for id, a in local.workflow_def.agents : id if try(a.runtime, local.agent_defaults.runtime) == "a2a"
   ]
   # Deliberately NOT validated here: that app/subagents/<id>/ exists for every agent whose
   # code ships in this repo. Terraform could do it cheaply with fileexists(), and the CDK
@@ -390,7 +404,7 @@ locals {
   # `agentCard`/`auth` on any other placement read as settings and control nothing.
   a2a_keys_on_local_agents = [
     for id, a in local.workflow_def.agents : id
-    if try(a.runtime, "main") != "a2a"
+    if try(a.runtime, local.agent_defaults.runtime) != "a2a"
     && (try(a.agentCard, "") != "" || try(a.auth, "") != "")
   ]
   a2a_sources = local.vocab.a2aSources.values
@@ -405,9 +419,9 @@ locals {
   # The stand-in is behind an AWS_IAM Function URL, so sigv4 is the only auth that can
   # reach it; anything else is a guaranteed 403 that reads like a missing agent.
   a2a_source_without_sigv4 = [
-    for id in local.a2a_agent_ids : "${id}=${lower(try(local.workflow_def.agents[id].auth, "none"))}"
+    for id in local.a2a_agent_ids : "${id}=${lower(try(local.workflow_def.agents[id].auth, local.agent_defaults.auth))}"
     if try(local.workflow_def.agents[id].source, "") == "a2a_lambda"
-    && lower(try(local.workflow_def.agents[id].auth, "none")) != "sigv4"
+    && lower(try(local.workflow_def.agents[id].auth, local.agent_defaults.auth)) != "sigv4"
   ]
   a2a_bad_source = [
     for id in local.a2a_agent_ids : "${id}=${try(local.workflow_def.agents[id].source, "")}"
@@ -437,12 +451,12 @@ locals {
     && !startswith(lower(try(local.workflow_def.agents[id].agentCard, "")), "https://")
   ]
   a2a_bad_auth = [
-    for id in local.a2a_agent_ids : "${id}=${try(local.workflow_def.agents[id].auth, "none")}"
-    if !contains(local.a2a_auth_modes, lower(try(local.workflow_def.agents[id].auth, "none")))
+    for id in local.a2a_agent_ids : "${id}=${try(local.workflow_def.agents[id].auth, local.agent_defaults.auth)}"
+    if !contains(local.a2a_auth_modes, lower(try(local.workflow_def.agents[id].auth, local.agent_defaults.auth)))
   ]
   a2a_oauth_without_provider = [
     for id in local.a2a_agent_ids : id
-    if lower(try(local.workflow_def.agents[id].auth, "none")) == "oauth2"
+    if lower(try(local.workflow_def.agents[id].auth, local.agent_defaults.auth)) == "oauth2"
     && length(try(local.workflow_def.agents[id].agentcore.identity.outbound, [])) == 0
   ]
   # A remote agent reaches its own data sources, and makes its own model call.
@@ -455,7 +469,7 @@ locals {
   # A bearer-auth agent needs its token supplied out of band, never in workflow.json.
   a2a_missing_tokens = [
     for id in local.a2a_agent_ids : id
-    if lower(try(local.workflow_def.agents[id].auth, "none")) == "bearer"
+    if lower(try(local.workflow_def.agents[id].auth, local.agent_defaults.auth)) == "bearer"
     && try(var.a2a_tokens[id], "") == ""
   ]
 

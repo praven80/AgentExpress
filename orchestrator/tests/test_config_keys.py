@@ -32,6 +32,7 @@ below still do the enforcing; they no longer own the list.
 """
 
 import json
+import re
 
 import pytest
 from conftest import ORCH_ROOT
@@ -576,3 +577,158 @@ def test_every_app_tool_key_is_a_declared_workflow_key():
     declared = set(json.loads(_read("app", "keys.json"))["tool"]["keys"])
     assert set(APP_TOOL_KEYS) <= declared, (
         f"not keys of a tools entry: {sorted(set(APP_TOOL_KEYS) - declared)}")
+
+
+# ---------------------------------------------------------------------------
+# DEFAULTS: one authored home, and no plane may re-hardcode one
+# ---------------------------------------------------------------------------
+# The same problem app/vocabulary.json solved for allowed VALUES, one level over: a
+# default is a decision about what an omitted key means, and it was written out once per
+# plane. `runtime: "main"` appeared FIFTEEN times across Python, HCL and TypeScript;
+# `arg: "query"` three times; `corpusKey: "doc_type"` three times.
+#
+# And it had already produced a real defect, in a single file: terraform/tools.tf applied
+# `try(t.maxResults, 10)` to EVERY tool including the Knowledge Base one, then separately
+# re-read the kb spec with a `5` fallback. Two different defaults for one key, in one
+# plane, where only the second reached the KB Lambda.
+#
+# A drifted default is quieter than a drifted allow-list, which is what makes this worth a
+# test. A missing VALUE is rejected at plan or synth with a message naming it. A default
+# that differs by plane deploys cleanly on BOTH and behaves differently, and the difference
+# is whatever the key controls — indistinguishable from the feature working.
+
+def _defaults_file() -> dict:
+    return json.loads((ORCH_ROOT / "app" / "defaults.json").read_text())
+
+
+def test_the_generated_defaults_file_matches_the_spec_it_comes_from():
+    """app/defaults.json is generated; `build_schema.py --check` guards staleness in CI.
+    This asserts the two agree on CONTENT, so a hand edit to the generated file is caught
+    even if someone re-runs the generator afterwards."""
+    generated = {b: v for b, v in _defaults_file().items() if not b.startswith("$")}
+    per_type = generated.pop("perType", {})
+    for block, keys in SPEC.items():
+        if block.startswith("$"):
+            continue
+        for key, spec in (keys.get("keys") or {}).items():
+            if "default" in spec:
+                assert generated.get(block, {}).get(key) == spec["default"], f"{block}.{key}"
+            if spec.get("defaultFor"):
+                assert per_type.get(block, {}).get(key) == spec["defaultFor"], f"{block}.{key}"
+
+
+def test_every_declared_default_is_reachable_through_the_accessor():
+    """Declaring a default nothing can read would be documentation pretending to be
+    behaviour — the exact failure mode this file's own header describes for keys."""
+    from app.common import defaults
+
+    for block, keys in SPEC.items():
+        if block.startswith("$"):
+            continue
+        for key, spec in (keys.get("keys") or {}).items():
+            if "default" in spec:
+                assert defaults.get(block, key) == spec["default"], f"{block}.{key}"
+            for variant, value in (spec.get("defaultFor") or {}).items():
+                assert defaults.for_type(block, key, variant) == value, f"{block}.{key}/{variant}"
+
+
+def test_asking_for_a_default_that_is_not_declared_raises():
+    """Never None. A caller asking for a default has decided the key is optional; if the
+    spec disagrees, None would be applied as though it were the intended value."""
+    from app.common import defaults
+
+    with pytest.raises(KeyError, match="declares no `default`"):
+        defaults.get("agent", "thereIsNoSuchKey")
+    # And a per-variant key must be asked for BY VARIANT, so a kb tool can never be
+    # handed websearch's page size.
+    with pytest.raises(KeyError, match="declares no default for"):
+        defaults.for_type("tool", "maxResults", "mcp")
+
+
+#: Defaults whose literal form is too common to search for without drowning in false
+#: positives, or which legitimately appear for a non-config reason. Each one is still
+#: covered by the accessor test above; what is skipped is only the "no literal anywhere"
+#: sweep. Kept explicit so the exemption is a decision rather than an accident.
+_UNSEARCHABLE = {
+    # 0, true and "none" appear thousands of times for unrelated reasons.
+    ("agent", "temperature"), ("tool", "policy.permit"), ("agent", "auth"),
+    # "sync" appears in unrelated identifiers; `kind` is read in exactly one place.
+    ("agent", "kind"),
+}
+
+
+def test_no_plane_hardcodes_a_default_that_is_declared_in_the_spec():
+    """THE POINT OF THE WHOLE CHANGE. A default declared in keys.json must not also exist
+    as a literal in Python, HCL or TypeScript, because that literal is what drifts.
+
+    Searches the SOURCE of each plane for the default's literal form. Comments are stripped
+    first: an earlier drift test in this file passed with the code deleted because the
+    explanatory comment above it still mentioned the value, and that lesson applies here
+    even more strongly — these defaults are all discussed in prose near where they are used.
+    """
+    planes = {
+        "#": sorted((ORCH_ROOT / "terraform").glob("*.tf")),
+        "//": sorted((ORCH_ROOT / "cdk" / "lib").glob("*.ts")),
+        "# ": [p for p in (ORCH_ROOT / "app").rglob("*.py") if "__pycache__" not in str(p)]
+        + sorted((ORCH_ROOT / "bff").glob("*.py")),
+    }
+    offenders = []
+    for block, keys in SPEC.items():
+        if block.startswith("$"):
+            continue
+        for key, spec in (keys.get("keys") or {}).items():
+            if "default" not in spec or (block, key) in _UNSEARCHABLE:
+                continue
+            value = spec["default"]
+            if not isinstance(value, (str, int)) or isinstance(value, bool):
+                continue
+            literal = re.escape(f'"{value}"' if isinstance(value, str) else str(value))
+            leaf = re.escape(key.rsplit(".", 1)[-1])
+            # Matches a FALLBACK EXPRESSION, not a bare literal. Two earlier versions of
+            # this test were too blunt to be useful: searching whole files for the value
+            # flagged five unrelated `[:4000]` truncations, a resource named `main`, and the
+            # `branch` operator "equals"; narrowing to "same line as the key name" still
+            # flagged docstring prose ("default \"query\""), a TypeScript type union
+            # (`"DEFAULT" | "DYNAMIC"`) and an error message listing the valid values.
+            #
+            # None of those is a default. A default is specifically the right-hand side of a
+            # fallback, and every plane writes that one of five ways — so those are what is
+            # searched for, which drops the prose and keeps every real duplicate.
+            patterns = [
+                rf'\.get\(\s*"{leaf}"\s*,\s*{literal}',        # py: .get("k", D)
+                rf'\.get\(\s*"{leaf}"\s*\)\s*or\s*{literal}',   # py: .get("k") or D
+                rf'\b{leaf}\s*:\s*\w+\s*=\s*{literal}',         # py: dataclass field
+                rf'\.{leaf}\s*\?\?\s*{literal}',                # ts: x.k ?? D
+                rf'\.{leaf}\s*\|\|\s*{literal}',                # ts: x.k || D
+                rf'\[\s*"{leaf}"\s*\]\s*\?\?\s*{literal}',      # ts: x["k"] ?? D
+                rf'try\([^,()]*\.{leaf}\s*,\s*{literal}',       # hcl: try(x.k, D)
+                rf'lookup\([^,]*,\s*"{leaf}"\s*,\s*{literal}',  # hcl: lookup(x, "k", D)
+            ]
+            rx = re.compile("|".join(patterns))
+            for comment, files in planes.items():
+                for path in files:
+                    # The accessor modules are where the value is SUPPOSED to be read.
+                    if path.name in {"defaults.py", "defaults.ts"}:
+                        continue
+                    for n, line in enumerate(path.read_text().splitlines(), 1):
+                        code = line.split(comment.strip())[0]
+                        if rx.search(code):
+                            offenders.append(
+                                f"{block}.{key} default falls back to a literal at "
+                                f"{path.relative_to(ORCH_ROOT)}:{n}")
+    assert not offenders, (
+        "these defaults are declared in app/keys.json AND written out as a literal; read "
+        "them through the accessor instead (app/common/defaults.py, cdk/lib/defaults.ts, "
+        "local.key_defaults):\n  " + "\n  ".join(sorted(offenders)))
+
+
+def test_the_one_key_with_two_legitimate_defaults_declares_both():
+    """`maxResults` is retrieval DEPTH for a kb and page SIZE for websearch. It is the
+    reason `defaultFor` exists: a single number would be wrong for one of them, and the
+    version of this code that picked one gave the KB Lambda websearch's value."""
+    spec = SPEC["tool"]["keys"]["maxResults"]
+    assert "default" not in spec, "a single default cannot be right for both tool types"
+    assert spec["defaultFor"] == {"kb": 5, "websearch": 10}
+    assert set(spec["appliesTo"]) == set(spec["defaultFor"]), (
+        "every type this key applies to needs its own default, or one of them silently "
+        "falls through to whatever the reader happens to write")

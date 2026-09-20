@@ -18,6 +18,7 @@ edit — not a code change. See app/features/ for what each one does.
 The framework wires either mode into the graph, status tracking, and UI.
 """
 
+from app.common import defaults
 from app.common.context import AgentContext
 
 
@@ -25,16 +26,21 @@ class Agent:
     # Populated by the registry from workflow.json:
     id: str = ""
     name: str = ""
-    kind: str = "sync"          # "sync" or "async" (long-running); metadata for the UI
-    runtime: str = "main"       # "main" (in-process node) or "dedicated" (own AgentCore Runtime)
+    # These two mirror workflow.json keys, so their defaults come from the spec rather
+    # than being written out again here. `registry._configure` overwrites both for every
+    # real agent; the field defaults matter only for an Agent constructed directly, which
+    # is what the test suite does — and a field default that disagreed with the spec would
+    # make those tests assert the wrong placement.
+    kind: str = defaults.get("agent", "kind")       # "sync" or "async"; metadata for the UI
+    runtime: str = defaults.get("agent", "runtime")  # in-process node, dedicated, or a2a
     tool: str | None = None     # optional tool label from workflow.json `tools`
     corpus: str | None = None   # for a type=kb tool: which corpus to retrieve from
     model: str | None = None    # optional per-agent model id (defaults to config.MODEL_ID)
-    temperature: float = 0
+    temperature: float = defaults.get("agent", "temperature")
     # Output budget in tokens, from `maxTokens` in this agent's workflow.json entry.
     # Set it there, not here: an agent emitting a large structured payload needs a
     # bigger budget, and too small a budget truncates the JSON mid-object.
-    max_tokens: int = 4000
+    max_tokens: int = defaults.get("agent", "maxTokens")
     agentcore: dict = None      # AgentCore features config (workflow.json "agentcore" block)
 
     # --- where the long-term memory lifecycle runs -------------------------

@@ -33,21 +33,23 @@
             "type": "string"
           },
           "kind": {
-            "description": "Whether the step completes inline or is long-running. Presentation only today: the UI shows a chip when it is not \"sync\".\n\nRead by: registry.py -> agent.kind; bff/workflow.py ships it; index.html renders the chip",
+            "description": "Whether the step completes inline or is long-running. Presentation only today: the UI shows a chip when it is not \"sync\".\n\nRead by: registry.py -> agent.kind; bff/workflow.py ships it; index.html renders the chip\n\nDefault: \"sync\"",
             "type": "string",
             "enum": [
               "sync",
               "async"
-            ]
+            ],
+            "default": "sync"
           },
           "runtime": {
-            "description": "Where the step runs. \"main\" = in-process; \"dedicated\" = its own AgentCore Runtime; \"a2a\" = an agent you do NOT operate, reached over the Agent2Agent protocol. Defaults to \"main\".\n\nRead by: registry.py, subagent_runtimes.tf / orchestrator-stack.ts; the UI chip\n\nAllowed values (runtimes in app/vocabulary.json): 'main', 'dedicated', 'a2a'",
+            "description": "Where the step runs. \"main\" = in-process; \"dedicated\" = its own AgentCore Runtime; \"a2a\" = an agent you do NOT operate, reached over the Agent2Agent protocol. Defaults to \"main\".\n\nRead by: registry.py, subagent_runtimes.tf / orchestrator-stack.ts; the UI chip\n\nAllowed values (runtimes in app/vocabulary.json): 'main', 'dedicated', 'a2a'\n\nDefault: \"main\"",
             "type": "string",
             "enum": [
               "main",
               "dedicated",
               "a2a"
-            ]
+            ],
+            "default": "main"
           },
           "produces": {
             "description": "The name of this agent's deliverable, e.g. \"claim-decision\". Names the asset type, is injected into the task prompt, and is what the framework stamps as `assetType` on the asset.\n\nRead by: nodes.py task prompt; a2a_agent.py _as_asset (the envelope on a remote reply)",
@@ -58,12 +60,14 @@
             "type": "string"
           },
           "temperature": {
-            "description": "Sampling temperature. Defaults to 0, which is what you want for an agent that emits a structured asset.\n\nRead by: registry.py -> agent.temperature",
-            "type": "number"
+            "description": "Sampling temperature. Defaults to 0, which is what you want for an agent that emits a structured asset.\n\nRead by: registry.py -> agent.temperature\n\nDefault: 0",
+            "type": "number",
+            "default": 0
           },
           "maxTokens": {
-            "description": "Output token budget. Required, because too low does not surface as \"budget exceeded\" — it surfaces as an unparseable asset, so the number belongs in front of you rather than defaulted in code.\n\nRead by: registry.py -> agent.max_tokens",
-            "type": "integer"
+            "description": "Output token budget. Required, because too low does not surface as \"budget exceeded\" — it surfaces as an unparseable asset, so the number belongs in front of you rather than defaulted in code.\n\nRead by: registry.py -> agent.max_tokens\n\nDefault: 4000",
+            "type": "integer",
+            "default": 4000
           },
           "source": {
             "description": "Reach the A2A server this framework deploys for you, instead of an external URL. The deploy injects its endpoint, so there is nothing to commit. Exclusive with agentCard.\n\nRead by: registry.py A2A_SOURCES; a2a.tf / orchestrator-stack.ts inject A2A_ENDPOINTS\n\nAllowed values (a2aSources in app/vocabulary.json): 'a2a_lambda'",
@@ -77,24 +81,26 @@
             "type": "string"
           },
           "skill": {
-            "description": "Which of the shipped stand-in's skills this agent is. Only meaningful with `source`: an external agent advertises its own skills in its Agent Card.\n\nRead by: a2a.tf / orchestrator-stack.ts, as the path segment of the injected endpoint\n\nAllowed values (a2aLambdaSkills in app/vocabulary.json): 'compliance', 'resilience', 'analysis', 'recommendation'",
+            "description": "Which of the shipped stand-in's skills this agent is. Only meaningful with `source`: an external agent advertises its own skills in its Agent Card.\n\nRead by: a2a.tf / orchestrator-stack.ts, as the path segment of the injected endpoint\n\nAllowed values (a2aLambdaSkills in app/vocabulary.json): 'compliance', 'resilience', 'analysis', 'recommendation'\n\nDefault: \"compliance\"",
             "type": "string",
             "enum": [
               "compliance",
               "resilience",
               "analysis",
               "recommendation"
-            ]
+            ],
+            "default": "compliance"
           },
           "auth": {
-            "description": "How this deployment authenticates TO the remote agent. Must be \"sigv4\" with `source`, because that endpoint is IAM-authed. A bearer token never goes here — it is injected by the IaC, keyed by agent id.\n\nRead by: a2a_agent.py; validated in all three planes\n\nAllowed values (a2aAuthModes in app/vocabulary.json): 'none', 'bearer', 'oauth2', 'sigv4'",
+            "description": "How this deployment authenticates TO the remote agent. Must be \"sigv4\" with `source`, because that endpoint is IAM-authed. A bearer token never goes here — it is injected by the IaC, keyed by agent id.\n\nRead by: a2a_agent.py; validated in all three planes\n\nAllowed values (a2aAuthModes in app/vocabulary.json): 'none', 'bearer', 'oauth2', 'sigv4'\n\nDefault: \"none\"",
             "type": "string",
             "enum": [
               "none",
               "bearer",
               "oauth2",
               "sigv4"
-            ]
+            ],
+            "default": "none"
           },
           "tool": {
             "description": "A key in the `tools` block. Validated — a name that does not resolve fails at plan/synth, not at run time. Omit and the agent reasons purely over upstream outputs.\n\nRead by: registry.py -> agent.tool -> ctx.call_tool / ctx.retrieve",
@@ -163,12 +169,15 @@
                     "type": "boolean"
                   },
                   "evaluators": {
-                    "description": "Which judges to run, as Builtin.<Name> or Custom.<Name> — e.g. Builtin.Faithfulness, Builtin.Coherence. Validated on SHAPE, not against a fixed list, so an evaluator AWS adds later needs no framework edit.\n\nRead by: evaluations/service.py evaluators_for; shape-checked by registry.validate_features",
+                    "description": "Which judges to run, as Builtin.<Name> or Custom.<Name> — e.g. Builtin.Faithfulness, Builtin.Coherence. Validated on SHAPE, not against a fixed list, so an evaluator AWS adds later needs no framework edit.\n\nRead by: evaluations/service.py evaluators_for; shape-checked by registry.validate_features\n\nDefault: [\"Builtin.Faithfulness\"]",
                     "type": "array",
                     "items": {
                       "type": "string",
                       "pattern": "^(Builtin|Custom)\\.[A-Za-z][A-Za-z0-9]*$"
-                    }
+                    },
+                    "default": [
+                      "Builtin.Faithfulness"
+                    ]
                   }
                 }
               },
@@ -301,12 +310,15 @@
                           "type": "boolean"
                         },
                         "evaluators": {
-                          "description": "Which judges to run, as Builtin.<Name> or Custom.<Name> — e.g. Builtin.Faithfulness, Builtin.Coherence. Validated on SHAPE, not against a fixed list, so an evaluator AWS adds later needs no framework edit.\n\nRead by: evaluations/service.py evaluators_for; shape-checked by registry.validate_features",
+                          "description": "Which judges to run, as Builtin.<Name> or Custom.<Name> — e.g. Builtin.Faithfulness, Builtin.Coherence. Validated on SHAPE, not against a fixed list, so an evaluator AWS adds later needs no framework edit.\n\nRead by: evaluations/service.py evaluators_for; shape-checked by registry.validate_features\n\nDefault: [\"Builtin.Faithfulness\"]",
                           "type": "array",
                           "items": {
                             "type": "string",
                             "pattern": "^(Builtin|Custom)\\.[A-Za-z][A-Za-z0-9]*$"
-                          }
+                          },
+                          "default": [
+                            "Builtin.Faithfulness"
+                          ]
                         }
                       }
                     },
@@ -341,16 +353,18 @@
                   "type": "string"
                 },
                 "kind": {
-                  "description": "Whether the step completes inline or is long-running. Presentation only today: the UI shows a chip when it is not \"sync\".\n\nRead by: registry.py -> agent.kind; bff/workflow.py ships it; index.html renders the chip",
+                  "description": "Whether the step completes inline or is long-running. Presentation only today: the UI shows a chip when it is not \"sync\".\n\nRead by: registry.py -> agent.kind; bff/workflow.py ships it; index.html renders the chip\n\nDefault: \"sync\"",
                   "type": "string",
                   "enum": [
                     "sync",
                     "async"
-                  ]
+                  ],
+                  "default": "sync"
                 },
                 "maxTokens": {
-                  "description": "Output token budget. Required, because too low does not surface as \"budget exceeded\" — it surfaces as an unparseable asset, so the number belongs in front of you rather than defaulted in code.\n\nRead by: registry.py -> agent.max_tokens",
-                  "type": "integer"
+                  "description": "Output token budget. Required, because too low does not surface as \"budget exceeded\" — it surfaces as an unparseable asset, so the number belongs in front of you rather than defaulted in code.\n\nRead by: registry.py -> agent.max_tokens\n\nDefault: 4000",
+                  "type": "integer",
+                  "default": 4000
                 },
                 "model": {
                   "description": "Bedrock model id for THIS agent. Omit to use orchestrator.defaultModel — no shipped agent sets it; the mechanism is here for when one step needs a bigger model.\n\nRead by: registry.py -> agent.model -> ctx.llm",
@@ -365,17 +379,19 @@
                   "type": "string"
                 },
                 "runtime": {
-                  "description": "Where the step runs. \"main\" = in-process; \"dedicated\" = its own AgentCore Runtime; \"a2a\" = an agent you do NOT operate, reached over the Agent2Agent protocol. Defaults to \"main\".\n\nRead by: registry.py, subagent_runtimes.tf / orchestrator-stack.ts; the UI chip\n\nAllowed values (runtimes in app/vocabulary.json): 'main', 'dedicated', 'a2a'",
+                  "description": "Where the step runs. \"main\" = in-process; \"dedicated\" = its own AgentCore Runtime; \"a2a\" = an agent you do NOT operate, reached over the Agent2Agent protocol. Defaults to \"main\".\n\nRead by: registry.py, subagent_runtimes.tf / orchestrator-stack.ts; the UI chip\n\nAllowed values (runtimes in app/vocabulary.json): 'main', 'dedicated', 'a2a'\n\nDefault: \"main\"",
                   "type": "string",
                   "enum": [
                     "main",
                     "dedicated",
                     "a2a"
-                  ]
+                  ],
+                  "default": "main"
                 },
                 "temperature": {
-                  "description": "Sampling temperature. Defaults to 0, which is what you want for an agent that emits a structured asset.\n\nRead by: registry.py -> agent.temperature",
-                  "type": "number"
+                  "description": "Sampling temperature. Defaults to 0, which is what you want for an agent that emits a structured asset.\n\nRead by: registry.py -> agent.temperature\n\nDefault: 0",
+                  "type": "number",
+                  "default": 0
                 },
                 "tool": {
                   "description": "A key in the `tools` block. Validated — a name that does not resolve fails at plan/synth, not at run time. Omit and the agent reasons purely over upstream outputs.\n\nRead by: registry.py -> agent.tool -> ctx.call_tool / ctx.retrieve",
@@ -460,12 +476,15 @@
                           "type": "boolean"
                         },
                         "evaluators": {
-                          "description": "Which judges to run, as Builtin.<Name> or Custom.<Name> — e.g. Builtin.Faithfulness, Builtin.Coherence. Validated on SHAPE, not against a fixed list, so an evaluator AWS adds later needs no framework edit.\n\nRead by: evaluations/service.py evaluators_for; shape-checked by registry.validate_features",
+                          "description": "Which judges to run, as Builtin.<Name> or Custom.<Name> — e.g. Builtin.Faithfulness, Builtin.Coherence. Validated on SHAPE, not against a fixed list, so an evaluator AWS adds later needs no framework edit.\n\nRead by: evaluations/service.py evaluators_for; shape-checked by registry.validate_features\n\nDefault: [\"Builtin.Faithfulness\"]",
                           "type": "array",
                           "items": {
                             "type": "string",
                             "pattern": "^(Builtin|Custom)\\.[A-Za-z][A-Za-z0-9]*$"
-                          }
+                          },
+                          "default": [
+                            "Builtin.Faithfulness"
+                          ]
                         }
                       }
                     },
@@ -500,16 +519,18 @@
                   "type": "string"
                 },
                 "kind": {
-                  "description": "Whether the step completes inline or is long-running. Presentation only today: the UI shows a chip when it is not \"sync\".\n\nRead by: registry.py -> agent.kind; bff/workflow.py ships it; index.html renders the chip",
+                  "description": "Whether the step completes inline or is long-running. Presentation only today: the UI shows a chip when it is not \"sync\".\n\nRead by: registry.py -> agent.kind; bff/workflow.py ships it; index.html renders the chip\n\nDefault: \"sync\"",
                   "type": "string",
                   "enum": [
                     "sync",
                     "async"
-                  ]
+                  ],
+                  "default": "sync"
                 },
                 "maxTokens": {
-                  "description": "Output token budget. Required, because too low does not surface as \"budget exceeded\" — it surfaces as an unparseable asset, so the number belongs in front of you rather than defaulted in code.\n\nRead by: registry.py -> agent.max_tokens",
-                  "type": "integer"
+                  "description": "Output token budget. Required, because too low does not surface as \"budget exceeded\" — it surfaces as an unparseable asset, so the number belongs in front of you rather than defaulted in code.\n\nRead by: registry.py -> agent.max_tokens\n\nDefault: 4000",
+                  "type": "integer",
+                  "default": 4000
                 },
                 "model": {
                   "description": "Bedrock model id for THIS agent. Omit to use orchestrator.defaultModel — no shipped agent sets it; the mechanism is here for when one step needs a bigger model.\n\nRead by: registry.py -> agent.model -> ctx.llm",
@@ -524,17 +545,19 @@
                   "type": "string"
                 },
                 "runtime": {
-                  "description": "Where the step runs. \"main\" = in-process; \"dedicated\" = its own AgentCore Runtime; \"a2a\" = an agent you do NOT operate, reached over the Agent2Agent protocol. Defaults to \"main\".\n\nRead by: registry.py, subagent_runtimes.tf / orchestrator-stack.ts; the UI chip\n\nAllowed values (runtimes in app/vocabulary.json): 'main', 'dedicated', 'a2a'",
+                  "description": "Where the step runs. \"main\" = in-process; \"dedicated\" = its own AgentCore Runtime; \"a2a\" = an agent you do NOT operate, reached over the Agent2Agent protocol. Defaults to \"main\".\n\nRead by: registry.py, subagent_runtimes.tf / orchestrator-stack.ts; the UI chip\n\nAllowed values (runtimes in app/vocabulary.json): 'main', 'dedicated', 'a2a'\n\nDefault: \"main\"",
                   "type": "string",
                   "enum": [
                     "main",
                     "dedicated",
                     "a2a"
-                  ]
+                  ],
+                  "default": "main"
                 },
                 "temperature": {
-                  "description": "Sampling temperature. Defaults to 0, which is what you want for an agent that emits a structured asset.\n\nRead by: registry.py -> agent.temperature",
-                  "type": "number"
+                  "description": "Sampling temperature. Defaults to 0, which is what you want for an agent that emits a structured asset.\n\nRead by: registry.py -> agent.temperature\n\nDefault: 0",
+                  "type": "number",
+                  "default": 0
                 },
                 "tool": {
                   "description": "A key in the `tools` block. Validated — a name that does not resolve fails at plan/synth, not at run time. Omit and the agent reasons purely over upstream outputs.\n\nRead by: registry.py -> agent.tool -> ctx.call_tool / ctx.retrieve",
@@ -616,12 +639,15 @@
                           "type": "boolean"
                         },
                         "evaluators": {
-                          "description": "Which judges to run, as Builtin.<Name> or Custom.<Name> — e.g. Builtin.Faithfulness, Builtin.Coherence. Validated on SHAPE, not against a fixed list, so an evaluator AWS adds later needs no framework edit.\n\nRead by: evaluations/service.py evaluators_for; shape-checked by registry.validate_features",
+                          "description": "Which judges to run, as Builtin.<Name> or Custom.<Name> — e.g. Builtin.Faithfulness, Builtin.Coherence. Validated on SHAPE, not against a fixed list, so an evaluator AWS adds later needs no framework edit.\n\nRead by: evaluations/service.py evaluators_for; shape-checked by registry.validate_features\n\nDefault: [\"Builtin.Faithfulness\"]",
                           "type": "array",
                           "items": {
                             "type": "string",
                             "pattern": "^(Builtin|Custom)\\.[A-Za-z][A-Za-z0-9]*$"
-                          }
+                          },
+                          "default": [
+                            "Builtin.Faithfulness"
+                          ]
                         }
                       }
                     },
@@ -652,22 +678,24 @@
                   "description": "The AgentCore feature switches: memory, guardrails, evaluations, identity, policy. Omit a block to leave that capability off. See the `agentcore` spec."
                 },
                 "auth": {
-                  "description": "How this deployment authenticates TO the remote agent. Must be \"sigv4\" with `source`, because that endpoint is IAM-authed. A bearer token never goes here — it is injected by the IaC, keyed by agent id.\n\nRead by: a2a_agent.py; validated in all three planes\n\nAllowed values (a2aAuthModes in app/vocabulary.json): 'none', 'bearer', 'oauth2', 'sigv4'",
+                  "description": "How this deployment authenticates TO the remote agent. Must be \"sigv4\" with `source`, because that endpoint is IAM-authed. A bearer token never goes here — it is injected by the IaC, keyed by agent id.\n\nRead by: a2a_agent.py; validated in all three planes\n\nAllowed values (a2aAuthModes in app/vocabulary.json): 'none', 'bearer', 'oauth2', 'sigv4'\n\nDefault: \"none\"",
                   "type": "string",
                   "enum": [
                     "none",
                     "bearer",
                     "oauth2",
                     "sigv4"
-                  ]
+                  ],
+                  "default": "none"
                 },
                 "kind": {
-                  "description": "Whether the step completes inline or is long-running. Presentation only today: the UI shows a chip when it is not \"sync\".\n\nRead by: registry.py -> agent.kind; bff/workflow.py ships it; index.html renders the chip",
+                  "description": "Whether the step completes inline or is long-running. Presentation only today: the UI shows a chip when it is not \"sync\".\n\nRead by: registry.py -> agent.kind; bff/workflow.py ships it; index.html renders the chip\n\nDefault: \"sync\"",
                   "type": "string",
                   "enum": [
                     "sync",
                     "async"
-                  ]
+                  ],
+                  "default": "sync"
                 },
                 "name": {
                   "description": "Display name, shown on the diagram, in the timeline and on a review gate.\n\nRead by: registry.py -> agent.name; bff/workflow.py; the UI node title",
@@ -678,23 +706,25 @@
                   "type": "string"
                 },
                 "runtime": {
-                  "description": "Where the step runs. \"main\" = in-process; \"dedicated\" = its own AgentCore Runtime; \"a2a\" = an agent you do NOT operate, reached over the Agent2Agent protocol. Defaults to \"main\".\n\nRead by: registry.py, subagent_runtimes.tf / orchestrator-stack.ts; the UI chip\n\nAllowed values (runtimes in app/vocabulary.json): 'main', 'dedicated', 'a2a'",
+                  "description": "Where the step runs. \"main\" = in-process; \"dedicated\" = its own AgentCore Runtime; \"a2a\" = an agent you do NOT operate, reached over the Agent2Agent protocol. Defaults to \"main\".\n\nRead by: registry.py, subagent_runtimes.tf / orchestrator-stack.ts; the UI chip\n\nAllowed values (runtimes in app/vocabulary.json): 'main', 'dedicated', 'a2a'\n\nDefault: \"main\"",
                   "type": "string",
                   "enum": [
                     "main",
                     "dedicated",
                     "a2a"
-                  ]
+                  ],
+                  "default": "main"
                 },
                 "skill": {
-                  "description": "Which of the shipped stand-in's skills this agent is. Only meaningful with `source`: an external agent advertises its own skills in its Agent Card.\n\nRead by: a2a.tf / orchestrator-stack.ts, as the path segment of the injected endpoint\n\nAllowed values (a2aLambdaSkills in app/vocabulary.json): 'compliance', 'resilience', 'analysis', 'recommendation'",
+                  "description": "Which of the shipped stand-in's skills this agent is. Only meaningful with `source`: an external agent advertises its own skills in its Agent Card.\n\nRead by: a2a.tf / orchestrator-stack.ts, as the path segment of the injected endpoint\n\nAllowed values (a2aLambdaSkills in app/vocabulary.json): 'compliance', 'resilience', 'analysis', 'recommendation'\n\nDefault: \"compliance\"",
                   "type": "string",
                   "enum": [
                     "compliance",
                     "resilience",
                     "analysis",
                     "recommendation"
-                  ]
+                  ],
+                  "default": "compliance"
                 },
                 "source": {
                   "description": "Reach the A2A server this framework deploys for you, instead of an external URL. The deploy injects its endpoint, so there is nothing to commit. Exclusive with agentCard.\n\nRead by: registry.py A2A_SOURCES; a2a.tf / orchestrator-stack.ts inject A2A_ENDPOINTS\n\nAllowed values (a2aSources in app/vocabulary.json): 'a2a_lambda'",
@@ -758,18 +788,20 @@
             "type": "integer"
           },
           "corpusKey": {
-            "description": "The metadata attribute an agent's `corpus` is matched against. Defaults to \"doc_type\", which is what this framework's ingestion sidecars write. Set it when your documents are already tagged with something else — a customer id, a product line, a classification — so a corpus need not be a folder name.\n\nRead by: KB_CORPUS_KEY -> kb_lambda/handler.py; the generated Cedar permit",
-            "type": "string"
+            "description": "The metadata attribute an agent's `corpus` is matched against. Defaults to \"doc_type\", which is what this framework's ingestion sidecars write. Set it when your documents are already tagged with something else — a customer id, a product line, a classification — so a corpus need not be a folder name.\n\nRead by: KB_CORPUS_KEY -> kb_lambda/handler.py; the generated Cedar permit\n\nDefault: \"doc_type\"",
+            "type": "string",
+            "default": "doc_type"
           },
           "corpusOperator": {
-            "description": "How `corpus` is compared against `corpusKey`. Defaults to \"equals\". Single-value operators only, and that is a boundary rather than an omission: the corpus an agent may read is enforced by a Cedar permit that matches a scalar, so a list-valued operator would weaken it to \"has a filter at all\".\n\nRead by: KB_CORPUS_OPERATOR -> kb_lambda/handler.py\n\nAllowed values (kbCorpusOperators in app/vocabulary.json): 'equals', 'notEquals', 'startsWith', 'stringContains'",
+            "description": "How `corpus` is compared against `corpusKey`. Defaults to \"equals\". Single-value operators only, and that is a boundary rather than an omission: the corpus an agent may read is enforced by a Cedar permit that matches a scalar, so a list-valued operator would weaken it to \"has a filter at all\".\n\nRead by: KB_CORPUS_OPERATOR -> kb_lambda/handler.py\n\nAllowed values (kbCorpusOperators in app/vocabulary.json): 'equals', 'notEquals', 'startsWith', 'stringContains'\n\nDefault: \"equals\"",
             "type": "string",
             "enum": [
               "equals",
               "notEquals",
               "startsWith",
               "stringContains"
-            ]
+            ],
+            "default": "equals"
           },
           "filter": {
             "description": "A retrieval filter applied to EVERY call, in Bedrock's own filter shape (andAll / orAll / equals / greaterThan / in / ...). This is where multi-condition narrowing goes. It is set on the TARGET and is invisible to the agent, which is the whole point: a filter the agent cannot supply is a boundary, whereas one it passes as an argument is only scoping. ANDed with the agent's own corpus filter, so it narrows and can never widen.\n\nRead by: KB_STATIC_FILTER -> kb_lambda/handler.py",
@@ -811,20 +843,22 @@
             "type": "string"
           },
           "listingMode": {
-            "description": "How the Gateway discovers the server's tools: DEFAULT caches the catalogue at creation (needed for semantic tool search), DYNAMIC forwards tools/list at invocation time and so never goes stale.\n\nRead by: tools.tf, tool-plane.ts\n\nAllowed values (toolListingModes in app/vocabulary.json): 'DEFAULT', 'DYNAMIC'",
+            "description": "How the Gateway discovers the server's tools: DEFAULT caches the catalogue at creation (needed for semantic tool search), DYNAMIC forwards tools/list at invocation time and so never goes stale.\n\nRead by: tools.tf, tool-plane.ts\n\nAllowed values (toolListingModes in app/vocabulary.json): 'DEFAULT', 'DYNAMIC'\n\nDefault: \"DEFAULT\"",
             "type": "string",
             "enum": [
               "DEFAULT",
               "DYNAMIC"
-            ]
+            ],
+            "default": "DEFAULT"
           },
           "call": {
             "description": "Which tool on the target to invoke. REQUIRED when the target publishes more than one — the app refuses to guess, because calling the wrong tool returns real-looking data for a question nobody asked.\n\nRead by: TOOLS_JSON -> gateway/client.py _select_tool",
             "type": "string"
           },
           "arg": {
-            "description": "The parameter an agent's query goes into. Defaults to \"query\". This one key is what makes an arbitrary MCP server reachable from config, because every server names its parameters differently.\n\nRead by: TOOLS_JSON -> gateway/client.py _tool_arguments; the Cedar `context.input has <arg>` condition",
-            "type": "string"
+            "description": "The parameter an agent's query goes into. Defaults to \"query\". This one key is what makes an arbitrary MCP server reachable from config, because every server names its parameters differently.\n\nRead by: TOOLS_JSON -> gateway/client.py _tool_arguments; the Cedar `context.input has <arg>` condition\n\nDefault: \"query\"",
+            "type": "string",
+            "default": "query"
           },
           "args": {
             "description": "Fixed extra arguments sent on every call, e.g. a page size.\n\nRead by: TOOLS_JSON -> gateway/client.py",
@@ -905,8 +939,9 @@
                 "type": "object"
               },
               "permit": {
-                "description": "false registers the target but deliberately does NOT permit it — useful for proving default-deny. Defaults to true.\n\nRead by: tools.tf permitted_tools, tool-plane.ts",
-                "type": "boolean"
+                "description": "false registers the target but deliberately does NOT permit it — useful for proving default-deny. Defaults to true.\n\nRead by: tools.tf permitted_tools, tool-plane.ts\n\nDefault: true",
+                "type": "boolean",
+                "default": true
               }
             }
           }
@@ -994,18 +1029,20 @@
                   }
                 },
                 "corpusKey": {
-                  "description": "The metadata attribute an agent's `corpus` is matched against. Defaults to \"doc_type\", which is what this framework's ingestion sidecars write. Set it when your documents are already tagged with something else — a customer id, a product line, a classification — so a corpus need not be a folder name.\n\nRead by: KB_CORPUS_KEY -> kb_lambda/handler.py; the generated Cedar permit",
-                  "type": "string"
+                  "description": "The metadata attribute an agent's `corpus` is matched against. Defaults to \"doc_type\", which is what this framework's ingestion sidecars write. Set it when your documents are already tagged with something else — a customer id, a product line, a classification — so a corpus need not be a folder name.\n\nRead by: KB_CORPUS_KEY -> kb_lambda/handler.py; the generated Cedar permit\n\nDefault: \"doc_type\"",
+                  "type": "string",
+                  "default": "doc_type"
                 },
                 "corpusOperator": {
-                  "description": "How `corpus` is compared against `corpusKey`. Defaults to \"equals\". Single-value operators only, and that is a boundary rather than an omission: the corpus an agent may read is enforced by a Cedar permit that matches a scalar, so a list-valued operator would weaken it to \"has a filter at all\".\n\nRead by: KB_CORPUS_OPERATOR -> kb_lambda/handler.py\n\nAllowed values (kbCorpusOperators in app/vocabulary.json): 'equals', 'notEquals', 'startsWith', 'stringContains'",
+                  "description": "How `corpus` is compared against `corpusKey`. Defaults to \"equals\". Single-value operators only, and that is a boundary rather than an omission: the corpus an agent may read is enforced by a Cedar permit that matches a scalar, so a list-valued operator would weaken it to \"has a filter at all\".\n\nRead by: KB_CORPUS_OPERATOR -> kb_lambda/handler.py\n\nAllowed values (kbCorpusOperators in app/vocabulary.json): 'equals', 'notEquals', 'startsWith', 'stringContains'\n\nDefault: \"equals\"",
                   "type": "string",
                   "enum": [
                     "equals",
                     "notEquals",
                     "startsWith",
                     "stringContains"
-                  ]
+                  ],
+                  "default": "equals"
                 },
                 "description": {
                   "description": "Becomes the Gateway target's description. Truncated to 190 characters on deploy.\n\nRead by: tools.tf, tool-plane.ts",
@@ -1030,8 +1067,9 @@
                   "type": "object"
                 },
                 "maxResults": {
-                  "description": "How many results to return — retrieval depth for a kb, page size for websearch. Raising it costs tokens on every call, which is why it is config and not a constant.\n\nRead by: kb: KB_NUM_RESULTS in kb.tf / tool-plane.ts. websearch: TOOLS_JSON -> gateway/client.py",
-                  "type": "integer"
+                  "description": "How many results to return — retrieval depth for a kb, page size for websearch. Raising it costs tokens on every call, which is why it is config and not a constant.\n\nRead by: kb: KB_NUM_RESULTS in kb.tf / tool-plane.ts. websearch: TOOLS_JSON -> gateway/client.py\n\nDefault for type=\"kb\": 5",
+                  "type": "integer",
+                  "default": 5
                 },
                 "policy": {
                   "type": "object",
@@ -1046,8 +1084,9 @@
                       "type": "object"
                     },
                     "permit": {
-                      "description": "false registers the target but deliberately does NOT permit it — useful for proving default-deny. Defaults to true.\n\nRead by: tools.tf permitted_tools, tool-plane.ts",
-                      "type": "boolean"
+                      "description": "false registers the target but deliberately does NOT permit it — useful for proving default-deny. Defaults to true.\n\nRead by: tools.tf permitted_tools, tool-plane.ts\n\nDefault: true",
+                      "type": "boolean",
+                      "default": true
                     }
                   }
                 },
@@ -1127,8 +1166,9 @@
                   }
                 },
                 "maxResults": {
-                  "description": "How many results to return — retrieval depth for a kb, page size for websearch. Raising it costs tokens on every call, which is why it is config and not a constant.\n\nRead by: kb: KB_NUM_RESULTS in kb.tf / tool-plane.ts. websearch: TOOLS_JSON -> gateway/client.py",
-                  "type": "integer"
+                  "description": "How many results to return — retrieval depth for a kb, page size for websearch. Raising it costs tokens on every call, which is why it is config and not a constant.\n\nRead by: kb: KB_NUM_RESULTS in kb.tf / tool-plane.ts. websearch: TOOLS_JSON -> gateway/client.py\n\nDefault for type=\"websearch\": 10",
+                  "type": "integer",
+                  "default": 10
                 },
                 "policy": {
                   "type": "object",
@@ -1143,8 +1183,9 @@
                       "type": "object"
                     },
                     "permit": {
-                      "description": "false registers the target but deliberately does NOT permit it — useful for proving default-deny. Defaults to true.\n\nRead by: tools.tf permitted_tools, tool-plane.ts",
-                      "type": "boolean"
+                      "description": "false registers the target but deliberately does NOT permit it — useful for proving default-deny. Defaults to true.\n\nRead by: tools.tf permitted_tools, tool-plane.ts\n\nDefault: true",
+                      "type": "boolean",
+                      "default": true
                     }
                   }
                 },
@@ -1185,8 +1226,9 @@
             "then": {
               "properties": {
                 "arg": {
-                  "description": "The parameter an agent's query goes into. Defaults to \"query\". This one key is what makes an arbitrary MCP server reachable from config, because every server names its parameters differently.\n\nRead by: TOOLS_JSON -> gateway/client.py _tool_arguments; the Cedar `context.input has <arg>` condition",
-                  "type": "string"
+                  "description": "The parameter an agent's query goes into. Defaults to \"query\". This one key is what makes an arbitrary MCP server reachable from config, because every server names its parameters differently.\n\nRead by: TOOLS_JSON -> gateway/client.py _tool_arguments; the Cedar `context.input has <arg>` condition\n\nDefault: \"query\"",
+                  "type": "string",
+                  "default": "query"
                 },
                 "args": {
                   "description": "Fixed extra arguments sent on every call, e.g. a page size.\n\nRead by: TOOLS_JSON -> gateway/client.py",
@@ -1215,12 +1257,13 @@
                   "type": "string"
                 },
                 "listingMode": {
-                  "description": "How the Gateway discovers the server's tools: DEFAULT caches the catalogue at creation (needed for semantic tool search), DYNAMIC forwards tools/list at invocation time and so never goes stale.\n\nRead by: tools.tf, tool-plane.ts\n\nAllowed values (toolListingModes in app/vocabulary.json): 'DEFAULT', 'DYNAMIC'",
+                  "description": "How the Gateway discovers the server's tools: DEFAULT caches the catalogue at creation (needed for semantic tool search), DYNAMIC forwards tools/list at invocation time and so never goes stale.\n\nRead by: tools.tf, tool-plane.ts\n\nAllowed values (toolListingModes in app/vocabulary.json): 'DEFAULT', 'DYNAMIC'\n\nDefault: \"DEFAULT\"",
                   "type": "string",
                   "enum": [
                     "DEFAULT",
                     "DYNAMIC"
-                  ]
+                  ],
+                  "default": "DEFAULT"
                 },
                 "policy": {
                   "type": "object",
@@ -1235,8 +1278,9 @@
                       "type": "object"
                     },
                     "permit": {
-                      "description": "false registers the target but deliberately does NOT permit it — useful for proving default-deny. Defaults to true.\n\nRead by: tools.tf permitted_tools, tool-plane.ts",
-                      "type": "boolean"
+                      "description": "false registers the target but deliberately does NOT permit it — useful for proving default-deny. Defaults to true.\n\nRead by: tools.tf permitted_tools, tool-plane.ts\n\nDefault: true",
+                      "type": "boolean",
+                      "default": true
                     }
                   }
                 },
@@ -1284,8 +1328,9 @@
             "then": {
               "properties": {
                 "arg": {
-                  "description": "The parameter an agent's query goes into. Defaults to \"query\". This one key is what makes an arbitrary MCP server reachable from config, because every server names its parameters differently.\n\nRead by: TOOLS_JSON -> gateway/client.py _tool_arguments; the Cedar `context.input has <arg>` condition",
-                  "type": "string"
+                  "description": "The parameter an agent's query goes into. Defaults to \"query\". This one key is what makes an arbitrary MCP server reachable from config, because every server names its parameters differently.\n\nRead by: TOOLS_JSON -> gateway/client.py _tool_arguments; the Cedar `context.input has <arg>` condition\n\nDefault: \"query\"",
+                  "type": "string",
+                  "default": "query"
                 },
                 "args": {
                   "description": "Fixed extra arguments sent on every call, e.g. a page size.\n\nRead by: TOOLS_JSON -> gateway/client.py",
@@ -1322,8 +1367,9 @@
                       "type": "object"
                     },
                     "permit": {
-                      "description": "false registers the target but deliberately does NOT permit it — useful for proving default-deny. Defaults to true.\n\nRead by: tools.tf permitted_tools, tool-plane.ts",
-                      "type": "boolean"
+                      "description": "false registers the target but deliberately does NOT permit it — useful for proving default-deny. Defaults to true.\n\nRead by: tools.tf permitted_tools, tool-plane.ts\n\nDefault: true",
+                      "type": "boolean",
+                      "default": true
                     }
                   }
                 },
@@ -1376,8 +1422,9 @@
             "then": {
               "properties": {
                 "arg": {
-                  "description": "The parameter an agent's query goes into. Defaults to \"query\". This one key is what makes an arbitrary MCP server reachable from config, because every server names its parameters differently.\n\nRead by: TOOLS_JSON -> gateway/client.py _tool_arguments; the Cedar `context.input has <arg>` condition",
-                  "type": "string"
+                  "description": "The parameter an agent's query goes into. Defaults to \"query\". This one key is what makes an arbitrary MCP server reachable from config, because every server names its parameters differently.\n\nRead by: TOOLS_JSON -> gateway/client.py _tool_arguments; the Cedar `context.input has <arg>` condition\n\nDefault: \"query\"",
+                  "type": "string",
+                  "default": "query"
                 },
                 "args": {
                   "description": "Fixed extra arguments sent on every call, e.g. a page size.\n\nRead by: TOOLS_JSON -> gateway/client.py",
@@ -1408,8 +1455,9 @@
                       "type": "object"
                     },
                     "permit": {
-                      "description": "false registers the target but deliberately does NOT permit it — useful for proving default-deny. Defaults to true.\n\nRead by: tools.tf permitted_tools, tool-plane.ts",
-                      "type": "boolean"
+                      "description": "false registers the target but deliberately does NOT permit it — useful for proving default-deny. Defaults to true.\n\nRead by: tools.tf permitted_tools, tool-plane.ts\n\nDefault: true",
+                      "type": "boolean",
+                      "default": true
                     }
                   }
                 },
@@ -1528,28 +1576,47 @@
       "additionalProperties": false,
       "properties": {
         "defaultModel": {
-          "description": "Model for any agent that does not name its own. BEDROCK_MODEL_ID overrides it.\n\nRead by: config.py MODEL_ID",
-          "type": "string"
+          "description": "Model for any agent that does not name its own. BEDROCK_MODEL_ID overrides it.\n\nRead by: config.py MODEL_ID\n\nDefault: \"us.anthropic.claude-haiku-4-5-20251001-v1:0\"",
+          "type": "string",
+          "default": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
         },
         "runtimeInvoke": {
-          "description": "Calling a `dedicated` agent's runtime: maxAttempts (total, default 1 — InvokeAgentRuntime is not idempotent, so a retry bills a second model call and returns whichever answered last) and readTimeoutSeconds (default 120).\n\nRead by: config.py RUNTIME_INVOKE -> agentcore_agent",
-          "type": "object"
+          "description": "Calling a `dedicated` agent's runtime: maxAttempts (total, default 1 — InvokeAgentRuntime is not idempotent, so a retry bills a second model call and returns whichever answered last) and readTimeoutSeconds (default 120).\n\nRead by: config.py RUNTIME_INVOKE -> agentcore_agent\n\nDefault: {\"maxAttempts\": 1, \"readTimeoutSeconds\": 120}",
+          "type": "object",
+          "default": {
+            "maxAttempts": 1,
+            "readTimeoutSeconds": 120
+          }
         },
         "a2aInvoke": {
-          "description": "Calling a `runtime: \"a2a\"` agent: timeoutSeconds per request (default 30 — keep it ABOVE the remote agent's own timeout so the side that gives up first can say why), pollIntervalSeconds (2) and maxPollSeconds (300) for a task that is still working.\n\nRead by: config.py A2A_INVOKE -> a2a_agent",
-          "type": "object"
+          "description": "Calling a `runtime: \"a2a\"` agent: timeoutSeconds per request (default 30 — keep it ABOVE the remote agent's own timeout so the side that gives up first can say why), pollIntervalSeconds (2) and maxPollSeconds (300) for a task that is still working.\n\nRead by: config.py A2A_INVOKE -> a2a_agent\n\nDefault: {\"timeoutSeconds\": 30, \"pollIntervalSeconds\": 2, \"maxPollSeconds\": 300}",
+          "type": "object",
+          "default": {
+            "timeoutSeconds": 30,
+            "pollIntervalSeconds": 2,
+            "maxPollSeconds": 300
+          }
         },
         "insights": {
-          "description": "AgentCore Insights timings: lookbackHours (168), pollTimeoutSeconds (900), pollIntervalSeconds (20).\n\nRead by: config.py INSIGHTS -> features/optimization/insights.py",
-          "type": "object"
+          "description": "AgentCore Insights timings: lookbackHours (168), pollTimeoutSeconds (900), pollIntervalSeconds (20).\n\nRead by: config.py INSIGHTS -> features/optimization/insights.py\n\nDefault: {\"lookbackHours\": 168, \"pollTimeoutSeconds\": 900, \"pollIntervalSeconds\": 20}",
+          "type": "object",
+          "default": {
+            "lookbackHours": 168,
+            "pollTimeoutSeconds": 900,
+            "pollIntervalSeconds": 20
+          }
         },
         "modelRates": {
           "description": "Per-model token rates keyed by a substring of the model id, e.g. {\"nova-pro\": {\"input\": 0.80, \"output\": 3.20}} in USD per million. Set this for your own model — an unknown one is priced at a fallback and the telemetry row is marked rates_known=false.\n\nRead by: config.py MODEL_RATES -> observability/pricing.py",
           "type": "object"
         },
         "policy": {
-          "description": "The Cedar policy engine: enabled, and mode ENFORCE (a DENY blocks the call) or LOG_ONLY (evaluate and log — the safe way to roll out).\n\nRead by: policy.tf / orchestrator-stack.ts; mode reaches the app as GATEWAY_POLICY_MODE",
-          "type": "object"
+          "description": "The Cedar policy engine: enabled, and mode ENFORCE (a DENY blocks the call) or LOG_ONLY (evaluate and log — the safe way to roll out).\n\nRead by: policy.tf / orchestrator-stack.ts; mode reaches the app as GATEWAY_POLICY_MODE\n\nDefault: {\"enabled\": true, \"mode\": \"ENFORCE\"}",
+          "type": "object",
+          "default": {
+            "enabled": true,
+            "mode": "ENFORCE"
+          }
         },
         "chatbot": {
           "description": "The in-app assistant: enabled, model, greeting, placeholder, and a `tools` map of per-capability flags (anything unlisted defaults to ON).\n\nRead by: bff/chatbot.py and the bff/workflow.py projection to the browser",
@@ -1649,12 +1716,14 @@
           }
         },
         "blockedInputMessage": {
-          "description": "What the user sees when their input is blocked.\n\nRead by: guardrail.tf, buildGuardrail",
-          "type": "string"
+          "description": "What the user sees when their input is blocked.\n\nRead by: guardrail.tf, buildGuardrail\n\nDefault: \"This request was blocked by the content guardrail.\"",
+          "type": "string",
+          "default": "This request was blocked by the content guardrail."
         },
         "blockedOutputMessage": {
-          "description": "What the user sees when generated content is blocked.\n\nRead by: guardrail.tf, buildGuardrail",
-          "type": "string"
+          "description": "What the user sees when generated content is blocked.\n\nRead by: guardrail.tf, buildGuardrail\n\nDefault: \"The generated content was blocked by the content guardrail.\"",
+          "type": "string",
+          "default": "The generated content was blocked by the content guardrail."
         }
       },
       "description": "The Bedrock Guardrail POLICY — what is enforced. Which agents it is applied to is per agent, in agentcore.guardrails. Omit any key and that policy block is not created at all; omit the whole block for an empty guardrail. Read only by the IaC: the app just gets a GUARDRAIL_ID."
@@ -1664,8 +1733,9 @@
       "additionalProperties": false,
       "properties": {
         "groupsClaim": {
-          "description": "The JWT claim holding the caller's groups. Defaults to \"cognito:groups\".\n\nRead by: bff/authz.py",
-          "type": "string"
+          "description": "The JWT claim holding the caller's groups. Defaults to \"cognito:groups\".\n\nRead by: bff/authz.py\n\nDefault: \"cognito:groups\"",
+          "type": "string",
+          "default": "cognito:groups"
         },
         "actions": {
           "description": "Action -> the group names allowed to take it. Each action name is a route in bff/handler.py; one with no route would read as a restriction and gate nothing. An action you omit is UNRESTRICTED.\n\nRead by: bff/authz.py; bff/workflow.py projects it to the UI\n\nAllowed keys (authorizationActions in app/vocabulary.json): 'start', 'decision', 'rerun', 'cancel', 'evaluate', 'insights', 'delete'",

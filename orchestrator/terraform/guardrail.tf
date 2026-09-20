@@ -26,10 +26,11 @@ locals {
   # entity type -> action (BLOCK | ANONYMIZE).
   gr_pii = try(local.gr.piiEntities, {})
 
-  gr_blocked_input = try(local.gr.blockedInputMessage,
-  "This request was blocked by the content guardrail.")
-  gr_blocked_output = try(local.gr.blockedOutputMessage,
-  "The generated content was blocked by the content guardrail.")
+  # Defaults from app/defaults.json (generated from app/keys.json), like every other
+  # key's. Both messages were written out here AND in cdk/lib/orchestrator-stack.ts, so a
+  # reworded one changed what a blocked caller saw on only one deploy path.
+  gr_blocked_input  = try(local.gr.blockedInputMessage, local.key_defaults.guardrail.blockedInputMessage)
+  gr_blocked_output = try(local.gr.blockedOutputMessage, local.key_defaults.guardrail.blockedOutputMessage)
 }
 
 # Fail at PLAN on a malformed guardrail block rather than at apply, when Bedrock

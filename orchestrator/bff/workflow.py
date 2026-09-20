@@ -61,6 +61,18 @@ _BUNDLED = Path(__file__).resolve().parent / "workflow.json"
 # always there — and it exists so this module is importable from a clone, which is
 # what tests and local dev do.
 _IN_TREE = Path(__file__).resolve().parent.parent / "app" / "workflow.json"
+#: Every key's DEFAULT, generated from app/keys.json into app/defaults.json and read by all
+#: three planes. Staged beside this module by both IaC paths exactly like workflow.json and
+#: vocabulary.json, because a Lambda bundle cannot reach app/.
+#:
+#: This module needs it for `runtime`, which it defaults in two places while projecting the
+#: workflow for the browser. Both used to say "main" — a third and fourth copy of a value
+#: the orchestrator and both IaC planes also carried. If one drifted, the UI would draw an
+#: agent in a placement it is not actually running in.
+_DEFAULTS_PATH = Path(__file__).resolve().parent / "defaults.json"
+if not _DEFAULTS_PATH.exists():  # a source checkout
+    _DEFAULTS_PATH = Path(__file__).resolve().parent.parent / "app" / "defaults.json"
+_DEFAULTS: dict = json.loads(_DEFAULTS_PATH.read_text())
 
 #: An agent with no tool and no recognisable `access` hint. An em dash, because a
 #: blank chip reads like a rendering failure.
@@ -118,7 +130,7 @@ def data_source(agent: dict, tool_types: dict[str, str]) -> str:
     # A remote agent is matched FIRST because it has no `tool` by construction — it
     # reaches its own data sources — and it is the one agent on the diagram whose
     # provenance a reviewer most needs to see. Without this it rendered as an em dash.
-    if str(agent.get("runtime") or "main") == "a2a":
+    if str(agent.get("runtime") or _DEFAULTS["agent"]["runtime"]) == "a2a":
         # A framework-deployed stand-in is labelled by its `source`, because its URL
         # is a deploy-time value and there is no host to show. Labelling it "remote"
         # said nothing.
@@ -173,7 +185,7 @@ def project(workflow: dict) -> dict:
         agents[agent_id] = {
             "name": agent.get("name"),
             "kind": agent.get("kind") or "sync",
-            "runtime": agent.get("runtime") or "main",
+            "runtime": agent.get("runtime") or _DEFAULTS["agent"]["runtime"],
             "tool": agent.get("tool"),
             "corpus": agent.get("corpus"),
             "model": agent.get("model"),

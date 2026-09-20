@@ -20,8 +20,8 @@
 
 locals {
   # Policy only applies when there is a Gateway to attach it to.
-  policy_enabled = var.enable_gateway && try(local.workflow_def.orchestrator.policy.enabled, true)
-  policy_mode    = upper(try(local.workflow_def.orchestrator.policy.mode, "ENFORCE"))
+  policy_enabled = var.enable_gateway && try(local.workflow_def.orchestrator.policy.enabled, local.key_defaults.orchestrator.policy.enabled)
+  policy_mode    = upper(try(local.workflow_def.orchestrator.policy.mode, local.key_defaults.orchestrator.policy.mode))
 
   # The Gateway ARN every generated statement is scoped to. A tool-specific
   # policy REQUIRES a specific Gateway ARN — AgentCore rejects a wildcard

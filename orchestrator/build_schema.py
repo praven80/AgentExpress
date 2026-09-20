@@ -43,6 +43,17 @@ APP = Path(__file__).resolve().parent / "app"
 KEYS = APP / "keys.json"
 VOCAB = APP / "vocabulary.json"
 OUT = APP / "workflow.schema.json"
+#: The second generated artifact: every key's DEFAULT, projected out of keys.json so the
+#: running code can read it.
+#:
+#: WHY A SECOND FILE RATHER THAN READING keys.json. keys.json is 40 KB of prose and is
+#: deliberately excluded from the container image (.dockerignore) — editing a doc string
+#: must not invalidate the image layer and trigger a rebuild and redeploy. But the defaults
+#: in it are needed AT RUNTIME by app/, bff/ and kb_lambda/. So the values are projected
+#: into a small file that ships: it changes when a default changes and never when a comment
+#: does, which keeps both properties. Same "one JSON, three planes" shape as
+#: app/vocabulary.json, which is the pattern this repo already proved.
+DEFAULTS_OUT = APP / "defaults.json"
 
 #: JSON Schema draft. 2020-12 is what editors ship support for, and it is the draft
 #: whose `if`/`then` and `dependentSchemas` express the per-variant key sets below.
@@ -94,6 +105,14 @@ def _property(spec: dict, vocab: dict) -> dict:
     if spec.get("pattern"):
         target = out["items"] if kind == "array" else out
         target["pattern"] = spec["pattern"]
+
+    # `default` is a real JSON Schema keyword, so an editor shows it on hover and offers it
+    # in completion. That is most of the point of declaring defaults in one place: a
+    # customer sees what omitting the key will do without opening any code. `defaultFor`
+    # cannot go here — it depends on the variant, so it lands in the per-variant branch.
+    if "default" in spec:
+        out["default"] = spec["default"]
+        out["description"] += f"\n\nDefault: {json.dumps(spec['default'])}"
 
     # An inline object with declared sub-keys, e.g. `domains: {include, exclude}`. Closed
     # like everything else, so a typo inside it is caught rather than ignored — which is
@@ -189,6 +208,19 @@ def _entry_schema(block: dict, vocab: dict) -> dict:
                             f"\n\nFor type=\"{variant}\" the allowed values "
                             f"({vocabulary} in app/vocabulary.json) are: "
                             + ", ".join(repr(v) for v in vocab[vocabulary]["values"])),
+                    }
+                # A per-variant DEFAULT, for a key that legitimately means different things
+                # per variant — `maxResults` is retrieval depth for a kb and page size for
+                # websearch. Landing it in the branch is what lets an editor show 5 on one
+                # and 10 on the other instead of one misleading number on both.
+                variant_default = (spec.get("defaultFor") or {}).get(variant)
+                if variant_default is not None:
+                    base = narrowed.get(key, props[key])
+                    narrowed[key] = {
+                        **base,
+                        "default": variant_default,
+                        "description": base["description"]
+                        + f"\n\nDefault for type=\"{variant}\": {json.dumps(variant_default)}",
                     }
             head = sorted({k.partition(".")[0] for k in allowed})
             clause: dict = {"properties": {k: narrowed.get(k, props[k]) for k in head},
@@ -301,18 +333,57 @@ def build() -> dict:
     }
 
 
+def build_defaults() -> dict:
+    """Every declared default, as `{block: {key: value}}` plus a per-variant map.
+
+    Flat and boring on purpose: this is the file three planes parse at runtime, so it
+    carries values and nothing else — no docs, no types, no ordering significance. The
+    prose stays in keys.json, which does not ship.
+
+    `perType` is separate rather than folded in, because a caller has to ASK for the
+    variant. `maxResults` has no single correct default, and a lookup that silently
+    returned one of the two would be worse than no default at all: a kb tool would get
+    websearch's page size and retrieve ten chunks where the framework promises five.
+    """
+    keys, _vocab = _load()
+    out: dict = {"$comment": (
+        "GENERATED from app/keys.json by build_schema.py — do not edit. Every key's "
+        "default value, projected here because keys.json is 40 KB of prose that "
+        "deliberately does not ship in the container image while these values are needed "
+        "at runtime. Read by app/common/defaults.py, cdk/lib/defaults.ts and "
+        "local.key_defaults in terraform/. `perType` holds the defaults that depend on a "
+        "tool's `type`, which a caller must ask for by variant.")}
+    for block, spec in keys.items():
+        if block.startswith("$"):
+            continue
+        plain = {k: v["default"] for k, v in (spec.get("keys") or {}).items()
+                 if "default" in v}
+        per_variant = {k: v["defaultFor"] for k, v in (spec.get("keys") or {}).items()
+                       if v.get("defaultFor")}
+        if plain:
+            out[block] = plain
+        if per_variant:
+            out.setdefault("perType", {})[block] = per_variant
+    return out
+
+
 def main() -> int:
     out = json.dumps(build(), indent=2, ensure_ascii=False) + "\n"
+    defaults = json.dumps(build_defaults(), indent=2, ensure_ascii=False) + "\n"
+    artifacts = ((OUT, out), (DEFAULTS_OUT, defaults))
     if "--check" in sys.argv:
-        current = OUT.read_text() if OUT.exists() else ""
-        if current == out:
-            print(f"build_schema: {OUT.name} is up to date")
+        stale = [path.name for path, want in artifacts
+                 if (path.read_text() if path.exists() else "") != want]
+        if not stale:
+            print(f"build_schema: {OUT.name} and {DEFAULTS_OUT.name} are up to date")
             return 0
-        print(f"build_schema: {OUT.name} is out of date (run: python3 "
+        print(f"build_schema: {', '.join(stale)} out of date (run: python3 "
               f"{Path(__file__).name})", file=sys.stderr)
         return 1
-    OUT.write_text(out)
-    print(f"build_schema: wrote {OUT.name} ({out.count(chr(10))} lines)")
+    for path, want in artifacts:
+        path.write_text(want)
+    print(f"build_schema: wrote {OUT.name} ({out.count(chr(10))} lines) "
+          f"and {DEFAULTS_OUT.name}")
     return 0
 
 

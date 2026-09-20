@@ -20,6 +20,7 @@ import { HttpLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations
 import { HttpJwtAuthorizer } from "aws-cdk-lib/aws-apigatewayv2-authorizers";
 import { ToolPlane, ToolSpec, ToolType } from "./tool-plane";
 import * as vocab from "./vocabulary";
+import { keyDefault, keyDefaultFor } from "./defaults";
 
 /** Regions where the managed AgentCore Web Search connector is available. */
 /**
@@ -312,8 +313,8 @@ export function a2aTokenEnv(
   const out: Record<string, string> = {};
   const missing: string[] = [];
   for (const [id, a] of Object.entries<any>(agents)) {
-    if (String(a.runtime ?? "main") !== "a2a") continue;
-    if (String(a.auth ?? "none").toLowerCase() !== "bearer") continue;
+    if (String(a.runtime ?? keyDefault<string>("agent", "runtime")) !== "a2a") continue;
+    if (String(a.auth ?? keyDefault<string>("agent", "auth")).toLowerCase() !== "bearer") continue;
     const token = tokens[id];
     if (!token) missing.push(id);
     else out[id] = token;
@@ -339,8 +340,8 @@ export function a2aTokenEnv(
 export function a2aLambdaAgents(agents: Record<string, any>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [id, a] of Object.entries<any>(agents)) {
-    if (String(a.runtime ?? "main") === "a2a" && a.source === "a2a_lambda") {
-      out[id] = String(a.skill ?? "compliance").toLowerCase();
+    if (String(a.runtime ?? keyDefault<string>("agent", "runtime")) === "a2a" && a.source === "a2a_lambda") {
+      out[id] = String(a.skill ?? keyDefault<string>("agent", "skill")).toLowerCase();
     }
   }
   return out;
@@ -367,7 +368,7 @@ export const A2A_AUTH_MODES = vocab.A2A_AUTH_MODES;
  */
 export function validateRuntimes(agents: Record<string, any>): void {
   for (const [id, a] of Object.entries<any>(agents)) {
-    const placement = String(a.runtime ?? "main");
+    const placement = String(a.runtime ?? keyDefault<string>("agent", "runtime"));
     if (!RUNTIMES.includes(placement)) {
       throw new Error(
         `workflow.json agent "${id}" has runtime "${placement}"; valid values are ` +
@@ -411,7 +412,7 @@ export function validateRuntimes(agents: Record<string, any>): void {
     if (source === "a2a_lambda" && String(a.auth ?? "").toLowerCase() !== "sigv4") {
       throw new Error(
         `workflow.json agent "${id}" has source "a2a_lambda" and needs auth "sigv4" (got ` +
-          `"${a.auth ?? "none"}"). That stand-in is deployed behind an AWS_IAM Function URL, so ` +
+          `"${a.auth ?? keyDefault<string>("agent", "auth")}"). That stand-in is deployed behind an AWS_IAM Function URL, so ` +
           `the request must be SigV4-signed with the orchestrator's own role — there is no ` +
           `token, by design.`
       );
@@ -429,7 +430,7 @@ export function validateRuntimes(agents: Record<string, any>): void {
           `a bearer token. Got "${card}".`
       );
     }
-    const auth = String(a.auth ?? "none").toLowerCase();
+    const auth = String(a.auth ?? keyDefault<string>("agent", "auth")).toLowerCase();
     if (!A2A_AUTH_MODES.includes(auth)) {
       throw new Error(
         `workflow.json agent "${id}" has auth "${a.auth}"; valid values are ` +
@@ -649,7 +650,7 @@ export function validateWorkflow(workflow: any, orchRoot: string, agentName: str
     );
   }
   const tooLong = Object.entries(agents)
-    .filter(([, a]) => (a.runtime ?? "main") === "dedicated")
+    .filter(([, a]) => (a.runtime ?? keyDefault<string>("agent", "runtime")) === "dedicated")
     .map(([id]) => `${agentName}_${id}`)
     .filter((n) => n.length > 48);
   if (tooLong.length) {
@@ -667,7 +668,7 @@ export function validateWorkflow(workflow: any, orchRoot: string, agentName: str
   // Checked, never truncated: a shortened role name can collide with another agent's, and
   // two runtimes sharing one role is exactly what per-agent roles exist to prevent.
   const roleTooLong = Object.entries(agents)
-    .filter(([, a]) => (a.runtime ?? "main") === "dedicated")
+    .filter(([, a]) => (a.runtime ?? keyDefault<string>("agent", "runtime")) === "dedicated")
     .map(([id]) => `AgentCoreSubagent-${agentName}-${id}`)
     .filter((n) => n.length > 64);
   if (roleTooLong.length) {
@@ -824,7 +825,7 @@ export class OrchestratorStack extends cdk.Stack {
       JSON.parse(fs.readFileSync(path.join(ORCH_ROOT, "app", "workflow.json"), "utf8"));
     const agents: Record<string, any> = workflow.agents;
     const dedicatedIds = Object.keys(agents).filter(
-      (id) => (agents[id].runtime ?? "main") === "dedicated"
+      (id) => (agents[id].runtime ?? keyDefault<string>("agent", "runtime")) === "dedicated"
     );
 
     // ---- Identity provider ----------------------------------------------------
@@ -1230,8 +1231,8 @@ export class OrchestratorStack extends cdk.Stack {
     // Cedar policy is on/off from workflow.json, exactly like Terraform:
     //   orchestrator.policy.enabled (default true), .mode (default ENFORCE).
     const policyEnabled =
-      props.enableGateway && (workflow.orchestrator?.policy?.enabled ?? true);
-    const policyMode = String(workflow.orchestrator?.policy?.mode ?? "ENFORCE").toUpperCase();
+      props.enableGateway && (workflow.orchestrator?.policy?.enabled ?? keyDefault<any>("orchestrator", "policy").enabled);
+    const policyMode = String(workflow.orchestrator?.policy?.mode ?? keyDefault<any>("orchestrator", "policy").mode).toUpperCase();
 
     // Every tool the agents may call is declared in workflow.json — the same
     // block Terraform reads. Validated before use so a typo fails at synth.
@@ -1995,9 +1996,9 @@ export function buildGuardrail(workflow: any): {
 
   return {
     blockedInputMessage:
-      g.blockedInputMessage ?? "This request was blocked by the content guardrail.",
+      g.blockedInputMessage ?? keyDefault<string>("guardrail", "blockedInputMessage"),
     blockedOutputMessage:
-      g.blockedOutputMessage ?? "The generated content was blocked by the content guardrail.",
+      g.blockedOutputMessage ?? keyDefault<string>("guardrail", "blockedOutputMessage"),
     contentFilters,
     deniedWords: (g.deniedWords ?? []).map((w: string) => ({ Text: w })),
     managedWordLists: (g.managedWordLists ?? []).map((w: string) => ({ Type: String(w).toUpperCase() })),
@@ -2059,6 +2060,13 @@ export function stageBffPackage(workflow: any, outDir?: string): string {
     path.join(ORCH_ROOT, "app", "vocabulary.json"),
     path.join(staged, "vocabulary.json")
   );
+  // Every key's DEFAULT (generated from app/keys.json by build_schema.py). bff/authz.py
+  // reads groupsClaim's default from here rather than keeping a fourth copy of it.
+  // Mirrors the archive_file source in terraform/bff.tf.
+  fs.copyFileSync(
+    path.join(ORCH_ROOT, "app", "defaults.json"),
+    path.join(staged, "defaults.json")
+  );
   return staged;
 }
 
@@ -2077,7 +2085,7 @@ export function toolsEnv(tools: Record<string, ToolSpec>): Record<string, any> {
     const spec: Record<string, any> = { type: t.type };
     if (t.type === "kb") spec.corpora = t.corpora ?? [];
     if (t.type === "websearch") {
-      spec.maxResults = t.maxResults ?? 10;
+      spec.maxResults = t.maxResults ?? keyDefaultFor<number>("tool", "maxResults", "websearch");
       // `domains` is deliberately NOT projected: it is applied on the Gateway target,
       // so the runtime neither needs it nor should be able to send one of its own.
       if (t.publishedFrom) spec.publishedFrom = t.publishedFrom;
