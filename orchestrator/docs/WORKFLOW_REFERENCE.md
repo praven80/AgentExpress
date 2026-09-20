@@ -564,8 +564,10 @@ Supply the function **one** of two ways:
   `source` names it.
 
   `app/tools/` is excluded from the orchestrator container image, because these
-  functions run as Lambdas and never inside it. It is the only folder under `app/`
-  that is excluded; everything else there ships.
+  functions run as Lambdas and the orchestrator calls them through the Gateway rather
+  than importing them. It is the only *code* under `app/` that is excluded — the other
+  two exclusions there, `app/keys.json` and `app/workflow.schema.json`, are
+  editor-facing documentation the runtime never reads.
 
 **What the shipped demo does, and why it is that.** `aws_prices(services, region)`
 takes service names and returns their real on-demand unit rates from the AWS Price
