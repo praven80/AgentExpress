@@ -62,16 +62,8 @@
   // Reuses the app's global CSS variables (--blue, --surface, --muted, …) so the
   // tab is visually consistent with the rest of the product.
   const CSS = `
-  .topnav { display:inline-flex; gap:4px; margin-left:14px; }
-  /* The header is rgba(255,255,255,.85) — near-white. This palette was written for a
-     dark header: #cbd5e1 text gave ~1.6:1 contrast (WCAG AA wants 4.5:1) so the
-     inactive tab was nearly invisible, and a white hover was no feedback at all. */
-  .navbtn { background:transparent; border:1px solid transparent; color:#475569; font-weight:600;
-            font-size:13px; padding:6px 12px; border-radius:8px; cursor:pointer; transition:background .15s, color .15s; }
-  .navbtn:hover { background:#e2e8f0; color:#0f172a; }
-  .navbtn:focus-visible { outline:2px solid var(--blue,#2563eb); outline-offset:2px; }
-  .navbtn.active { background:linear-gradient(135deg,#1e3a8a,#2563eb); color:#fff; box-shadow:0 1px 3px #0f172a22; }
-
+  /* The top navigation is styled by index.html (Cloudscape TopNavigation, dark
+     surface). The light-header rules that used to live here fought it. */
   #obsView { flex:1; overflow-y:auto; background:linear-gradient(160deg,var(--bg1,#eef2f9),var(--bg2,#e6ebf5)); }
   .obs-inner { padding:26px 30px 60px; max-width:1240px; margin:0 auto; }
 
@@ -308,6 +300,217 @@
       font-weight:700; text-align:center; }
   .obs-proj input:focus { outline:none; border-color:var(--blue,#2563eb); box-shadow:0 0 0 3px #2563eb22; }
   .obs-proj .pbig { font-size:26px; font-weight:800; color:#1e3a8a; letter-spacing:-.02em; }
+
+  /* ======================================================================
+     Cloudscape surface, applied last so it wins over the rules above.
+     Kept as an override block rather than a rewrite of the 240 lines above:
+     those rules carry the tab's LAYOUT, which is already right. What was wrong
+     was the visual language — gradients, 8px radii, indigo accents, five
+     different greys. This restates only the surfaces, the type and the palette,
+     so the tab reads as an AWS console page.
+     ====================================================================== */
+
+  #obsView { background: #f2f3f3; }
+  .obs-inner { padding: 24px 24px 60px; max-width: 1360px; }
+
+  /* ContentLayout header, not a hero. A console page states what it is and
+     moves on; the gradient tile and drop shadow were decoration. */
+  .obs-hero { align-items: center; gap: 12px; margin-bottom: 20px; }
+  .obs-hero .obs-hero-ic {
+    width: 32px; height: 32px; border-radius: 8px; font-size: 16px;
+    background: linear-gradient(135deg, #4a7fd4 0%, #0972d3 55%, #065299 100%);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.25);
+  }
+  .obs-hero h1 {
+    font-size: 24px; line-height: 30px; font-weight: 700;
+    letter-spacing: normal; color: #0f141a;
+  }
+  .obs-hero p { font-size: 14px; line-height: 20px; color: #424650; }
+
+  /* Alert (info variant). */
+  .obs-banner {
+    background: #f2f8fd;
+    border: 1px solid #b8d9f5;
+    border-radius: 12px;
+    padding: 12px 16px;
+    gap: 12px;
+  }
+  .obs-banner .ck {
+    width: 20px; height: 20px;
+    background: #0972d3;
+    font-family: "Amazon Ember", Arial, sans-serif;
+    font-style: normal; font-size: 12px;
+    box-shadow: none;
+  }
+  .obs-banner .bt { font-size: 14px; line-height: 20px; color: #0f141a; }
+  .obs-banner .bt .meta { color: #424650; }
+
+  /* Container */
+  .obs-card, .obs-tablewrap, .obs-kpi, .obs-optcard, .obs-evalcard,
+  .obs-chart-wrap, .obs-ins-rc, .obs-ins-sess {
+    background: #fff;
+    border: 0;
+    border-radius: 16px;
+    box-shadow: 0 0 1px 1px #e9ebed, 0 1px 8px 2px rgba(0,7,22,.12);
+  }
+  .obs-card { padding: 20px 24px; }
+
+  /* KPI: Cloudscape puts the label above the value, label small and grey. */
+  .obs-kpi { padding: 16px 20px; }
+  .obs-kpi .l { font-size: 12px; line-height: 16px; color: #656871; font-weight: 400; text-transform: none; letter-spacing: normal; }
+  .obs-kpi .v, .obs-kpi .num {
+    font-size: 28px; line-height: 34px; font-weight: 700;
+    color: #0f141a; letter-spacing: normal;
+  }
+  .obs-kpi .s, .obs-kpi .meta { font-size: 12px; line-height: 16px; color: #656871; }
+
+  /* Tabs: a bottom-border indicator, not a pill. */
+  .obs-tabs { border-bottom: 1px solid #c6c6cd; gap: 0; background: transparent; padding: 0; }
+  .obs-tab {
+    background: transparent; border: 0; border-bottom: 2px solid transparent;
+    border-radius: 0; box-shadow: none;
+    padding: 10px 20px; margin-bottom: -1px;
+    font-size: 14px; font-weight: 700; color: #424650; cursor: pointer;
+  }
+  .obs-tab:hover { color: #0972d3; background: transparent; }
+  .obs-tab.active {
+    background: transparent; color: #0972d3;
+    border-bottom-color: #0972d3; box-shadow: none;
+  }
+
+  /* Buttons */
+  .obs-btn, .obs-copy, .obs-eval-run {
+    font-family: inherit; font-size: 14px; font-weight: 700;
+    height: 32px; padding: 0 20px;
+    border-radius: 8px;
+    border: 1px solid #0972d3;
+    background: transparent; color: #0972d3;
+    box-shadow: none; cursor: pointer;
+  }
+  .obs-btn:hover:not(:disabled), .obs-copy:hover:not(:disabled), .obs-eval-run:hover:not(:disabled) { background: #f2f8fd; }
+  .obs-btn:disabled, .obs-copy:disabled, .obs-eval-run:disabled {
+    border-color: #c6c6cd; color: #656871; background: transparent; cursor: not-allowed; opacity: 1;
+  }
+  .obs-btn.primary {
+    background: #0972d3; color: #fff; border-color: #0972d3;
+  }
+  .obs-btn.primary:hover:not(:disabled) { background: #065299; border-color: #065299; }
+  .obs-btn.ghost { border-color: #c6c6cd; color: #424650; }
+
+  /* Inputs and the session combo */
+  .obs-controls select, .obs-controls input, .obs-combo, .obs-proj input, .obs-verselect {
+    font-family: inherit; font-size: 14px;
+    border: 1px solid #c6c6cd; border-radius: 8px;
+    background: #fff; color: #0f141a;
+    box-shadow: none;
+  }
+  .obs-controls select:focus, .obs-controls input:focus, .obs-proj input:focus, .obs-verselect:focus {
+    outline: 2px solid #0972d3; outline-offset: -1px; border-color: #0972d3; box-shadow: none;
+  }
+  .obs-combo.open, .obs-combo-list {
+    border-color: #c6c6cd; border-radius: 8px;
+    box-shadow: 0 4px 20px 1px rgba(0,7,22,.1);
+  }
+  .obs-combo-opt { font-size: 14px; }
+  .obs-combo-opt:hover, .obs-combo-opt.active { background: #f4f4f4; }
+
+  /* Table: Cloudscape uses a light header row, row dividers, no zebra. */
+  .obs-tablewrap table { font-size: 14px; }
+  .obs-tablewrap th {
+    background: #fbfbfb; color: #424650;
+    font-size: 12px; line-height: 16px; font-weight: 700;
+    text-transform: none; letter-spacing: normal;
+    border-bottom: 1px solid #c6c6cd;
+    padding: 10px 16px;
+  }
+  .obs-tablewrap td {
+    border-bottom: 1px solid #e9ebed;
+    padding: 10px 16px;
+    color: #0f141a;
+  }
+  .obs-tablewrap tr:hover td { background: #f4f4f4; }
+  .obs-tablewrap .num { font-variant-numeric: tabular-nums; }
+
+  /* Badges / pills / chips */
+  .obs-badge, .obs-pill, .obs-mchip, .obs-vertag, .obs-ins-span {
+    border-radius: 16px;
+    font-size: 12px; line-height: 16px; font-weight: 400;
+    padding: 2px 10px;
+    box-shadow: none;
+    background: #f1f3f5; color: #424650; border: 1px solid #e1e4e8;
+  }
+  .obs-badge.good, .obs-badge.ok, .obs-badge.allowed, .obs-badge.passed {
+    background: #eef9f1; color: #0a6b30; border-color: #c4e5d0;
+  }
+  .obs-badge.warn, .obs-badge.low, .obs-badge.logonly {
+    background: #fbf4e6; color: #8d6605; border-color: #f0d99a;
+  }
+  .obs-badge.error, .obs-badge.blocked, .obs-badge.denied {
+    background: #fff0f0; color: #db0000; border-color: #f5c6c6;
+  }
+  .obs-badge.llm, .obs-badge.tool, .obs-badge.memory, .obs-badge.guardrail,
+  .obs-badge.policy, .obs-badge.eval, .obs-badge.agentcore, .obs-badge.sys {
+    background: #f2f8fd; color: #0959a8; border-color: #b8d9f5;
+  }
+
+  /* Notes and helper text */
+  .obs-note, .obs-empty, .obs-seg-empty, .obs-combo-empty, .obs-vernote {
+    font-size: 12px; line-height: 16px; color: #656871;
+  }
+  .obs-note.warn { color: #8d6605; }
+
+  /* Prompts & I/O inspector: this is where a reader spends the most time, so it
+     gets the console's code surface rather than a tinted panel. */
+  .obs-io, .obs-callblk, .obs-calls-inner {
+    background: #fff; border-color: #e9ebed;
+  }
+  .obs-callttl { font-size: 13px; line-height: 18px; font-weight: 700; color: #0f141a; }
+  .obs-io pre, .obs-callblk pre {
+    background: #f4f4f4;
+    border: 1px solid #e9ebed;
+    border-radius: 4px;
+    font-family: Monaco, Menlo, monospace;
+    font-size: 12px; line-height: 18px;
+    color: #424650;
+  }
+  .obs-metagrid .k, .obs-kv .k { font-size: 12px; color: #656871; }
+  .obs-metagrid .v, .obs-kv .v { font-size: 14px; color: #0f141a; }
+
+  /* Evaluation scores */
+  .obs-evalbar { background: #e9ebed; border-radius: 2px; }
+  .obs-evalfill { background: #0972d3; border-radius: 2px; }
+  .obs-evalscore { font-weight: 700; color: #0f141a; font-variant-numeric: tabular-nums; }
+  .obs-evalname { font-weight: 700; color: #0f141a; font-size: 14px; }
+  .obs-evallabel, .obs-evalexpl { font-size: 12px; line-height: 16px; color: #656871; }
+
+  /* Modal */
+  .obs-modal-back { background: rgba(35,47,62,.7); }
+  .obs-modal {
+    border-radius: 16px;
+    box-shadow: 0 4px 20px 1px rgba(0,7,22,.1);
+    border: 0;
+  }
+  .obs-modal-head {
+    background: #fbfbfb;
+    border-bottom: 1px solid #e9ebed;
+    font-size: 18px; line-height: 22px; font-weight: 700; color: #0f141a;
+  }
+
+  /* Links */
+  .obs-sesslink { color: #0972d3; }
+  .obs-sesslink:hover { text-decoration: underline; }
+  .obs-sesslink-dead { color: #656871; }
+
+  /* The projection figure */
+  .obs-proj .pbig { font-size: 28px; line-height: 34px; font-weight: 700; color: #0f141a; letter-spacing: normal; }
+  /* Section labels: Cloudscape Header uses sentence case at heading-s, not a small
+     uppercase tracking-out label. */
+  .obs-card > .ot, .obs-card > .obs-callttl, .obs-strip .ot {
+    font-size: 16px; line-height: 20px; font-weight: 700;
+    text-transform: none; letter-spacing: normal; color: #0f141a;
+  }
+  .obs-card > .ot .obs-note, .obs-strip .ot .obs-note { font-weight: 400; }
+
   `;
   const style = document.createElement("style"); style.textContent = CSS; document.head.appendChild(style);
 

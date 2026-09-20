@@ -5,296 +5,1123 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Multi-Agent Orchestrator</title>
 <style>
-  :root {
-    --bg1:#eef2f9; --bg2:#e6ebf5; --surface:#ffffff; --border:#e2e8f0; --border2:#cbd5e1;
-    --text:#0f172a; --muted:#64748b; --muted2:#94a3b8;
-    --blue:#2563eb; --green:#16a34a; --amber:#f59e0b; --red:#dc2626; --orange:#f97316; --slate:#cbd5e1;
-  }
-  * { box-sizing: border-box; }
-  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-         background:linear-gradient(160deg,var(--bg1),var(--bg2)); color:var(--text); height:100vh;
-         display:flex; flex-direction:column; font-size:14px; }
-  header { padding:12px 22px; background:rgba(255,255,255,.85); backdrop-filter:blur(8px);
-           border-bottom:1px solid var(--border); display:flex; align-items:center; gap:14px; z-index:5; }
-  header h1 { font-size:15px; margin:0; font-weight:700; letter-spacing:-.01em;
-              background:linear-gradient(90deg,#1e3a8a,#2563eb); -webkit-background-clip:text; background-clip:text; color:transparent; }
-  header .spacer { flex:1; }
-  header .user { font-size:12px; color:var(--muted); }
-  input[type=text] { background:#fff; border:1px solid var(--border2); color:var(--text);
-        padding:9px 12px; border-radius:9px; width:360px; font-size:13px; }
-  input[type=text]:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 3px #2563eb22; }
-  button { background:var(--blue); color:#fff; border:0; padding:9px 15px; border-radius:9px;
-           font-size:13px; font-weight:600; cursor:pointer; transition:filter .15s; }
-  button:hover { filter:brightness(.96); }
-  button.approve { background:var(--green); }
-  button.deny { background:#fff; color:var(--red); border:1px solid #fecaca; }
-  button.revise { background:#fff; color:#b45309; border:1px solid #fcd34d; }
-  button.ghost { background:#fff; color:var(--muted); border:1px solid var(--border); }
-  button:disabled { opacity:.45; cursor:not-allowed; }
-  main { flex:1; display:flex; min-height:0; }
-  .sidebar { width:290px; background:rgba(255,255,255,.7); border-right:1px solid var(--border); overflow-y:auto; }
-  .sess { padding:12px 16px; border-bottom:1px solid var(--border); cursor:pointer; transition:background .12s; }
-  .sess:hover { background:#eef2ff; } .sess.active { background:#e0e7ff; border-left:3px solid var(--blue); padding-left:13px; }
-  .sess { position:relative; }
-  .sess .topic { font-size:13px; margin-bottom:6px; font-weight:600; padding-right:22px; }
-  .sess .id { font-size:11px; color:var(--muted2); font-family:ui-monospace,monospace; }
-  .sess .sessdel { position:absolute; top:10px; right:10px; background:none; border:0; color:var(--muted2);
-                   font-size:13px; padding:2px 4px; border-radius:6px; cursor:pointer; opacity:0; transition:opacity .12s; }
-  .sess:hover .sessdel { opacity:1; }
-  .sess .sessdel:hover { color:var(--red); background:#fee2e2; }
-  .content { flex:1; overflow-y:auto; padding:26px; }
-  .wrap { max-width:1120px; margin:0 auto; }
-  .card { background:var(--surface); border:1px solid var(--border); border-radius:16px; padding:20px;
-          margin-bottom:18px; box-shadow:0 1px 3px #0f172a0f; }
-  .card h2 { font-size:12px; font-weight:700; color:var(--muted2); margin:0 0 16px; text-transform:uppercase; letter-spacing:.05em; }
-  .badge { display:inline-flex; align-items:center; gap:5px; padding:3px 10px; border-radius:999px; font-size:11px; font-weight:600; text-transform:capitalize; white-space:nowrap; }
-  .node .nstatus { position:absolute; right:12px; bottom:10px; }
-  .node .nstatus .badge { padding:2px 8px; font-size:10px; }
-  .badge .dot { width:6px; height:6px; border-radius:50%; background:currentColor; }
-  .b-pending { background:#f1f5f9; color:#64748b; }
-  .b-running, .b-revise { background:#dbeafe; color:#1d4ed8; }
-  .b-waiting_human { background:#fef3c7; color:#b45309; }
-  .b-done { background:#dcfce7; color:#15803d; }
-  .b-denied, .b-failed { background:#fee2e2; color:#b91c1c; }
-  .b-cancelling { background:#ffedd5; color:#c2410c; }
-  .b-cancelled { background:#e2e8f0; color:#475569; }
-  /* A branch bypassed this agent. Dimmed rather than coloured: nothing went wrong,
-     the run simply took another path, and the eye should skip it. */
-  .b-skipped { background:#f1f5f9; color:#94a3b8; }
-  .node.cancelled { --accent:#94a3b8; }
+/* ==========================================================================
+   AWS Cloudscape design language, hand-written against the published tokens.
 
-  /* --- Pipeline / DAG --- */
-  .dag { display:flex; align-items:center; gap:0; overflow-x:auto; padding:22px 8px 24px; }
-  .stage-body { position:relative; flex:0 0 auto; }
-  .stage-num { position:absolute; top:-11px; left:-10px; width:25px; height:25px; border-radius:50%;
-               background:linear-gradient(135deg,#1e3a8a,#2563eb); color:#fff; font-size:11px; font-weight:800;
-               display:flex; align-items:center; justify-content:center; box-shadow:0 2px 6px #1e3a8a55; z-index:4; }
-  .stage-gate { position:absolute; top:-12px; right:-8px; display:flex; align-items:center; gap:3px;
-                background:#fef3c7; color:#b45309; border:1px solid #fcd34d; font-size:9px; font-weight:700;
-                padding:2px 8px; border-radius:999px; z-index:4; box-shadow:0 1px 3px #0f172a1a; }
-  /* This step's output chooses what runs next, so the arrow out of it is only the
-     DEFAULT path. Hover for the rules. */
-  .stage-branch { position:absolute; bottom:-11px; right:-8px; display:flex; align-items:center; gap:3px;
-                  background:#ede9fe; color:#6d28d9; border:1px solid #c4b5fd; font-size:9px; font-weight:700;
-                  padding:2px 8px; border-radius:999px; z-index:4; box-shadow:0 1px 3px #0f172a1a; cursor:help; }
-  .stage-group { position:relative; border:1.5px dashed var(--border2); border-radius:18px; padding:26px 14px 14px;
-                 background:linear-gradient(180deg,#f8fafc,#eef2f7); }
-  /* Sequential group gets a distinct tint so it reads differently from parallel. */
-  .stage-group.seq { border-color:#c7d2fe; background:linear-gradient(180deg,#f5f8ff,#eaf0ff); }
-  .stage-group-title { position:absolute; top:-10px; left:50%; transform:translateX(-50%); white-space:nowrap;
-                       background:#eef2ff; color:#3730a3; border:1px solid #c7d2fe; font-size:10px; font-weight:700;
-                       padding:3px 12px; border-radius:999px; letter-spacing:.02em; }
-  /* Parallel = agents in a GRID, two per row (they all run at the same time, so
-     there is no order to convey — unlike .stage-row, which uses arrows).
-     Two per row rather than one column so a wide stage stays readable without the
-     stage growing taller than the sequential group beside it. The column count is
-     set inline per stage (min(2, agents)) so a 1-agent group leaves no empty track. */
-  .stage-col { display:grid; gap:11px; justify-content:center; }
-  .stage-col .node { width:200px; }
-  /* Sequential = agents laid out left-to-right with arrows (they run in order). */
-  .stage-row { display:flex; align-items:center; gap:6px; }
-  .stage-row .node { width:180px; }
-  .seq-arrow { flex:0 0 auto; display:flex; align-items:center; color:#6366f1; }
-  .seq-arrow svg { width:24px; height:18px; }
-  .arrow { flex:0 0 auto; align-self:center; display:flex; align-items:center; margin:0 8px; color:#22c55e; }
-  .arrow svg { width:30px; height:22px; }
-  .node { position:relative; width:200px; background:#fff; border:1px solid var(--border); border-radius:15px;
-          padding:15px 14px 32px; box-shadow:0 4px 12px #0f172a0f, 0 1px 2px #0f172a0a; --accent:var(--slate); overflow:hidden; }
-  .node::before { content:""; position:absolute; top:0; left:0; right:0; height:5px; background:var(--accent); }
-  .node.running, .node.revise { --accent:var(--blue); }
-  .node.done { --accent:var(--green); }
-  .node.waiting_human { --accent:var(--amber); }
-  .node.denied, .node.failed { --accent:var(--red); }
-  .node.skipped { --accent:#cbd5e1; opacity:.55; }
-  .node.running, .node.waiting_human { animation:pulse 1.8s ease-in-out infinite; }
-  @keyframes pulse { 0%,100%{ box-shadow:0 4px 10px #0f172a0d, 0 0 0 0 color-mix(in srgb, var(--accent) 40%, transparent);} 50%{ box-shadow:0 4px 10px #0f172a0d, 0 0 0 5px color-mix(in srgb, var(--accent) 8%, transparent);} }
-  .node .head { display:flex; align-items:center; gap:10px; margin-top:3px; }
-  .node .avatar { width:30px; height:30px; border-radius:9px; background:var(--accent); color:#fff; font-weight:800;
-                  font-size:14px; display:flex; align-items:center; justify-content:center; flex:0 0 auto; box-shadow:0 2px 4px #0f172a1a; }
-  .node .title { font-weight:700; font-size:13px; flex:1; min-width:0; line-height:1.2; }
-  .node .tags { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:2px; }
-  .tag { font-size:9px; padding:2px 7px; border-radius:6px; background:#f1f5f9; color:var(--muted); font-weight:600; }
-  .tag.mcp { background:#ecfeff; color:#0e7490; } .tag.model { background:#f5f3ff; color:#7c3aed; }
-  .tag.rag { background:#ecfdf5; color:#047857; } .tag.src { background:#eef2ff; color:#4338ca; }
-  .tag.hitl { background:#fef3c7; color:#b45309; } .tag.dedicated { background:#fff7ed; color:#c2410c; }
-  /* A step run by an agent this deployment does not operate (runtime "a2a").
-     Deliberately the loudest chip on the card: it marks a trust boundary, not a
-     placement — the reasoning, the tools and the model are all someone else's. */
-  .tag.a2a { background:#fdf2f8; color:#a21caf; border:1px solid #f0abfc; font-weight:700; }
-  .bar { height:5px; background:#eef2f7; border-radius:3px; overflow:hidden; margin-top:10px; }
-  .bar > i { display:block; height:100%; background:var(--accent); width:0; transition:width .3s; }
+   WHY TOKENS AND NOT THE REACT LIBRARY: Cloudscape ships as React components, which
+   would mean npm + a bundler + a build step in both IaC paths, a CloudFront SPA
+   error-page rule, and a rewrite of tests/test_asset_rendering.py (it slices this
+   page's own functions out and runs them under node). This deployment uploads three
+   static files and has no Node toolchain. So the VISUAL SYSTEM is reproduced here —
+   the same type scale, spacing grid, palette, container and status vocabulary — and
+   the page stays a single file anyone can open. Swapping in the real components later
+   is a contained change: the markup below already follows Cloudscape's structure
+   (TopNavigation / SideNavigation / ContentLayout / Container+Header / SplitPanel).
 
-  .node { cursor:pointer; transition:opacity .15s, box-shadow .15s; }
-  .node.selected { outline:2px solid var(--blue); outline-offset:2px; }
-  .dag.has-selection .node:not(.selected) { opacity:.42; }
+   Token names in comments are the official ones, so a value can be checked against
+   cloudscape.design rather than taken on trust.
+   ========================================================================== */
 
-  .outputs-head { display:flex; align-items:center; justify-content:space-between; margin:0 0 14px; }
-  .outputs-head h2 { margin:0; }
-  .outputs-head .hint { font-size:11px; color:var(--muted2); font-weight:500; text-transform:none; letter-spacing:0; }
-  .outblock { border:1px solid var(--border); border-radius:12px; padding:14px 16px; margin-bottom:12px; background:#fff; }
-  .outblock:last-child { margin-bottom:0; }
-  details.outblock > summary.outhead { cursor:pointer; user-select:none; list-style:none; margin-bottom:0; }
-  details.outblock > summary.outhead::-webkit-details-marker { display:none; }
-  details.outblock > summary.outhead:hover .oname { color:var(--blue); }
-  details.outblock[open] > summary.outhead { margin-bottom:10px; }
-  .outhead .ochev { color:var(--blue); font-size:12px; transition:transform .18s; flex:0 0 auto; }
-  details.outblock[open] > summary .ochev { transform:rotate(90deg); }
-  .outhead { display:flex; align-items:center; gap:9px; margin-bottom:10px; }
-  .avatar-sm { width:24px; height:24px; border-radius:7px; background:var(--accent,#2563eb); color:#fff; font-weight:800;
-               font-size:12px; display:flex; align-items:center; justify-content:center; flex:0 0 auto; }
-  .outblock .oname { font-weight:700; font-size:13px; flex:1; }
-  .outbody { white-space:pre-wrap; font-size:13px; color:#334155; line-height:1.5; max-height:360px; overflow-y:auto;
-             border-top:1px dashed var(--border); padding-top:10px; }
-  .outbody.muted { color:var(--muted2); border-top:0; padding-top:0; font-style:italic; }
+:root {
+  /* --- palette ---------------------------------------------------------- */
+  --awsui-blue:            #0972d3;   /* color-background-button-primary-default */
+  --awsui-blue-hover:      #065299;
+  --awsui-blue-active:     #033160;
+  --awsui-link:            #0972d3;   /* color-text-link-default */
+  --awsui-navy:            #0f1b2a;   /* top navigation */
+  --awsui-navy-2:          #192b3d;
 
-  /* Structured asset rendering (readable view of the contract JSON) */
-  .asset { font-size:12.5px; color:#334155; line-height:1.5; }
-  .asset-meta { font-size:10.5px; font-weight:700; letter-spacing:.03em; text-transform:uppercase; color:#64748b; margin-bottom:8px; }
-  .asset-summary { background:#f8fafc; border-left:3px solid var(--accent,#2563eb); border-radius:6px;
-                   padding:9px 11px; margin-bottom:13px; color:#1e293b; }
-  .asset-sec { margin-bottom:13px; } .asset-sec:last-child { margin-bottom:0; }
-  .asset code { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:11.5px;
-                background:#eef2f7; border:1px solid #e2e8f0; border-radius:4px; padding:0 4px; }
-  .asset strong { font-weight:700; color:#0f172a; }
-  .asset-sec > h5 { margin:0 0 6px; font-size:10.5px; font-weight:700; text-transform:uppercase;
-                    letter-spacing:.03em; color:#475569; }
-  .asset .blist { list-style:none; margin:0; padding:0; }
-  .asset .blist > li { margin:0 0 6px; }
-  .asset ul:not(.blist) { margin:3px 0; padding-left:18px; } .asset ul:not(.blist) > li { margin:1px 0; }
-  .asset-sec.warn > h5 { color:#b45309; } .asset-sec.warn li { color:#92400e; }
-  .asset-collapse > summary { cursor:pointer; font-size:10.5px; font-weight:700; text-transform:uppercase;
-                              letter-spacing:.03em; color:#b45309; list-style:none; user-select:none; }
-  .asset-collapse > summary::-webkit-details-marker { display:none; }
-  .asset-collapse > summary::before { content:"\25B8  "; }
-  .asset-collapse[open] > summary::before { content:"\25BE  "; }
-  .asset-collapse > ul { margin-top:7px; }
-  .cls { display:inline-block; font-size:9px; font-weight:700; padding:1px 6px; border-radius:5px;
-         margin-right:6px; text-transform:uppercase; letter-spacing:.02em; background:#f1f5f9; color:#475569; }
-  .cls-sourced-fact { background:#ecfdf5; color:#047857; }
-  .cls-calculation { background:#ecfeff; color:#0e7490; }
-  .cls-assumption { background:#fef9c3; color:#a16207; }
-  .cls-agent-interpretation { background:#fff1f2; color:#be123c; }
-  .sref { color:#94a3b8; font-style:italic; }
-  .kvgrid { display:grid; grid-template-columns:max-content 1fr; gap:3px 14px; align-items:start; }
-  .kvgrid .k { color:#64748b; font-weight:600; } .kvgrid .v { color:#1e293b; }
-  .asset-obj { margin:4px 0; padding-left:10px; border-left:2px solid var(--border); }
-  .rawout { margin:0; white-space:pre-wrap; word-break:break-word; font-size:11.5px; line-height:1.5;
-            font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  --awsui-bg-layout:       #f2f3f3;   /* color-background-layout-main */
+  --awsui-bg-container:    #ffffff;   /* color-background-container-content */
+  --awsui-bg-header:       #fbfbfb;   /* container header */
+  --awsui-bg-input:        #ffffff;
+  --awsui-bg-hover:        #f4f4f4;   /* color-background-dropdown-item-hover */
+  --awsui-bg-selected:     #f0fbff;   /* color-background-item-selected */
+  --awsui-bg-code:         #f4f4f4;
 
-  .hitl { background:linear-gradient(180deg,#fffdf5,#fffbeb); border:1px solid #fcd34d; border-radius:16px; padding:20px;
-          margin-bottom:18px; box-shadow:0 4px 14px #f59e0b1f; }
-  .hitl h3 { margin:0 0 4px; color:#b45309; font-size:15px; }
-  .hitl .sub { margin:0 0 12px; font-size:12px; color:#92764a; }
-  .detail { background:#fff; border:1px solid #fde68a; border-radius:10px; padding:14px; font-size:13px;
-            color:#334155; white-space:pre-wrap; margin-bottom:14px; max-height:240px; overflow-y:auto; line-height:1.5; }
-  textarea { width:100%; border:1px solid var(--border2); border-radius:10px; padding:10px 12px; font-size:13px;
-             font-family:inherit; margin-bottom:12px; resize:vertical; min-height:70px; }
-  textarea:focus { outline:none; border-color:var(--amber); box-shadow:0 0 0 3px #f59e0b22; }
-  .actions { display:flex; gap:9px; align-items:center; }
-  /* --- Per-agent group review --- */
-  .gbulk { display:flex; gap:8px; margin-bottom:12px; }
-  .gbulk button { font-size:11px; padding:5px 11px; }
-  .gagent { background:#fff; border:1px solid #fde68a; border-radius:12px; padding:12px 14px; margin-bottom:10px; }
-  .gagent.revise { border-color:#93c5fd; }
-  .gagent.reject { border-color:#fca5a5; }
-  .gagent.approve { border-color:#bbf7d0; }
-  .gahead { display:flex; align-items:center; gap:9px; }
-  .gahead .oname { font-weight:700; font-size:13px; flex:1; }
-  .gapick { display:inline-flex; gap:0; border:1px solid var(--border2); border-radius:8px; overflow:hidden; flex:0 0 auto; }
-  .gapick-btn { background:#fff; color:var(--muted); border:0; border-right:1px solid var(--border); padding:6px 12px;
-                font-size:11px; font-weight:600; cursor:pointer; }
-  .gapick-btn:last-child { border-right:0; }
-  .gapick-btn:hover { background:#f8fafc; }
-  .gapick-btn.sel.approve { background:var(--green); color:#fff; }
-  .gapick-btn.sel.revise { background:var(--blue); color:#fff; }
-  .gapick-btn.sel.reject { background:var(--orange); color:#fff; }
-  .gaout { font-size:12px; color:#475569; margin-top:9px; padding-top:8px; border-top:1px dashed var(--border);
-           line-height:1.4; max-height:340px; overflow:auto; }
-  .gaout pre { margin:0; white-space:pre-wrap; word-break:break-word; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-               font-size:11.5px; line-height:1.5; }
-  .gaout.muted { color:var(--muted2); font-style:italic; border-top:0; }
-  .gafb { margin-top:9px; margin-bottom:0; min-height:52px; }
-  .result { background:linear-gradient(180deg,#f0fdf4,#ecfdf5); border:1px solid #bbf7d0; border-radius:16px; padding:18px;
-            margin-bottom:18px; font-size:13px; color:#14532d; line-height:1.5; }
-  .result-body { white-space:pre-wrap; }
-  /* Collapsible section cards (Result, Timeline) */
-  .secsum { cursor:pointer; user-select:none; list-style:none; display:flex; align-items:center; gap:8px; margin:0; }
-  .secsum::-webkit-details-marker { display:none; }
-  .secsum h2 { margin:0; }
-  .secsum .ochev { color:var(--blue); font-size:12px; transition:transform .18s; flex:0 0 auto; }
-  details[open] > .secsum .ochev { transform:rotate(90deg); }
-  details.result[open] > .secsum, details.logs[open] > .secsum { margin-bottom:12px; }
-  .logs .log { font-size:12px; font-family:ui-monospace,monospace; color:#475569; padding:4px 0; border-top:1px solid #f1f5f9; }
-  .logs .log:first-child { border-top:0; }
-  .logs .log .n { color:var(--blue); font-weight:700; }
-  .logs .log .ts { color:var(--muted2); }
+  --awsui-text:            #0f141a;   /* color-text-heading-default */
+  --awsui-text-body:       #0f141a;
+  --awsui-text-secondary:  #424650;   /* color-text-body-secondary */
+  --awsui-text-muted:      #656871;   /* color-text-status-inactive */
+  --awsui-text-inverted:   #ffffff;
 
-  /* Output version history */
-  .outblock .vcount { font-size:10px; font-weight:700; color:#7c3aed; background:#f5f3ff;
-                      border:1px solid #ede9fe; border-radius:6px; padding:2px 7px; }
-  .ver { border:1px solid var(--border); border-radius:10px; padding:10px 12px; margin-bottom:10px; background:#fafbfd; }
-  .ver:last-child { margin-bottom:0; }
-  .verhead { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
-  .verhead .vtag { font-weight:800; font-size:12px; color:#1e40af; background:#e0e7ff; border-radius:6px; padding:2px 8px; }
-  .verhead .vkind { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
-  .verhead .ts { font-size:11px; color:var(--muted2); font-family:ui-monospace,monospace; margin-left:auto; }
-  .vercomment { font-size:12px; color:#334155; background:#fffbeb; border:1px solid #fde68a;
-                border-radius:8px; padding:7px 10px; margin-bottom:8px; }
-  .empty { color:var(--muted); margin-top:60px; text-align:center; }
-  .spinner { display:inline-block; width:14px; height:14px; border:2px solid #cbd5e1; border-top-color:var(--orange);
-             border-radius:50%; animation:spin .8s linear infinite; vertical-align:middle; }
-  @keyframes spin { to { transform:rotate(360deg); } }
+  --awsui-border:          #c6c6cd;   /* color-border-input-default */
+  --awsui-divider:         #e9ebed;   /* color-border-divider-default */
+  --awsui-border-strong:   #8c8c94;
 
-  /* --- "Rerun from here" control (in the focused agent's output panel) --- */
-  .rerunbox { margin-top:12px; padding:12px; border:1px dashed #c7d2fe; border-radius:10px; background:#f5f7ff; }
-  .rerunbox .rerunhd { font-size:13px; font-weight:700; color:#4338ca; }
-  .rerunbox .rerunsub { font-size:12px; color:var(--muted); margin:4px 0 8px; }
-  .rerunbox textarea { width:100%; min-height:56px; box-sizing:border-box; border:1px solid #d9dff5;
-                       border-radius:8px; padding:8px; font:inherit; font-size:12px; resize:vertical; margin-bottom:8px; }
-  /* --- Post-completion multi-agent rerun panel (one parallel stage) --- */
-  .rr-stage { border:1px solid var(--border); border-radius:12px; padding:12px 14px; margin-bottom:12px; background:#fbfdff; }
-  .rr-stage-title { font-size:11px; font-weight:700; color:#3730a3; text-transform:uppercase; letter-spacing:.03em; margin-bottom:8px; }
-  .rr-agent { display:flex; flex-direction:column; gap:0; padding:7px 0; border-bottom:1px dashed var(--border); }
-  .rr-agent:last-of-type { border-bottom:0; }
-  .rr-agent.sel { background:#eef2ff33; }
-  .rr-pick { display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px; }
-  .rr-pick input { width:15px; height:15px; cursor:pointer; }
-  .rr-fb { margin-top:8px; min-height:48px; }
-  #rerunPanel button.revise { margin-top:10px; }
+  --awsui-success:         #00802f;   /* color-text-status-success */
+  --awsui-error:           #db0000;   /* color-text-status-error */
+  --awsui-warning:         #8d6605;   /* color-text-status-warning */
+  --awsui-info:            #0972d3;   /* color-text-status-info */
+  --awsui-inactive:        #656871;
 
-  /* --- In-app assistant (chatbot) --- */
-  .cbot-fab { position:fixed; right:22px; bottom:22px; width:56px; height:56px; border-radius:50%;
-              background:#4338ca; color:#fff; border:none; cursor:pointer; z-index:900;
-              box-shadow:0 6px 20px #0f172a33; font-size:24px; display:flex; align-items:center; justify-content:center;
-              transition:transform .15s, box-shadow .15s; }
-  .cbot-fab:hover { transform:translateY(-2px); box-shadow:0 10px 26px #0f172a44; }
-  .cbot-panel { position:fixed; right:22px; bottom:88px; width:380px; max-width:calc(100vw - 44px);
-                height:560px; max-height:calc(100vh - 130px); background:#fff; border:1px solid var(--border);
-                border-radius:16px; box-shadow:0 16px 44px #0f172a2e; z-index:901; display:none; flex-direction:column; overflow:hidden; }
-  .cbot-panel.open { display:flex; }
-  .cbot-head { background:linear-gradient(135deg,#4338ca,#6d28d9); color:#fff; padding:13px 16px; display:flex; align-items:center; gap:9px; }
-  .cbot-head .t { font-weight:700; font-size:14px; } .cbot-head .s { font-size:11px; opacity:.85; }
-  .cbot-x { margin-left:auto; background:transparent; border:none; color:#fff; font-size:18px; cursor:pointer; opacity:.85; }
-  .cbot-x:hover { opacity:1; }
-  .cbot-msgs { flex:1; overflow-y:auto; padding:14px; display:flex; flex-direction:column; gap:10px; background:#f8fafc; }
-  .cbot-msg { max-width:85%; padding:9px 12px; border-radius:13px; font-size:13px; line-height:1.5; white-space:pre-wrap; word-break:break-word; }
-  .cbot-msg.user { align-self:flex-end; background:#4338ca; color:#fff; border-bottom-right-radius:4px; }
-  .cbot-msg.bot { align-self:flex-start; background:#fff; border:1px solid var(--border); color:#0f172a; border-bottom-left-radius:4px; }
-  .cbot-msg.bot .act { display:block; margin-top:6px; font-size:11px; color:#15803d; font-weight:600; }
-  .cbot-msg.bot .cbot-p { margin:0 0 6px; } .cbot-msg.bot .cbot-p:last-child { margin-bottom:0; }
-  .cbot-msg.bot .cbot-h { font-weight:700; font-size:13px; margin:8px 0 4px; color:#0f172a; }
-  .cbot-msg.bot .cbot-h:first-child { margin-top:0; }
-  .cbot-msg.bot ul { margin:4px 0 6px; padding-left:18px; } .cbot-msg.bot li { margin:2px 0; }
-  .cbot-msg.bot strong { font-weight:700; } .cbot-msg.bot em { font-style:italic; }
-  .cbot-msg.bot code { background:#f1f5f9; padding:1px 5px; border-radius:5px;
-                       font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:11.5px; }
-  .cbot-typing { align-self:flex-start; color:var(--muted); font-size:12px; font-style:italic; padding:4px 6px; }
-  .cbot-foot { border-top:1px solid var(--border); padding:10px; display:flex; gap:8px; background:#fff; }
-  .cbot-foot textarea { flex:1; resize:none; min-height:38px; max-height:110px; border:1px solid var(--border);
-                        border-radius:10px; padding:9px 11px; font:inherit; font-size:13px; }
-  .cbot-foot textarea:focus { outline:none; border-color:#6d28d9; box-shadow:0 0 0 3px #6d28d922; }
-  .cbot-send { background:#4338ca; color:#fff; border:none; border-radius:10px; padding:0 15px; cursor:pointer; font-weight:600; }
-  .cbot-send:disabled { opacity:.5; cursor:not-allowed; }
+  /* --- radii, shadow, spacing (4px grid) -------------------------------- */
+  --awsui-radius-container: 16px;     /* border-radius-container */
+  --awsui-radius-item:      8px;
+  --awsui-radius-control:   8px;      /* border-radius-input */
+  --awsui-radius-badge:     16px;     /* border-radius-badge */
+  --awsui-shadow-container: 0 0 1px 1px #e9ebed, 0 1px 8px 2px rgba(0,7,22,.12);
+  --awsui-shadow-panel:     0 1px 4px 1px rgba(0,7,22,.1);
+  --awsui-shadow-popover:   0 4px 20px 1px rgba(0,7,22,.1);
+
+  /* Legacy aliases: observability.js reads --bg1/--bg2 for its own background. */
+  --bg1: #f2f3f3;
+  --bg2: #f2f3f3;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  /* font-family-base */
+  font-family: "Amazon Ember", "Helvetica Neue", Roboto, Arial, sans-serif;
+  font-size: 14px;            /* font-size-body-m */
+  line-height: 20px;          /* line-height-body-m */
+  color: var(--awsui-text-body);
+  background: var(--awsui-bg-layout);
+  display: flex;
+  flex-direction: column;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3 { margin: 0; color: var(--awsui-text); font-weight: 700; }
+h2 { font-size: 18px; line-height: 22px; }   /* font-size-heading-m */
+h3 { font-size: 16px; line-height: 20px; }   /* font-size-heading-s */
+a { color: var(--awsui-link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ==========================================================================
+   TopNavigation
+   ========================================================================== */
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 24px;
+  height: 56px;
+  flex: 0 0 auto;
+  background: var(--awsui-navy);
+  color: var(--awsui-text-inverted);
+  position: relative;
+  z-index: 20;
+}
+
+header h1 {
+  font-size: 16px;
+  line-height: 20px;
+  font-weight: 700;
+  color: var(--awsui-text-inverted);
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* NO ::before mark here. `ui.heading` in workflow.json is the customer's brand line
+   and the sample's already starts with a glyph — a CSS mark on top of it rendered two
+   logos. The heading is theirs; the shell does not decorate it. */
+
+.topnav { display: flex; align-items: center; gap: 4px; }
+
+.navbtn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: #d1d5db;
+  font: inherit;
+  font-weight: 700;
+  padding: 6px 12px;
+  border-radius: var(--awsui-radius-control);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.navbtn:hover { background: rgba(255,255,255,.1); color: #fff; }
+.navbtn.active { background: rgba(255,255,255,.16); color: #fff; }
+
+header .spacer { flex: 1; }
+
+header .user {
+  font-size: 12px;
+  line-height: 16px;
+  color: #d1d5db;
+  white-space: nowrap;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Inputs in the dark header get a light surface, as the console search does. */
+header input {
+  font: inherit;
+  font-size: 14px;
+  color: var(--awsui-text-body);
+  background: var(--awsui-bg-input);
+  border: 1px solid transparent;
+  border-radius: var(--awsui-radius-control);
+  padding: 6px 10px;
+  height: 32px;
+  min-width: 0;
+}
+header input:focus {
+  outline: 2px solid #539fe5;
+  outline-offset: 1px;
+  border-color: transparent;
+}
+header input#topic { flex: 1 1 340px; }
+header input#subject { flex: 0 1 200px; }
+
+header button#start {
+  appearance: none;
+  font: inherit;
+  font-weight: 700;
+  height: 32px;
+  padding: 0 20px;
+  border-radius: var(--awsui-radius-control);
+  border: 1px solid var(--awsui-blue);
+  background: var(--awsui-blue);
+  color: #fff;
+  cursor: pointer;
+  white-space: nowrap;
+}
+header button#start:hover:not(:disabled) { background: var(--awsui-blue-hover); border-color: var(--awsui-blue-hover); }
+header button#start:disabled { opacity: .45; cursor: not-allowed; }
+
+header button.ghost {
+  appearance: none;
+  font: inherit;
+  font-weight: 700;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: var(--awsui-radius-control);
+  border: 1px solid rgba(255,255,255,.4);
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+}
+header button.ghost:hover { background: rgba(255,255,255,.12); }
+
+/* ==========================================================================
+   AppLayout: SideNavigation | content | SplitPanel
+   ========================================================================== */
+
+main {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* --- SideNavigation ----------------------------------------------------- */
+.sidebar {
+  flex: 0 0 300px;
+  background: var(--awsui-bg-container);
+  border-right: 1px solid var(--awsui-divider);
+  overflow-y: auto;
+  padding: 16px 0;
+}
+
+.sidebar .navhead {
+  padding: 4px 20px 12px;
+  font-size: 18px;
+  line-height: 22px;
+  font-weight: 700;
+  color: var(--awsui-text);
+  border-bottom: 1px solid var(--awsui-divider);
+  margin-bottom: 8px;
+}
+
+.sess {
+  position: relative;
+  display: block;
+  padding: 10px 40px 10px 20px;
+  cursor: pointer;
+  border-left: 4px solid transparent;
+}
+.sess:hover { background: var(--awsui-bg-hover); }
+.sess.active {
+  background: var(--awsui-bg-selected);
+  border-left-color: var(--awsui-blue);
+}
+/* `.topic` is the run's subject line in a session row. Two lines, then ellipsis —
+   a topic is a sentence, and truncating it to one line loses the part that tells
+   two similar runs apart. */
+.sess .topic {
+  font-weight: 700;
+  color: var(--awsui-text);
+  font-size: 14px;
+  line-height: 18px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.sess .id {
+  font-family: Monaco, Menlo, monospace;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--awsui-text-muted);
+  margin-top: 2px;
+}
+.sess .t, .sess .sub { display: block; }
+.sess .sub { margin-top: 4px; font-size: 12px; color: var(--awsui-text-muted); }
+
+.sessdel {
+  position: absolute;
+  top: 8px; right: 10px;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--awsui-text-muted);
+  font-size: 14px;
+  line-height: 1;
+  width: 24px; height: 24px;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+}
+.sess:hover .sessdel { opacity: 1; }
+.sessdel:hover { background: #fff0f0; color: var(--awsui-error); }
+
+/* --- content ------------------------------------------------------------ */
+.content { flex: 1; overflow-y: auto; min-width: 0; }
+.wrap { padding: 24px; max-width: 1360px; }
+#wrap { display: flex; flex-direction: column; gap: 20px; }
+
+.empty {
+  background: var(--awsui-bg-container);
+  border-radius: var(--awsui-radius-container);
+  box-shadow: var(--awsui-shadow-container);
+  padding: 48px 24px;
+  text-align: center;
+  color: var(--awsui-text-secondary);
+}
+
+/* --- SplitPanel (right) ------------------------------------------------- */
+/* Where a selected node's detail goes, matching Step Functions' execution view:
+   graph on the left, the selected state's detail on the right. */
+.splitpanel {
+  flex: 0 0 520px;
+  max-width: 48vw;
+  background: var(--awsui-bg-container);
+  border-left: 1px solid var(--awsui-divider);
+  box-shadow: var(--awsui-shadow-panel);
+  display: none;
+  flex-direction: column;
+  min-height: 0;
+}
+.splitpanel.open { display: flex; }
+
+.sp-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--awsui-divider);
+  background: var(--awsui-bg-header);
+}
+.sp-title { flex: 1; min-width: 0; }
+.sp-title h2 {
+  font-size: 18px;
+  line-height: 22px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sp-sub {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--awsui-text-muted);
+  font-family: Monaco, Menlo, monospace;
+}
+.sp-x {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--awsui-text-secondary);
+  font-size: 18px;
+  line-height: 1;
+  width: 28px; height: 28px;
+  border-radius: 4px;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.sp-x:hover { background: var(--awsui-bg-hover); }
+.sp-body { flex: 1; overflow-y: auto; padding: 16px 20px 32px; }
+.sp-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+
+/* ==========================================================================
+   Container + Header
+   ========================================================================== */
+
+.card {
+  background: var(--awsui-bg-container);
+  border-radius: var(--awsui-radius-container);
+  box-shadow: var(--awsui-shadow-container);
+  padding: 20px 24px;
+}
+.card > h2 { margin-bottom: 16px; }
+
+/* An expandable Container renders its header as the summary row. */
+details.card { padding: 0; }
+details.card > .secsum { padding: 20px 24px; }
+details.card[open] > .secsum { border-bottom: 1px solid var(--awsui-divider); }
+details.card > :not(summary) { padding: 16px 24px 20px; }
+
+.secsum {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  color: var(--awsui-text);
+}
+.secsum::-webkit-details-marker { display: none; }
+.ochev {
+  display: inline-block;
+  color: var(--awsui-text-secondary);
+  transition: transform .15s ease;
+  font-size: 11px;
+}
+details[open] > .secsum .ochev { transform: rotate(90deg); }
+
+.outputs-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.hint { font-size: 12px; line-height: 16px; color: var(--awsui-text-muted); }
+.muted { color: var(--awsui-text-muted); }
+.warn { color: var(--awsui-warning); }
+
+/* ==========================================================================
+   Buttons
+   ========================================================================== */
+
+button, .act {
+  font-family: inherit;
+}
+
+/* normal variant */
+.ghost, .act {
+  appearance: none;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  height: 32px;
+  padding: 0 20px;
+  border-radius: var(--awsui-radius-control);
+  border: 1px solid var(--awsui-blue);
+  background: transparent;
+  color: var(--awsui-blue);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ghost:hover:not(:disabled), .act:hover:not(:disabled) { background: #f2f8fd; }
+.ghost:disabled, .act:disabled {
+  border-color: var(--awsui-border);
+  color: var(--awsui-text-muted);
+  cursor: not-allowed;
+  background: transparent;
+}
+
+/* primary variant */
+.approve {
+  appearance: none;
+  font: inherit;
+  font-weight: 700;
+  height: 32px;
+  padding: 0 20px;
+  border-radius: var(--awsui-radius-control);
+  border: 1px solid var(--awsui-blue);
+  background: var(--awsui-blue);
+  color: #fff;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.approve:hover:not(:disabled) { background: var(--awsui-blue-hover); border-color: var(--awsui-blue-hover); }
+.approve:disabled { opacity: .45; cursor: not-allowed; }
+
+.revise {
+  appearance: none;
+  font: inherit;
+  font-weight: 700;
+  height: 32px;
+  padding: 0 20px;
+  border-radius: var(--awsui-radius-control);
+  border: 1px solid var(--awsui-border);
+  background: transparent;
+  color: var(--awsui-text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.revise:hover:not(:disabled) { background: var(--awsui-bg-hover); }
+.revise:disabled { color: var(--awsui-text-muted); cursor: not-allowed; }
+
+/* destructive */
+.deny, .reject {
+  appearance: none;
+  font: inherit;
+  font-weight: 700;
+  height: 32px;
+  padding: 0 20px;
+  border-radius: var(--awsui-radius-control);
+  border: 1px solid var(--awsui-error);
+  background: transparent;
+  color: var(--awsui-error);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.deny:hover:not(:disabled), .reject:hover:not(:disabled) { background: #fff0f0; }
+.deny:disabled, .reject:disabled { border-color: var(--awsui-border); color: var(--awsui-text-muted); cursor: not-allowed; }
+
+.actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+
+/* ==========================================================================
+   StatusIndicator + progress
+   ========================================================================== */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 400;
+  white-space: nowrap;
+  color: var(--awsui-text-secondary);
+}
+/* The status GLYPH. Cloudscape pairs a shape with the colour so the state is not
+   carried by hue alone; `badge()` supplies the character. */
+.badge .dot {
+  flex: 0 0 auto;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 700;
+  color: currentColor;
+}
+/* Cloudscape colours the ICON and leaves the label in body text. */
+.b-done      { color: var(--awsui-success); }
+.b-running   { color: var(--awsui-info); }
+.b-waiting_human { color: var(--awsui-warning); }
+.b-failed    { color: var(--awsui-error); }
+.b-denied    { color: var(--awsui-error); }
+.b-cancelled { color: var(--awsui-text-muted); }
+.b-cancelling { color: var(--awsui-warning); }
+.b-skipped   { color: var(--awsui-text-muted); }
+.b-pending   { color: var(--awsui-text-muted); }
+.b-revise    { color: var(--awsui-warning); }
+
+.spinner {
+  width: 14px; height: 14px;
+  border: 2px solid #c6dbf0;
+  border-top-color: var(--awsui-blue);
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+  display: inline-block;
+  flex: 0 0 auto;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.bar {
+  margin-top: 10px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--awsui-divider);
+  overflow: hidden;
+}
+.bar > i {
+  display: block;
+  height: 100%;
+  background: var(--awsui-blue);
+  border-radius: 2px;
+  transition: width .4s ease;
+}
+
+/* ==========================================================================
+   The workflow graph — Step Functions layout
+   Vertical flow, one stage per row, connectors with arrowheads, parallel
+   branches inside a bracketed group.
+   ========================================================================== */
+
+.dag {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+  padding: 8px 4px 4px;
+  overflow-x: auto;
+}
+
+/* The connector between two stages. */
+.arrow {
+  width: 2px;
+  height: 28px;
+  background: var(--awsui-border-strong);
+  position: relative;
+  flex: 0 0 auto;
+}
+.arrow::after {                     /* arrowhead */
+  content: "";
+  position: absolute;
+  left: 50%; bottom: -1px;
+  transform: translateX(-50%);
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 7px solid var(--awsui-border-strong);
+}
+.arrow svg { display: none; }       /* the inline SVG is superseded by the CSS connector */
+
+.stage-body {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  /* The gutters hold the stage number (left) and the Review/Branch pills (right),
+     both absolutely positioned. A pill is up to ~96px wide, so a narrower gutter
+     puts it on top of the node — which is what 56px did. Symmetric, so the node
+     still sits on the centre line the connectors are drawn down. */
+  padding: 0 132px;
+}
+
+/* Stage number, as Step Functions numbers a state. */
+.stage-num {
+  position: absolute;
+  left: 92px;                       /* 132px gutter − 24px badge − 16px gap */
+  top: 8px;
+  width: 24px; height: 24px;
+  border-radius: 50%;
+  background: var(--awsui-bg-layout);
+  border: 1px solid var(--awsui-border);
+  color: var(--awsui-text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.stage-gate, .stage-branch {
+  position: absolute;
+  left: calc(100% - 116px);         /* content's right edge + 16px */
+  right: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 700;
+  padding: 2px 10px;
+  border-radius: var(--awsui-radius-badge);
+  white-space: nowrap;
+  cursor: default;
+}
+.stage-gate  { top: 6px;  background: #fbf4e6; color: var(--awsui-warning); border: 1px solid #f0d99a; }
+.stage-branch{ top: 34px; background: #f2f8fd; color: var(--awsui-blue);    border: 1px solid #b8d9f5; }
+
+/* A parallel / sequence group: Step Functions draws these as a labelled frame. */
+.stage-group {
+  position: relative;
+  border: 1px dashed var(--awsui-border);
+  border-radius: var(--awsui-radius-container);
+  background: #fafafa;
+  padding: 26px 20px 20px;
+}
+.stage-group-title {
+  position: absolute;
+  top: -11px; left: 16px;
+  background: var(--awsui-bg-container);
+  padding: 1px 10px;
+  border: 1px solid var(--awsui-border);
+  border-radius: var(--awsui-radius-badge);
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 700;
+  color: var(--awsui-text-secondary);
+  white-space: nowrap;
+}
+.stage-col { display: grid; gap: 16px; justify-content: center; }
+.stage-row { display: flex; align-items: center; gap: 0; }
+
+.seq-arrow {
+  width: 32px;
+  height: 2px;
+  background: var(--awsui-border-strong);
+  position: relative;
+  flex: 0 0 auto;
+}
+.seq-arrow::after {
+  content: "";
+  position: absolute;
+  top: 50%; right: -1px;
+  transform: translateY(-50%);
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 7px solid var(--awsui-border-strong);
+}
+.seq-arrow svg { display: none; }
+
+/* --- a state box -------------------------------------------------------- */
+.node {
+  width: 240px;
+  background: var(--awsui-bg-container);
+  border: 2px solid var(--awsui-border-strong);
+  border-radius: var(--awsui-radius-item);
+  padding: 12px 14px;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color .12s ease, box-shadow .12s ease, background .12s ease;
+}
+.node:hover { box-shadow: var(--awsui-shadow-popover); }
+.node:focus-visible { outline: 2px solid var(--awsui-blue); outline-offset: 2px; }
+
+/* Status is carried on the LEFT EDGE, as Step Functions colours a state. */
+.node.done          { border-left-color: var(--awsui-success);  border-left-width: 6px; }
+.node.running       { border-left-color: var(--awsui-info);     border-left-width: 6px; }
+.node.waiting_human { border-left-color: var(--awsui-warning);  border-left-width: 6px; }
+.node.failed        { border-left-color: var(--awsui-error);    border-left-width: 6px; }
+.node.denied        { border-left-color: var(--awsui-error);    border-left-width: 6px; }
+.node.cancelled     { border-left-color: var(--awsui-inactive); border-left-width: 6px; }
+.node.skipped       { border-left-color: var(--awsui-inactive); border-left-width: 6px; opacity: .6; }
+.node.pending       { border-color: var(--awsui-border); }
+
+.node.selected {
+  border-color: var(--awsui-blue);
+  box-shadow: 0 0 0 3px rgba(9,114,211,.2);
+  background: var(--awsui-bg-selected);
+}
+/* When one node is focused the others recede, so the selection is unmistakable. */
+.dag.has-selection .node:not(.selected) { opacity: .5; }
+
+.node .head { display: flex; align-items: center; gap: 10px; }
+.node .title {
+  font-weight: 700;
+  font-size: 14px;
+  line-height: 18px;
+  color: var(--awsui-text);
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.avatar, .avatar-sm {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  background: #e9f3fd;
+  color: var(--awsui-blue);
+  font-weight: 700;
+  border: 1px solid #c6dbf0;
+}
+.avatar { width: 26px; height: 26px; font-size: 11px; }
+.avatar-sm { width: 22px; height: 22px; font-size: 10px; }
+
+.node .nstatus { margin-top: 10px; }
+
+/* ==========================================================================
+   Tags (Cloudscape badge)
+   ========================================================================== */
+
+.tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.tag {
+  display: inline-block;
+  font-size: 11px;
+  line-height: 15px;
+  padding: 1px 8px;
+  border-radius: var(--awsui-radius-badge);
+  background: #f1f3f5;
+  color: var(--awsui-text-secondary);
+  border: 1px solid #e1e4e8;
+  white-space: nowrap;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tag.dedicated { background: #f0f7ff; color: #0959a8; border-color: #c2dcf5; }
+.tag.a2a       { background: #f6f0fd; color: #6b21a8; border-color: #ddc9f5; }
+.tag.mcp       { background: #eef9f1; color: #0a6b30; border-color: #c4e5d0; }
+.tag.rag       { background: #fff6e8; color: #8a5a00; border-color: #f2ddb3; }
+.tag.src       { background: #f1f3f5; color: var(--awsui-text-secondary); }
+.tag.model     { background: #f5f5f6; color: #4b5563; font-family: Monaco, Menlo, monospace; font-size: 10px; }
+
+/* ==========================================================================
+   Outputs + asset rendering
+   ========================================================================== */
+
+#outputs { display: flex; flex-direction: column; gap: 16px; }
+
+.outblock {
+  border: 1px solid var(--awsui-divider);
+  border-radius: var(--awsui-radius-item);
+  overflow: hidden;
+  background: var(--awsui-bg-container);
+}
+.outhead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--awsui-bg-header);
+  border-bottom: 1px solid var(--awsui-divider);
+}
+.oname { font-weight: 700; color: var(--awsui-text); }
+.vcount { font-size: 12px; color: var(--awsui-text-muted); }
+.outbody { padding: 14px; }
+/* In the split panel the block frame is redundant — the panel IS the frame. */
+.sp-body .outblock { border: 0; border-radius: 0; }
+.sp-body .outhead { display: none; }
+.sp-body .outbody { padding: 0; }
+
+.rawout {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: Monaco, Menlo, monospace;
+  font-size: 12px;
+  line-height: 18px;
+  background: var(--awsui-bg-code);
+  border: 1px solid var(--awsui-divider);
+  border-radius: 4px;
+  padding: 12px;
+  color: var(--awsui-text-secondary);
+}
+
+/* versions */
+.ver { border-top: 1px solid var(--awsui-divider); padding-top: 12px; margin-top: 12px; }
+.ver:first-child { border-top: 0; padding-top: 0; margin-top: 0; }
+.verhead { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.vtag {
+  font-size: 11px; font-weight: 700;
+  padding: 1px 8px;
+  border-radius: var(--awsui-radius-badge);
+  background: #e9f3fd; color: #0959a8; border: 1px solid #c6dbf0;
+}
+.vkind { font-size: 12px; color: var(--awsui-text-muted); }
+.vercomment {
+  background: #fbf4e6;
+  border-left: 3px solid var(--awsui-warning);
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-size: 13px;
+  margin-bottom: 10px;
+  color: var(--awsui-text-secondary);
+}
+
+/* --- the shape-driven asset renderer ----------------------------------- */
+.asset { display: flex; flex-direction: column; gap: 14px; }
+.asset-summary {
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--awsui-text-body);
+  background: #f7fbff;
+  border-left: 3px solid var(--awsui-blue);
+  border-radius: 4px;
+  padding: 10px 12px;
+}
+.asset-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--awsui-text-muted);
+}
+.asset-sec { display: flex; flex-direction: column; gap: 8px; }
+.asset-sec > h3 {
+  font-size: 13px;
+  line-height: 18px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--awsui-text-secondary);
+  font-weight: 700;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--awsui-divider);
+}
+.asset-obj {
+  border: 1px solid var(--awsui-divider);
+  border-radius: 4px;
+  padding: 10px 12px;
+  background: #fcfcfd;
+}
+.asset-collapse { cursor: pointer; }
+
+.kvgrid { display: grid; grid-template-columns: minmax(120px, auto) 1fr; gap: 6px 14px; }
+.kvgrid .k { color: var(--awsui-text-muted); font-size: 12px; line-height: 20px; }
+.kvgrid .v { color: var(--awsui-text-body); min-width: 0; overflow-wrap: anywhere; }
+
+.blist { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+.blist li { line-height: 20px; }
+
+/* evidence classification */
+.cls {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  padding: 1px 7px;
+  border-radius: var(--awsui-radius-badge);
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.cls-sourced-fact         { background: #eef9f1; color: #0a6b30; border-color: #c4e5d0; }
+.cls-calculation          { background: #f0f7ff; color: #0959a8; border-color: #c2dcf5; }
+.cls-assumption           { background: #fff6e8; color: #8a5a00; border-color: #f2ddb3; }
+.cls-agent-interpretation { background: #f6f0fd; color: #6b21a8; border-color: #ddc9f5; }
+
+.sref { font-size: 11px; color: var(--awsui-text-muted); }
+
+/* ==========================================================================
+   Human-in-the-loop review
+   ========================================================================== */
+
+.hitl {
+  background: var(--awsui-bg-container);
+  border-radius: var(--awsui-radius-container);
+  box-shadow: var(--awsui-shadow-container);
+  border-top: 4px solid var(--awsui-warning);
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.hitl textarea {
+  font: inherit;
+  width: 100%;
+  min-height: 76px;
+  padding: 8px 10px;
+  border: 1px solid var(--awsui-border);
+  border-radius: var(--awsui-radius-control);
+  resize: vertical;
+  color: var(--awsui-text-body);
+}
+.hitl textarea:focus { outline: 2px solid var(--awsui-blue); outline-offset: -1px; border-color: var(--awsui-blue); }
+.detail { font-size: 13px; color: var(--awsui-text-secondary); }
+
+.gagent {
+  border: 1px solid var(--awsui-divider);
+  border-radius: var(--awsui-radius-item);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: #fcfcfd;
+}
+.gahead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.gaout {
+  font-size: 13px;
+  color: var(--awsui-text-secondary);
+  max-height: 150px;
+  overflow: auto;
+  background: var(--awsui-bg-code);
+  border-radius: 4px;
+  padding: 8px 10px;
+}
+.gapick { display: flex; gap: 6px; }
+.gapick-btn {
+  appearance: none;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 3px 12px;
+  border-radius: var(--awsui-radius-badge);
+  border: 1px solid var(--awsui-border);
+  background: var(--awsui-bg-container);
+  color: var(--awsui-text-secondary);
+  cursor: pointer;
+}
+.gapick-btn:hover { background: var(--awsui-bg-hover); }
+.gapick-btn.sel { border-color: var(--awsui-blue); background: var(--awsui-blue); color: #fff; }
+.gafb {
+  font: inherit;
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--awsui-border);
+  border-radius: var(--awsui-radius-control);
+}
+.gbulk { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--awsui-text-muted); }
+
+/* ==========================================================================
+   Re-run panel
+   ========================================================================== */
+
+.rerunbox {
+  background: var(--awsui-bg-container);
+  border-radius: var(--awsui-radius-container);
+  box-shadow: var(--awsui-shadow-container);
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.rerunhd { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.rerunsub { font-size: 12px; color: var(--awsui-text-muted); }
+.rr-stage {
+  border: 1px solid var(--awsui-divider);
+  border-radius: var(--awsui-radius-item);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.rr-stage-title { font-weight: 700; font-size: 13px; color: var(--awsui-text); }
+.rr-agent { display: flex; flex-direction: column; gap: 6px; }
+.rr-pick { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+.rr-fb {
+  font: inherit;
+  font-size: 13px;
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--awsui-border);
+  border-radius: var(--awsui-radius-control);
+}
+
+/* ==========================================================================
+   Result + Timeline
+   ========================================================================== */
+
+.result { }
+.result-body {
+  white-space: pre-wrap;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--awsui-text-body);
+}
+
+.logs { }
+.log {
+  font-family: Monaco, Menlo, monospace;
+  font-size: 12px;
+  line-height: 18px;
+  padding: 3px 0;
+  border-bottom: 1px solid #f4f4f4;
+  color: var(--awsui-text-secondary);
+  overflow-wrap: anywhere;
+}
+.log:last-child { border-bottom: 0; }
+.log .ts { color: var(--awsui-text-muted); }
+.log .n { color: var(--awsui-blue); font-weight: 700; }
+
+/* ==========================================================================
+   Assistant (Cloudscape-style flash/chat surface)
+   ========================================================================== */
+
+.cbot-fab {
+  position: fixed;
+  right: 24px; bottom: 24px;
+  z-index: 60;
+  appearance: none;
+  border: 0;
+  width: 48px; height: 48px;
+  border-radius: 50%;
+  background: var(--awsui-blue);
+  color: #fff;
+  font-size: 20px;
+  cursor: pointer;
+  box-shadow: var(--awsui-shadow-popover);
+}
+.cbot-fab:hover { background: var(--awsui-blue-hover); }
+
+.cbot-panel {
+  position: fixed;
+  right: 24px; bottom: 84px;
+  z-index: 60;
+  width: 400px;
+  max-width: calc(100vw - 48px);
+  max-height: 60vh;
+  background: var(--awsui-bg-container);
+  border: 1px solid var(--awsui-divider);
+  border-radius: var(--awsui-radius-container);
+  box-shadow: var(--awsui-shadow-popover);
+  display: none;
+  flex-direction: column;
+  overflow: hidden;
+}
+.cbot-panel.open { display: flex; }
+.cbot-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--awsui-divider);
+  background: var(--awsui-bg-header);
+}
+.cbot-h { font-weight: 700; color: var(--awsui-text); }
+.cbot-p { font-size: 12px; color: var(--awsui-text-muted); }
+.cbot-x {
+  appearance: none; border: 0; background: transparent;
+  color: var(--awsui-text-secondary);
+  font-size: 18px; cursor: pointer;
+  margin-left: auto;
+  width: 26px; height: 26px; border-radius: 4px;
+}
+.cbot-x:hover { background: var(--awsui-bg-hover); }
+.cbot-msgs { flex: 1; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.cbot-msg {
+  font-size: 13px;
+  line-height: 19px;
+  padding: 9px 12px;
+  border-radius: var(--awsui-radius-item);
+  max-width: 88%;
+  overflow-wrap: anywhere;
+}
+.cbot-msg.bot { background: var(--awsui-bg-code); color: var(--awsui-text-body); align-self: flex-start; }
+.cbot-msg.me  { background: var(--awsui-blue); color: #fff; align-self: flex-end; }
+.cbot-typing { color: var(--awsui-text-muted); font-size: 12px; }
+.cbot-foot { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--awsui-divider); }
+.cbot-foot input {
+  flex: 1;
+  font: inherit;
+  padding: 7px 10px;
+  border: 1px solid var(--awsui-border);
+  border-radius: var(--awsui-radius-control);
+  min-width: 0;
+}
+.cbot-foot input:focus { outline: 2px solid var(--awsui-blue); outline-offset: -1px; }
+.cbot-send {
+  appearance: none;
+  font: inherit; font-weight: 700;
+  padding: 0 16px;
+  border-radius: var(--awsui-radius-control);
+  border: 1px solid var(--awsui-blue);
+  background: var(--awsui-blue);
+  color: #fff;
+  cursor: pointer;
+}
+.cbot-send:hover:not(:disabled) { background: var(--awsui-blue-hover); }
+.cbot-send:disabled { opacity: .45; cursor: not-allowed; }
+
+/* ==========================================================================
+   Responsive
+   ========================================================================== */
+
+@media (max-width: 1400px) { .splitpanel { flex-basis: 440px; } }
+@media (max-width: 1100px) {
+  .sidebar { flex-basis: 240px; }
+  .splitpanel { flex-basis: 380px; }
+}
+@media (max-width: 900px) {
+  header { flex-wrap: wrap; height: auto; padding: 10px 16px; gap: 10px; }
+  header input#topic { flex-basis: 100%; order: 10; }
+  header input#subject { order: 11; }
+  header button#start { order: 12; }
+  main { flex-direction: column; }
+  .sidebar { flex: 0 0 auto; max-height: 200px; border-right: 0; border-bottom: 1px solid var(--awsui-divider); }
+  .splitpanel { flex: 0 0 auto; max-width: none; border-left: 0; border-top: 1px solid var(--awsui-divider); max-height: 50vh; }
+  .wrap { padding: 16px; }
+}
 </style>
 </head>
 <body>
@@ -319,8 +1146,28 @@
 </header>
 <script src="/auth-config.js"></script>
 <main>
-  <div class="sidebar" id="sidebar"></div>
+  <!-- SideNavigation: the run list. -->
+  <nav class="sidebar" id="sidebar" aria-label="Sessions"></nav>
   <div class="content"><div class="wrap"><div id="wrap"><div class="empty">Loading…</div></div></div></div>
+  <!-- SplitPanel: the selected node's detail, as Step Functions shows a selected
+       state's input/output beside the graph. Opened by selectNode, closed by
+       closeNodePanel; `renderOutputs` writes here when a node is selected and into
+       the in-page list when none is. -->
+  <aside class="splitpanel" id="splitPanel" aria-label="Node detail">
+    <div class="sp-head">
+      <div class="avatar" id="spAvatar"></div>
+      <div class="sp-title">
+        <h2 id="spName"></h2>
+        <div class="sp-sub" id="spId"></div>
+      </div>
+      <button class="sp-x" id="spClose" onclick="closeNodePanel()" aria-label="Close panel"
+              title="Close">&#10005;</button>
+    </div>
+    <div class="sp-body">
+      <div id="spMeta"></div>
+      <div id="spOutputs"></div>
+    </div>
+  </aside>
 </main>
 <div id="obsView" style="display:none"></div>
 <script>
@@ -643,9 +1490,28 @@ async function deleteSession(ev, id) {
   await refreshList(); refreshDetail();
 }
 
+/* Cloudscape StatusIndicator: a coloured GLYPH plus a plain-text label. The glyph
+   carries the meaning, so status is not conveyed by colour alone (the previous dot
+   was) — which is what makes this readable to a colour-blind reviewer and in a
+   grayscale print of a run. */
+const STATUS_GLYPH = {
+  done: "\u2714",            // check
+  running: "",               // replaced by the spinner below
+  waiting_human: "\u26A0",   // warning triangle
+  failed: "\u2716",          // cross
+  denied: "\u2716",
+  cancelled: "\u2296",       // circled minus
+  cancelling: "\u2296",
+  skipped: "\u2192",         // arrow: passed over
+  pending: "\u25CB",         // hollow circle: not started
+  revise: "\u21BB",          // refresh
+};
 function badge(status) {
   const s = status || "pending";
-  return `<span class="badge b-${s}"><span class="dot"></span>${s.replace("_"," ")}</span>`;
+  const glyph = s === "running"
+    ? '<span class="spinner"></span>'
+    : `<span class="dot" aria-hidden="true">${STATUS_GLYPH[s] || "\u25CB"}</span>`;
+  return `<span class="badge b-${s}">${glyph}${s.replace(/_/g," ")}</span>`;
 }
 
 function nodeCard(nodes, agentId) {
@@ -665,6 +1531,9 @@ function nodeCard(nodes, agentId) {
   ].join("");
   const bar = d.status==="running" ? `<div class="bar"><i style="width:${d.pct||6}%"></i></div>` : "";
   const monogram = monogramFor(meta.name);
+  // A STATE BOX in the Step Functions sense: name, what it is, its status. The
+  // status lives on the left edge in CSS as well as in the label, so the graph is
+  // scannable at a glance and still readable without colour.
   return `<div class="node ${d.status}" data-id="${esc(agentId)}" role="button" tabindex="0"
     aria-label="${esc(meta.name)} — ${esc(d.status || "pending")}"
     onclick="selectNode(${jsq(agentId)}, event)"
@@ -712,10 +1581,12 @@ function stageHtml(step, i, nodes) {
     const ids = step.parallel;
     const title = "⇉ " + esc(step.gateName || "Parallel") + " · " + ids.length + " parallel";
     const cards = ids.map(id => nodeCard(nodes, id)).join("");
+    // Two columns, as Step Functions lays out a Parallel state's branches side by
+    // side. min(2, count) so a one-branch group does not reserve an empty column.
     const cols = Math.min(2, ids.length);
     return `<div class="stage-body">${numBadge}${gateBadge}${branchBadge}
       <div class="stage-group"><div class="stage-group-title">${title}</div>
-        <div class="stage-col" style="grid-template-columns:repeat(${cols},200px)">${cards}</div></div></div>`;
+        <div class="stage-col" style="grid-template-columns:repeat(${cols},240px)">${cards}</div></div></div>`;
   }
 
   // Sequence group: agents left-to-right with arrows (they run in order).
@@ -1032,16 +1903,28 @@ function fmtET(ts) {
   return `${g("year")}-${g("month")}-${g("day")} ${hh}:${g("minute")}:${g("second")}`;
 }
 
+/* One renderer, two placements. With a node selected the output belongs in the RIGHT
+   SPLIT PANEL beside the graph (the Step Functions reading order: pick a state on the
+   left, read its detail on the right); with nothing selected the in-page list shows
+   every agent. The in-page container is emptied in the first case rather than left
+   holding a stale copy, and its heading says where to look. */
 function renderOutputs() {
   const box = document.getElementById("outputs");
+  const panelBox = document.getElementById("spOutputs");
   const title = document.getElementById("outputsTitle");
-  if (!box) return;
-  const ids = selectedNode ? [selectedNode] : allNodeIds();
+  const target = selectedNode ? panelBox : box;
   if (title) {
-    const m = selectedNode ? (workflow.agents[selectedNode] || {}) : null;
-    title.textContent = selectedNode ? `Output — ${m.name || selectedNode} (${selectedNode})` : "All outputs";
+    title.textContent = selectedNode ? "All outputs (showing one in the panel)" : "All outputs";
   }
-  box.innerHTML = ids.map(id => {
+  // Whichever container is not in use is cleared, so only one copy of an output is
+  // ever in the document.
+  if (selectedNode && box) box.innerHTML =
+    `<div class="hint">Showing <strong>${esc((workflow.agents[selectedNode] || {}).name || selectedNode)}</strong>`
+    + ` in the panel on the right. <a href="#" onclick="closeNodePanel();return false">Show all outputs</a></div>`;
+  if (!selectedNode && panelBox) panelBox.innerHTML = "";
+  if (!target) return;
+  const ids = selectedNode ? [selectedNode] : allNodeIds();
+  target.innerHTML = ids.map(id => {
     const meta = workflow.agents[id] || { name:id };
     const d = lastNodes[id] || {};
     const mono = monogramFor(meta.name || id);
@@ -1199,13 +2082,56 @@ function applySelection() {
   if (dag) dag.classList.toggle("has-selection", !!selectedNode);
   document.querySelectorAll(".node").forEach(n =>
     n.classList.toggle("selected", n.dataset.id === selectedNode));
+  renderSplitPanel();
   renderOutputs();
 }
 
 function selectNode(id, ev) {
   if (ev) ev.stopPropagation();
-  selectedNode = id;
+  // Clicking the selected node again closes the panel, which is how a reader
+  // gets back to "show me everything" without hunting for the X.
+  selectedNode = (selectedNode === id) ? null : id;
   applySelection();
+}
+
+function closeNodePanel() {
+  selectedNode = null;
+  applySelection();
+}
+
+/* The SplitPanel header and the agent's declared configuration. The OUTPUT itself is
+   written by renderOutputs into #spOutputs, so there is one renderer for both
+   placements rather than a second copy that drifts. */
+function renderSplitPanel() {
+  const panel = document.getElementById("splitPanel");
+  if (!panel) return;
+  panel.classList.toggle("open", !!selectedNode);
+  if (!selectedNode) return;
+
+  const meta = workflow.agents[selectedNode] || { name: selectedNode };
+  const d = lastNodes[selectedNode] || {};
+  const set = (id, html) => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
+
+  set("spAvatar", esc(monogramFor(meta.name || selectedNode)));
+  set("spName", esc(meta.name || selectedNode));
+  set("spId", esc(selectedNode));
+
+  const hist = lastHistory[selectedNode] || [];
+  const rows = [
+    ["Status", badge(d.status)],
+    ["Produces", meta.produces ? esc(meta.produces) : '<span class="muted">—</span>'],
+    ["Placement", esc(meta.runtime || "main")],
+    ["Data source", meta.tool
+      ? `${esc(meta.tool)}${meta.corpus ? ` · corpus ${esc(meta.corpus)}` : ""}`
+      : esc(agentSource(meta) || "—")],
+    ["Model", meta.model ? `<span class="tag model">${esc(meta.model)}</span>`
+                         : '<span class="muted">deployment default</span>'],
+    ["Versions", hist.length ? String(hist.length) : "1"],
+  ];
+  if (meta.access) rows.push(["Access", esc(meta.access)]);
+  set("spMeta", `<div class="asset-obj" style="margin-bottom:16px"><div class="kvgrid">${
+    rows.map(([k, v]) => `<div class="k">${k}</div><div class="v">${v}</div>`).join("")
+  }</div></div>`);
 }
 
 function sig(snap) {
