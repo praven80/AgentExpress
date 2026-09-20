@@ -71,8 +71,9 @@ export interface ToolSpec {
    * deploys, so the committed config stays account-neutral (a real ARN would pin
    * workflow.json to one AWS account).
    *
-   * Exactly one built-in exists — "tool_lambda", the run-history demo under
-   * orchestrator/tool_lambda/ — and the validator accepts no other value. This is
+   * The value is a FOLDER NAME under orchestrator/app/tools/ — `source: "pricing"`
+   * means app/tools/pricing/ — and the validator accepts only the one the repo
+   * ships, because the execution role is fixed and cannot be configured. This is
    * deliberately NOT a general "deploy any directory" feature: a framework-deployed
    * function needs an execution role that config cannot express. A function of your
    * own goes in via `lambdaArn`, and the framework then touches neither its code nor
@@ -161,11 +162,11 @@ export interface ToolPlaneProps {
   policyEnabled: boolean;
   /** "ENFORCE" | "LOG_ONLY". */
   policyMode: string;
-  /** orchestrator/ root, for the kb_docs corpus and the kb_lambda / tool_lambda source. */
+  /** orchestrator/ root, for the kb_docs corpus and the kb_lambda / app/tools sources. */
   orchRoot: string;
   /**
    * This deployment's own run-data tables. Needed only by the built-in
-   * `source: "tool_lambda"` demo function, which reports on run history and is
+   * `source: "pricing"` demo function, which reports on run history and is
    * granted READ-ONLY access to them. Omit when no tool asks for it.
    */
   statusTable?: dynamodb.ITable;
@@ -570,17 +571,21 @@ export class ToolPlane extends Construct {
 
     // ---- type=lambda ------------------------------------------------------
     // Mirrors the tool_lambda resources + aws_iam_role_policy.gateway_invoke_lambda
-    // + aws_lambda_permission.gateway_invoke_tool_lambda in terraform/tools.tf.
+    // + aws_lambda_permission.gateway_invoke_tool_lambda in terraform/tools.tf
+    // (the Terraform resource names kept their old spelling; the SOURCE moved).
     //
     // Two ways a function arrives: `source` (one the framework ships and deploys)
     // or `lambdaArn` (one you already own, which is only registered).
     const lambdaTools = entries.filter(([, s]) => s.type === "lambda");
     if (lambdaTools.length) {
-      // The framework-deployed built-in. Its execution role is FIXED — logs plus
-      // READ-ONLY on the PUBLIC AWS price list — which is exactly why `source`
-      // accepts no value other than "tool_lambda": a framework-deployed function
-      // needs an execution role that config cannot express, so the one role that
-      // exists reads nothing belonging to the customer.
+      // The framework-deployed built-in. `source` is a FOLDER NAME under
+      // app/tools/ — `source: "pricing"` is app/tools/pricing/ — and its execution
+      // role is FIXED: logs plus READ-ONLY on the PUBLIC AWS price list. That role is
+      // exactly why `source` accepts no other value. It is right for this one
+      // function and wrong for almost any other: a warehouse connector needs VPC
+      // config and a secret, an RDBMS connector needs credentials, and none of that
+      // is expressible in workflow.json. YOUR connector is a function you deploy,
+      // declared with `lambdaArn`.
       for (const [name, spec] of lambdaTools.filter(([, s]) => s.source)) {
         const fn = new lambda.Function(this, `ToolLambda-${name}`, {
           logGroup: new logs.LogGroup(this, `ToolLambdaLogGroup-${name}`, {
@@ -596,7 +601,7 @@ export class ToolPlane extends Construct {
           functionName: `ToolLambda-${agentName}-${name}`,
           runtime: lambda.Runtime.PYTHON_3_12,
           handler: "handler.lambda_handler",
-          code: lambda.Code.fromAsset(path.join(props.orchRoot, spec.source!)),
+          code: lambda.Code.fromAsset(path.join(props.orchRoot, "app", "tools", spec.source!)),
           timeout: cdk.Duration.seconds(30),
           memorySize: 256,
           environment: {

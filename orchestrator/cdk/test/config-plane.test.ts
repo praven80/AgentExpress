@@ -191,15 +191,15 @@ describe("validateTools", () => {
       // nothing to register.
       expect(() => fn({ lambdaArn: undefined })).toThrow(/EXACTLY ONE of "lambdaArn"/);
       expect(() => fn({ lambdaArn: "" })).toThrow(/EXACTLY ONE of "lambdaArn"/);
-      expect(() => fn({ source: "tool_lambda" })).toThrow(/EXACTLY ONE of "lambdaArn"/);
-      expect(() => fn({ lambdaArn: undefined, source: "tool_lambda" })).not.toThrow();
+      expect(() => fn({ source: "pricing" })).toThrow(/EXACTLY ONE of "lambdaArn"/);
+      expect(() => fn({ lambdaArn: undefined, source: "pricing" })).not.toThrow();
     });
 
     it("accepts only the built-in value for source", () => {
       // `source` is not a general "deploy any directory" feature: a
       // framework-deployed function needs an execution role config cannot express.
       expect(() => fn({ lambdaArn: undefined, source: "my_functions/claims" })).toThrow(
-        /the only value is "tool_lambda"/
+        /the only one the framework ships is "pricing"/
       );
     });
 
@@ -208,7 +208,7 @@ describe("validateTools", () => {
       // committed config account-neutral.
       expect(() =>
         validateTools(
-          { runs: { type: "lambda", source: "tool_lambda", ...LAMBDA_TOOL, lambdaArn: undefined } },
+          { runs: { type: "lambda", source: "pricing", ...LAMBDA_TOOL, lambdaArn: undefined } },
           {},
           "us-east-1"
         )

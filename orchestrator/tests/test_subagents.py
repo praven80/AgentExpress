@@ -326,3 +326,69 @@ def test_the_previewed_entry_is_already_in_canonical_order():
     assert previewed == [k for k in canonical if k in previewed], (
         f"the preview reads {previewed}, canonical order is "
         f"{[k for k in canonical if k in previewed]}")
+
+
+# ---------------------------------------------------------------------------
+# app/tools/ — the other half of the customer's code
+# ---------------------------------------------------------------------------
+# A `type: "lambda"` tool's function is CUSTOMER logic, not framework: the pricing demo
+# knows about AWS service codes and price-list dimensions, which is domain knowledge in
+# exactly the way an agent's prompt is. It used to sit at `orchestrator/tool_lambda/`,
+# among the framework directories, so custom logic lived in two unrelated places and
+# "you edit workflow.json and app/subagents/" was not quite the whole truth.
+#
+# It is `app/tools/<name>/` now, beside `app/subagents/<id>/`. The two directories under
+# app/ mirror the two blocks of workflow.json a customer fills in — `tools` and `agents`
+# — which is the property worth having: where the config has a block, the code has a
+# folder with the same name.
+
+TOOLS_DIR = ORCH_ROOT / "app" / "tools"
+
+
+def test_a_tool_that_the_framework_deploys_has_its_source_under_app_tools():
+    """`source` is a folder name under app/tools/, so a declared one must exist on disk —
+    otherwise the IaC zips nothing and the Gateway target points at an empty function."""
+    for name, spec in (SHIPPED.get("tools") or {}).items():
+        source = spec.get("source")
+        if not source:
+            continue
+        folder = TOOLS_DIR / source
+        assert (folder / "handler.py").exists(), (
+            f"tools.{name} declares source {source!r}, but "
+            f"app/tools/{source}/handler.py does not exist")
+
+
+def test_no_tool_source_folder_is_orphaned():
+    """The other direction. A folder here is deployed only if a tool names it, so one
+    nothing names is dead code that reads as live — the same rule app/subagents/ has."""
+    declared = {spec["source"] for spec in (SHIPPED.get("tools") or {}).values()
+                if spec.get("source")}
+    present = {p.name for p in TOOLS_DIR.iterdir()
+               if p.is_dir() and p.name != "__pycache__"}
+    assert present == declared, (
+        f"app/tools/ and workflow.json disagree. Folders no tool declares: "
+        f"{sorted(present - declared)}. Declared with no folder: {sorted(declared - present)}")
+
+
+def test_the_tool_source_is_not_shipped_inside_the_orchestrator_container():
+    """It sits under app/, and everything else under app/ IS copied into the image — so
+    this needs saying explicitly. The function is deployed as its own Lambda zip and
+    called through the Gateway; the orchestrator never imports it, and shipping it would
+    mean a change to a tool's code rebuilt and redeployed the orchestrator too."""
+    ignored = (ORCH_ROOT / ".dockerignore").read_text().splitlines()
+    assert "app/tools/" in [line.strip() for line in ignored], (
+        ".dockerignore does not exclude app/tools/, so the tool function's source would "
+        "be baked into the orchestrator image")
+
+
+def test_a_tool_function_is_not_importable_as_an_agent():
+    """app/tools/ must not accidentally satisfy the agent folder contract, or a tool
+    would show up as an agent the framework tried to run in-process."""
+    for folder in TOOLS_DIR.iterdir():
+        if not folder.is_dir() or folder.name == "__pycache__":
+            continue
+        assert not (folder / "__init__.py").exists(), (
+            f"app/tools/{folder.name}/ has an __init__.py, which makes it an importable "
+            f"package — a Lambda handler is not an agent and is not imported here")
+        assert folder.name not in (SHIPPED.get("agents") or {}), (
+            f"app/tools/{folder.name}/ collides with an agent id")

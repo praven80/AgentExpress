@@ -333,12 +333,23 @@ def test_no_framework_module_names_this_samples_vocabulary_in_executable_code():
         "who renames it gets a silent failure:\n" + "\n".join(offenders))
 
 
+#: Directories under app/ that are the CUSTOMER'S, not the framework's, and so are not
+#: scanned for hardcoded sample names — they are where the sample names are supposed to
+#: live. `subagents` holds one package per agent; `tools` holds the source of the
+#: functions behind `type: "lambda"` tools. Both mirror a block in workflow.json, and
+#: neither is imported by the orchestrator (app/tools/ is deployed as its own Lambda zip
+#: and is excluded from the container image).
+CUSTOMER_AREAS = {"subagents", "tools"}
+
+
 def test_the_framework_areas_under_test_are_all_of_them():
     """The previous version scanned two of three areas, and the third held the only
-    real offender. This fails if a fourth top-level framework package appears."""
+    real offender. This fails if a new top-level FRAMEWORK package appears — and it
+    caught `app/tools/` on the day it was created, which is the behaviour wanted: a new
+    directory under app/ has to be classified deliberately as framework or customer."""
     present = {p.name for p in (ORCH_ROOT / "app").iterdir()
                if p.is_dir() and not p.name.startswith(("_", "."))
-               and p.name != "subagents"}
+               and p.name not in CUSTOMER_AREAS}
     assert present == set(FRAMEWORK_AREAS), (
         f"app/ has framework package(s) this test does not scan: "
         f"{sorted(present - set(FRAMEWORK_AREAS))}")

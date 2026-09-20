@@ -329,7 +329,7 @@ different boundaries, both config-driven.
   | `websearch` | **connector** (`connectorId: web-search`) | the AWS-managed AgentCore Web Search index |
   | `mcp` | MCP server | any remote MCP server over Streamable HTTP |
   | `openapi` | OpenAPI schema | any REST API, from a schema in S3 |
-  | `lambda` | Lambda | **any function you own** — the escape hatch for a warehouse, an RDBMS, an internal service, or anything inside a VPC |
+  | `lambda` | Lambda | a function — the escape hatch for a warehouse, an RDBMS, an internal service, or anything inside a VPC. Either `lambdaArn` (one **you** deployed, with whatever role and VPC config it needs) or `source` (a folder under `orchestrator/app/tools/` the framework packages and deploys for you, on a fixed least-privilege role) |
 
   A target's KEY is both its Gateway name and the label an agent binds to via its
   `tool` field, so the two can never drift — the IaC validates that every agent's
@@ -524,7 +524,7 @@ different boundaries, both config-driven.
   "websearch": { "type": "websearch", "maxResults": 10 },
   "docs":      { "type": "mcp", "endpoint": "https://knowledge-mcp.global.api.aws",
                  "call": "aws___search_documentation", "arg": "search_phrase" },
-  "pricing":   { "type": "lambda", "source": "tool_lambda", "call": "aws_prices",
+  "pricing":   { "type": "lambda", "source": "pricing", "call": "aws_prices",
                  "arg": "services", "rowFields": {...}, "toolSchema": [...] }
 },
 "agents": {

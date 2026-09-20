@@ -191,7 +191,7 @@ def with_agentcore(w, block: str):
      lambda w: [a_remote(w).pop("source", None), a_remote(w).pop("agentCard", None)]),
     ("a lambda tool with BOTH lambdaArn and source",
      lambda w: a_lambda_tool(w).update(
-         source="tool_lambda",
+         source="pricing",
          lambdaArn="arn:aws:lambda:us-east-1:123456789012:function:f")),
     ("a step with both agent and parallel",
      lambda w: w["steps"][0].update(agent=next(iter(w["agents"])),

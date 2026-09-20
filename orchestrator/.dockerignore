@@ -23,16 +23,21 @@ venv/
 docs/
 
 # Deployed separately, not needed inside the orchestrator container:
-#   bff/, kb_lambda/, tool_lambda/  -> their own Lambda zips
+#   bff/, kb_lambda/, app/tools/    -> their own Lambda zips
 #   web/                            -> static assets on S3/CloudFront
 #   kb_docs/                        -> uploaded to S3 and ingested by the KB
+#
+# app/tools/ is the one that needs saying out loud, because it sits UNDER app/ and
+# everything else under app/ does ship. It holds the source of the functions behind
+# `type: "lambda"` tools, which the IaC zips and deploys on their own — the
+# orchestrator calls them through the Gateway and never imports them.
 terraform/
 cdk/
 cdk.out/
 node_modules/
 bff/
 kb_lambda/
-tool_lambda/
+app/tools/
 web/
 kb_docs/
 

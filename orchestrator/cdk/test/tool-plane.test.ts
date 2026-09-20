@@ -225,14 +225,14 @@ describe("type=lambda target", () => {
   });
 });
 
-describe("the built-in demo function (source: tool_lambda)", () => {
+describe("the built-in demo function (source: pricing)", () => {
   // This is what makes `type: "lambda"` demonstrable out of the box: the framework
   // deploys one function so the tool type has a live agent, without asking anyone to
   // stand up a database first. A customer's own function goes in via `lambdaArn` and
   // none of this applies to it.
   const BUILTIN: ToolSpec = {
     type: "lambda",
-    source: "tool_lambda",
+    source: "pricing",
     call: "aws_prices",
     arg: "services",
     toolSchema: [
@@ -270,7 +270,7 @@ describe("the built-in demo function (source: tool_lambda)", () => {
 
   const template = withTables();
 
-  it("deploys the function from orchestrator/tool_lambda/", () => {
+  it("deploys the function from orchestrator/app/tools/pricing/", () => {
     // Name prefixed with ToolLambda- so a scoped deploy policy can express it
     // without granting lambda:* on every function in the account.
     template.hasResourceProperties("AWS::Lambda::Function", {

@@ -101,7 +101,7 @@
     "pricing": {
       "type": "lambda",
       "description": "Real AWS on-demand unit prices, via an AWS Lambda target. The type=\"lambda\" demonstration: a Lambda reaches what the Gateway cannot - a warehouse, an RDBMS, a VPC, or here a control-plane API with no MCP server in front of it. Returns RATES, never a total: a total needs usage volumes, which are a property of the workload and not of AWS.",
-      "source": "tool_lambda",
+      "source": "pricing",
       "call": "aws_prices",
       "arg": "services",
       "rowFields": {

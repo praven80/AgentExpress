@@ -411,7 +411,7 @@ is a JSON edit — no HCL, no TypeScript, no policy to write.
 | `websearch` | The AWS-managed AgentCore Web Search connector | `maxResults`, `domains` (`{include, exclude}` — set on the target, enforced, agent-invisible), `publishedFrom`/`publishedTo`, `connectorVersion` (Terraform only) |
 | `mcp` | **Any** remote MCP server over Streamable HTTP | `endpoint`, `call`, `arg`, `args`, `listingMode`, `auth` |
 | `openapi` | Any REST API described by an OpenAPI schema in S3 | `schemaS3Uri` |
-| `lambda` | **Any function you own** — a warehouse, an RDBMS, an internal service, anything inside a VPC | `lambdaArn` (yours) *or* `source: "tool_lambda"` (the shipped demo), plus `toolSchema` — there is no `tools/list` for the Gateway to call, so the tools are declared |
+| `lambda` | A function — a warehouse, an RDBMS, an internal service, anything inside a VPC | `lambdaArn` (one you deployed) *or* `source: "pricing"` (the shipped demo, packaged from the folder of that name under `orchestrator/app/tools/`), plus `toolSchema` — there is no `tools/list` for the Gateway to call, so the tools are declared |
 
 At most one `kb` and one `websearch` entry; as many `mcp`, `openapi` and `lambda` as
 you like. Every field of every type:
@@ -506,7 +506,7 @@ Everything below is a `orchestrator/app/workflow.json` edit followed by
 | Turn policy off entirely | `orchestrator.policy.enabled: false` (no engine is created) |
 | Hide or restrict the assistant | `orchestrator.chatbot.enabled: false`, or set individual `chatbot.tools.*` to `false` (e.g. the action tools `rerun`, `review`, `runEval`) |
 | Move an agent to its own runtime | `"runtime": "dedicated"` — Terraform provisions it |
-| Add / swap a data source | the `tools` block (see step 8) |
+| Add / swap a data source | a `tools` entry (see step 8) — plus a folder under `app/tools/<source>/` only for `type: "lambda"` with `source`; `kb`, `websearch`, `mcp`, `openapi` and `lambdaArn` are config alone |
 | Add an agent | a folder under `app/subagents/<id>/` + an `agents` entry + a place in `steps` (see [`GETTING_STARTED.md`](GETTING_STARTED.md)) |
 | Reduce span-indexing cost | `transaction_search_indexing_percentage` in `terraform.tfvars` (1% is free) |
 

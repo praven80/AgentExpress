@@ -41,11 +41,12 @@ locals {
       lambda_arn = try(t.lambdaArn, "")
       # type=lambda alternative to lambdaArn: name a function the FRAMEWORK ships
       # and deploys, so the committed config stays account-neutral (a real ARN
-      # would pin workflow.json to one AWS account). Exactly one built-in exists —
-      # "tool_lambda", the run-history demo under orchestrator/tool_lambda/ — and
-      # the validator accepts only that value. It is not a general "deploy any
-      # function" feature: a function of YOUR OWN goes in via lambdaArn, and the
-      # framework then touches neither its code nor its execution role.
+      # would pin workflow.json to one AWS account). The value is a FOLDER NAME
+      # under app/tools/ — `source = "pricing"` means app/tools/pricing/ — and the
+      # validator accepts only the one the repo ships, because a framework-deployed
+      # function needs an execution role that config cannot express. A function of
+      # YOUR OWN goes in via lambdaArn, and the framework then touches neither its
+      # code nor its execution role.
       lambda_source = try(t.source, "")
       # A list of tool definitions, because ONE Lambda may publish several tools
       # (the Gateway passes the tool name through so the handler can dispatch).
@@ -516,7 +517,7 @@ resource "terraform_data" "tools_validation" {
       # express, so only the built-in demo function is supported.
       condition = alltrue([for n, t in local.builtin_lambda_tools :
       contains(local.vocab.builtinLambdaSource.values, t.lambda_source)])
-      error_message = "A type=\"lambda\" tool's \"source\" must be \"tool_lambda\" \u2014 the run-history demo function the framework ships under orchestrator/tool_lambda/. It is not a general \"deploy any function\" option: a framework-deployed function needs an execution role that config cannot express. To use a function of your own, deploy it yourself and set \"lambdaArn\" instead. Offending: ${join(", ", [for n, t in local.builtin_lambda_tools : n if t.lambda_source != "tool_lambda"])}."
+      error_message = "A type=\"lambda\" tool's \"source\" names a folder under orchestrator/app/tools/, and the only one the framework ships is \"pricing\" (orchestrator/app/tools/pricing/). It is not a general \"deploy any directory\" option: a framework-deployed function needs an execution role that config cannot express - the one that exists grants logs plus read-only on the PUBLIC AWS price list, which is right for that function and wrong for a warehouse or database connector that needs VPC config and a secret. To use a function of your own: deploy it yourself, then set \"lambdaArn\" instead of \"source\". Offending: ${join(", ", [for n, t in local.builtin_lambda_tools : n if !contains(local.vocab.builtinLambdaSource.values, t.lambda_source)])}."
     }
     precondition {
       condition = alltrue([
@@ -985,20 +986,25 @@ resource "aws_bedrockagentcore_gateway_target" "openapi" {
 #
 # The Gateway invokes the function with its OWN execution role (the
 # gateway_iam_role credential provider), so there is no secret anywhere.
-# --- The built-in demo function (`source: "tool_lambda"`) ------------------
+# --- The built-in demo function (`source: "pricing"` -> app/tools/pricing/) -
 # Deployed only when a tools entry asks for it. It exists so `type: "lambda"` is
 # demonstrable out of the box without asking you to stand up a database first: it
-# answers from the two DynamoDB tables this deployment already writes, so the rows
-# it returns are real.
+# answers from the PUBLIC AWS Price List Query API, so the rates it returns are real
+# and nothing has to be provisioned or seeded for them.
 #
-# Its execution role is FIXED — logs plus read-only on this deployment's own
-# tables — which is exactly why `source` accepts no other value. A function of
-# your own is declared with `lambdaArn`, and the framework then touches neither
-# its code nor its role.
+# Its execution role is FIXED — logs plus read-only on the PUBLIC AWS price list —
+# which is exactly why `source` accepts no other value. That role is right for this
+# one function and wrong for almost any other: a warehouse connector needs VPC
+# config and a secret, an RDBMS connector needs credentials, and none of that can be
+# expressed in workflow.json. So YOUR connector is a function you deploy, declared
+# with `lambdaArn`; the framework registers it as a Gateway target and grants the
+# Gateway invoke on it, and touches neither its code nor its role. Keep its source
+# beside this one in app/tools/<name>/ if you like the symmetry — nothing in the
+# framework reads it there unless `source` names it.
 data "archive_file" "tool_lambda" {
   for_each    = local.builtin_lambda_tools
   type        = "zip"
-  source_dir  = "${path.module}/../${each.value.lambda_source}"
+  source_dir  = "${path.module}/../app/tools/${each.value.lambda_source}"
   output_path = "${path.module}/.build/${each.key}.zip"
 }
 

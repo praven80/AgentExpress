@@ -23,8 +23,9 @@ This framework has two planes:
   the framework to their own workflow.
 
 Only the config plane is tested here. The promise this project makes is "edit
-`workflow.json` and `app/subagents/` and nothing else", and these tests are what
-keep that promise honest.
+`workflow.json`, `app/subagents/` and — only if a tool asks the framework to deploy a
+function for you — `app/tools/`, and nothing else", and these tests are what keep that
+promise honest.
 
 ## What each file covers
 
@@ -33,7 +34,7 @@ keep that promise honest.
 | `test_topology.py` | `step_agents`, `FIRST_AGENT_ID` / `LAST_AGENT_ID`, `upstream_of` across all three step shapes |
 | `test_graph_build.py` | `build_graph` compiles for 14 topologies; the three HITL gate routers |
 | `test_rerun_plan.py` | `rerun_plan` / `group_rerun_plan` — which node a rewind is attributed to |
-| `test_subagents.py` | The other half of the surface a customer edits. That there is a folder for every local agent **and no folder without one** (a leftover folder is code a reader assumes is live); that each meets the three-line contract, checked through the framework's own `check_agent_module` rather than a re-implementation; that each way a folder can be wrong produces a message naming the file and the fix; and that `scaffold.py` generates an agent which really loads, configures and satisfies the same checks — because handing every new customer a broken first agent is a defect nothing else would notice |
+| `test_subagents.py` | The code a customer writes, and that it stays in step with the config that declares it. For `app/subagents/`: that there is a folder for every local agent **and no folder without one** (a leftover folder is code a reader assumes is live); that each meets the three-line contract, checked through the framework's own `check_agent_module` rather than a re-implementation; that each way a folder can be wrong produces a message naming the file and the fix; and that `scaffold.py` generates an agent which really loads, configures and satisfies the same checks — because handing every new customer a broken first agent is a defect nothing else would notice. For `app/tools/`: the same both-directions rule against every tool that declares `source` (a declared folder exists, and no folder is orphaned), that `.dockerignore` keeps it out of the orchestrator image since the function runs as a Lambda, and that a tool folder cannot pass for an agent |
 | `test_workflow_schema.py` | The config surface as a CUSTOMER meets it: that `app/workflow.schema.json` is a valid schema, is in sync with `app/keys.json`, accepts both the shipped workflow and a foreign one, and **rejects each of the 29 mistakes the three deploy-time validators reject** — because an editor that says a config is fine while a deploy rejects it teaches people to ignore the editor. Also that the canonical key order is real: every agent, tool and step in the shipped file is in it, and the formatter's guard catches a reorder that `==` on two dicts cannot see |
 | `test_a2a.py` | `runtime: "a2a"` — Agent Card discovery, the JSON-RPC request shape asserted against the published form, all four auth modes (including SigV4 signing), task polling and every terminal state, each place the protocol allows an answer to hide, the asset envelope the framework stamps on a structured reply (and the prose reply it leaves alone), and the shipped stand-in driven by the real client with only Bedrock faked — including that its replies satisfy the pydantic contracts they claim to produce |
 | `test_branching.py` | `branch` — every operator and near-miss, the spec/topology validation, and a graph that is actually **invoked** to prove the chosen path ran and the other was marked skipped |

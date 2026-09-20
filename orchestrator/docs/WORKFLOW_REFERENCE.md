@@ -550,13 +550,22 @@ Supply the function **one** of two ways:
   function, adds the resource-policy statement. It never touches your code or your
   execution role. A cross-account function works, but its owning account must add
   that statement itself.
-- `source` — a function the **framework** ships and deploys, which keeps this file
-  account-neutral (a real ARN would pin it to one AWS account). The only accepted
-  value is `tool_lambda`, the pricing demo under `orchestrator/tool_lambda/`. It is
-  not a general "deploy any directory" feature: a framework-deployed function needs
-  an execution role config cannot express, so that role is fixed at logs plus
-  `pricing:GetProducts` / `pricing:DescribeServices` — public list prices, no
-  resource-level permissions available and none needed.
+- `source` — a function the **framework** packages and deploys, which keeps this file
+  account-neutral (a real ARN would pin it to one AWS account). The value names a
+  **folder under `orchestrator/app/tools/`** holding a `handler.py`; both IaC paths zip
+  that folder and deploy it. The only accepted value is `pricing`, the demo at
+  `orchestrator/app/tools/pricing/`. It is not a general "deploy any directory"
+  feature: a framework-deployed function runs on a role the framework writes, and that
+  role is fixed at logs plus `pricing:GetProducts` / `pricing:DescribeServices` —
+  public list prices, no resource-level permissions available and none needed. Your own
+  connector will usually need something else (a VPC, a secret, a table grant), which
+  config cannot express, so deploy it yourself and use `lambdaArn`. Its source may live
+  beside `app/tools/pricing/` if you like the symmetry — nothing reads it there unless
+  `source` names it.
+
+  `app/tools/` is excluded from the orchestrator container image, because these
+  functions run as Lambdas and never inside it. It is the only folder under `app/`
+  that is excluded; everything else there ships.
 
 **What the shipped demo does, and why it is that.** `aws_prices(services, region)`
 takes service names and returns their real on-demand unit rates from the AWS Price

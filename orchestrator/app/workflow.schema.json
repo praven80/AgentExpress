@@ -756,10 +756,10 @@
             "type": "string"
           },
           "source": {
-            "description": "Deploy the demo function this repo ships instead of naming your own ARN. Deliberately not a general \"deploy any directory\" option: a framework-deployed function needs an execution role config cannot express.\n\nRead by: tools.tf builtin_lambda_tools, tool-plane.ts\n\nAllowed values (builtinLambdaSource in app/vocabulary.json): 'tool_lambda'",
+            "description": "Deploy the demo function this repo ships instead of naming your own ARN. Deliberately not a general \"deploy any directory\" option: a framework-deployed function needs an execution role config cannot express.\n\nRead by: tools.tf builtin_lambda_tools, tool-plane.ts\n\nAllowed values (builtinLambdaSource in app/vocabulary.json): 'pricing'",
             "type": "string",
             "enum": [
-              "tool_lambda"
+              "pricing"
             ]
           },
           "connectorVersion": {
@@ -1285,10 +1285,10 @@
                   "type": "object"
                 },
                 "source": {
-                  "description": "Deploy the demo function this repo ships instead of naming your own ARN. Deliberately not a general \"deploy any directory\" option: a framework-deployed function needs an execution role config cannot express.\n\nRead by: tools.tf builtin_lambda_tools, tool-plane.ts\n\nAllowed values (builtinLambdaSource in app/vocabulary.json): 'tool_lambda'",
+                  "description": "Deploy the demo function this repo ships instead of naming your own ARN. Deliberately not a general \"deploy any directory\" option: a framework-deployed function needs an execution role config cannot express.\n\nRead by: tools.tf builtin_lambda_tools, tool-plane.ts\n\nAllowed values (builtinLambdaSource in app/vocabulary.json): 'pricing'",
                   "type": "string",
                   "enum": [
-                    "tool_lambda"
+                    "pricing"
                   ]
                 },
                 "toolSchema": {

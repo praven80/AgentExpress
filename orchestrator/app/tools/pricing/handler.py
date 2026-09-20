@@ -537,7 +537,7 @@ def aws_prices(args: dict) -> dict:
         try:
             rows, was_truncated, curated = _rows_for(code, region)
         except Exception as e:  # noqa: BLE001 - one bad service must not fail them all
-            print(f"[tool_lambda] aws_prices {name} ({code}) failed: {type(e).__name__}: {e}")
+            print(f"[pricing] aws_prices {name} ({code}) failed: {type(e).__name__}: {e}")
             no_prices.append(f"{name} ({type(e).__name__})")
             continue
         if not rows:
@@ -612,5 +612,5 @@ def lambda_handler(event, context):
     try:
         return fn(event or {})
     except Exception as e:  # noqa: BLE001 - surface the reason, never a fake answer
-        print(f"[tool_lambda] {tool} failed: {type(e).__name__}: {e}")
+        print(f"[pricing] {tool} failed: {type(e).__name__}: {e}")
         return {"error": f"{tool} failed: {type(e).__name__}: {e}"}

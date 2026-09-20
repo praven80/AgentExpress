@@ -219,7 +219,7 @@ describe("the framework vocabulary has ONE home", () => {
     for (const name of Object.keys(vocab).filter((k) => !k.startsWith("$"))) {
       const values: string[] = vocab[name].values.filter((v: string) => v !== "");
       // A one-value set has no ORDER to drift and its single string appears all over
-      // these files legitimately (`t.lambda_source == "tool_lambda"`), so a literal
+      // these files legitimately (`t.lambda_source == "pricing"`), so a literal
       // check on it is all false positives.
       if (values.length < 2) continue;
       // An array or tuple literal holding exactly these strings, in order: `["a", "b"]`

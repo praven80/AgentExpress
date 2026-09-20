@@ -2,14 +2,20 @@
 
 This framework is **configuration driven**. To run your own multi-agent
 architecture against your own documents and your own MCP servers, you edit
-**two files** and add **one folder per agent**:
+**two files** and add **one folder per agent** — plus, only if you ask the framework
+to deploy a function for you, one folder per such tool:
 
 | What | Where | You change |
 |---|---|---|
 | The workflow | `orchestrator/app/workflow.json` | your tools, your agents, your topology, gates, RBAC, guardrail, UI strings |
 | Each agent's logic | `orchestrator/app/subagents/<agent_id>/` | a prompt, a contract, a `run()` |
+| A framework-deployed tool function | `orchestrator/app/tools/<source>/` | a `handler.py`. Only for `type: "lambda"` with `source`; skip it entirely if you use `lambdaArn` or no `lambda` tool at all |
 | Your documents | `orchestrator/kb_docs/` | each top-level folder becomes a corpus |
 | The deployment | `orchestrator/terraform/terraform.tfvars` | region, login provider, model, Gateway on/off |
+
+The two code folders line up with the two blocks of `workflow.json` that can carry
+code of your own: `agents` → `app/subagents/`, `tools` → `app/tools/`. So there is one
+place to look for custom logic per kind of thing you declared.
 
 Nothing else. No Terraform edits, no CDK edits, no Cedar policy to write, no UI
 changes, and no test to fix. Both IaC paths read `workflow.json`, so declaring a
@@ -18,8 +24,8 @@ its expectations from your file rather than naming this sample's agents.
 
 `terraform.tfvars` is the one file that is about your ACCOUNT rather than your
 workflow, which is why it is gitignored — copy `terraform.tfvars.example` and keep
-your copy local. The `workflow.json` and `app/subagents/` you write are yours to
-commit.
+your copy local. The `workflow.json`, `app/subagents/` and `app/tools/` you write are
+yours to commit.
 
 ---
 
@@ -277,16 +283,25 @@ Two things differ from the other types:
   the app refuses to guess between candidates, and both IaC paths enforce that.
 
 The sample ships this live, so you can see it work before writing anything: the
-`pricing` tool and the `cost_research` agent. It uses `"source": "tool_lambda"`
-instead of `lambdaArn`, which asks the framework to deploy the demo function it
-ships in `orchestrator/tool_lambda/` — that keeps the committed config
-account-neutral, since a real ARN would pin it to one AWS account. The function
-publishes `aws_prices`, returning real AWS on-demand unit rates from the Price List
-Query API, so the rows are real without you standing up a database first. It returns
-RATES and never a total: a total needs usage volumes, which are a property of your
-workload and not of AWS. `source` accepts no other value: a
-framework-deployed function needs an execution role config cannot express. Swap it
-for `lambdaArn` and the framework stops deploying anything.
+`pricing` tool and the `cost_research` agent. It uses `"source": "pricing"`
+instead of `lambdaArn`, which asks the framework to package and deploy the function
+it ships in `orchestrator/app/tools/pricing/` — that keeps the committed config
+account-neutral, since a real ARN would pin it to one AWS account. `source` names the
+**folder under `orchestrator/app/tools/`**, which is why the tool key and the folder
+read the same here. The function publishes `aws_prices`, returning real AWS on-demand
+unit rates from the Price List Query API, so the rows are real without you standing up
+a database first. It returns RATES and never a total: a total needs usage volumes,
+which are a property of your workload and not of AWS.
+
+`source` accepts no other value today, and that is deliberate rather than unfinished:
+a framework-deployed function runs on a role the framework writes, and that role is
+fixed at CloudWatch Logs plus read-only access to the public price list. A connector of
+your own almost certainly needs something config cannot express — a VPC, a secret, a
+table grant — so the framework does not pretend it can deploy it. For your own
+connector, deploy the function however you deploy functions and declare `lambdaArn`;
+the framework then deploys nothing and only wires the Gateway target and the Cedar
+permit. You may keep that source beside `app/tools/pricing/` for symmetry; nothing
+reads it there unless `source` names it.
 
 ---
 

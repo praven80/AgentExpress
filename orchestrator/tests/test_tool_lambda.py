@@ -1,4 +1,4 @@
-"""The built-in demo tool function (orchestrator/tool_lambda/handler.py).
+"""The built-in demo tool function (orchestrator/app/tools/pricing/handler.py).
 
 It publishes ONE tool, `aws_prices`: real AWS on-demand unit prices from the Price
 List Query API, so an agent can talk about cost without inventing a figure.
@@ -144,7 +144,7 @@ class FakePricing:
 def tl(monkeypatch):
     monkeypatch.setenv("AWS_REGION", "us-east-1")
     monkeypatch.setenv("PRICING_API_REGION", "us-east-1")
-    sys.path.insert(0, str(__import__("conftest").ORCH_ROOT / "tool_lambda"))
+    sys.path.insert(0, str(__import__("conftest").ORCH_ROOT / "app" / "tools" / "pricing"))
     import handler
 
     importlib.reload(handler)

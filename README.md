@@ -21,10 +21,13 @@ for your use case.
 > |---|---|
 > | `orchestrator/app/workflow.json` | agents, topology, tools, HITL gates, RBAC, guardrail policy, UI strings |
 > | `orchestrator/app/subagents/<id>/` | one folder per agent — its prompt, its contract, its `run()`. `python3 scaffold.py agent <id>` writes both this and the config entry |
+> | `orchestrator/app/tools/<name>/` | only if you use `type: "lambda"` with `source` — the handler the framework packages and deploys for you. One folder per tool, named by `source` |
 > | `orchestrator/kb_docs/` | your documents; each top-level folder becomes a corpus |
 > | `terraform/terraform.tfvars` | deploy-time only: region, login, model, Gateway on/off (copy from `.example`) |
 >
-> Nothing else. No Terraform edits, no CDK edits, no Cedar policy to write, and no
+> Those two code folders mirror the two blocks of `workflow.json` that can carry code of
+> your own: `agents` → `app/subagents/`, `tools` → `app/tools/`. Nothing else. No
+> Terraform edits, no CDK edits, no Cedar policy to write, and no
 > test to fix: both IaC paths generate the Gateway targets, the authorization rules
 > and the Guardrail from your config, and the test suite derives its expectations
 > from your `workflow.json` rather than naming this sample's agents. A mistake in
@@ -83,9 +86,13 @@ for your use case.
   filtering), **`websearch`** (the AWS-managed **AgentCore Web Search** connector),
   **`mcp`** (**any** remote MCP server — swap the endpoint; the default is AWS's fully
   managed **AWS Knowledge MCP Server**, so there is nothing to deploy and no key to
-  supply), and **`lambda`** (one of **your own functions**, which is how an agent
-  reaches anything the Gateway cannot: a warehouse, an RDBMS, an internal service,
-  a VPC resource). The fifth, **`openapi`**, fronts a REST API from a schema in S3.
+  supply), and **`lambda`** (a **function, not a managed connector** — which is how an
+  agent reaches anything the Gateway cannot: a warehouse, an RDBMS, an internal service,
+  a VPC resource). A `lambda` tool comes in two forms: point `lambdaArn` at a function
+  **you** already deployed, or give `source` and the framework packages and deploys
+  `orchestrator/app/tools/<source>/` for you. The one in this sample takes the second
+  form — `source: "pricing"` builds `app/tools/pricing/`, which queries the public AWS
+  Price List Query API. The fifth, **`openapi`**, fronts a REST API from a schema in S3.
   Adding a data source is a JSON edit: no HCL, no TypeScript, no policy to write.
 - **Human-in-the-loop (HITL)** — approval gates with **approve / revise / deny**
   after a single agent, after the **parallel group** (revise re-runs only the
@@ -204,7 +211,7 @@ see stage 3.
 | # | Stage | Agent id(s) | Pattern | Notes |
 |---|-------|-------------|---------|-------|
 | 1 | Request Intake | `intake` | single | LLM turns the request into a structured brief; HITL gate after, then a **`branch`** on that brief (see below) |
-| 2 | Research | `knowledge_research`, `web_search`, `documentation_search`, `cost_research` | **parallel** (**RAG** ‖ **Web Search** ‖ **MCP** ‖ **your own Lambda**), the first three on a **dedicated runtime** | run concurrently — one per tool pattern; one HITL group gate after all four |
+| 2 | Research | `knowledge_research`, `web_search`, `documentation_search`, `cost_research` | **parallel** (**RAG** ‖ **Web Search** ‖ **MCP** ‖ **Lambda**), the first three on a **dedicated runtime** | run concurrently — one per tool pattern; one HITL group gate after all four |
 | 3 | Analysis → Recommendation | `analysis`, `recommendation` | **sequential**, and both **`runtime: "a2a"`** — agents this deployment does not operate, reached over the **Agent2Agent protocol** | run one after another; one HITL gate after both complete (revise re-runs the whole chain). No folder under `app/subagents/` for either: the code is somebody else's. Both still produce real contract assets — the framework stamps the asset envelope on a structured reply, so `report` traces its sections to their `assetId`s exactly as it would a local agent's |
 | 4 | Report | `report` | terminal | assembles the final sectioned report (no gate) |
 
@@ -220,7 +227,7 @@ Each agent entry binds to a data source with one field — `tool` (a key in the
 | `knowledge_research` | dedicated | `kb` (corpus `reference`) | **nested LangGraph** | — | — | on demand | **enabled** |
 | `web_search` | dedicated | `websearch` | **Strands** | — | output | on demand | **enabled** |
 | `documentation_search` | dedicated | `docs` (MCP) | `ctx.llm` | — | output | on demand | **enabled** |
-| `cost_research` | main | `pricing` (**your own Lambda**) | `ctx.llm` + code | — | — | on demand | **enabled** |
+| `cost_research` | main | `pricing` (**a Lambda**, from `app/tools/pricing/`) | `ctx.llm` + code | — | — | on demand | **enabled** |
 | `analysis` | **a2a** | its own | someone else's | semantic | output | on demand, role descriptor | outside ours |
 | `recommendation` | **a2a** | its own | someone else's | semantic + summary | output | on demand, role descriptor | outside ours |
 | `report` | main | — | `ctx.llm` | — | input + output | auto | — |
@@ -446,6 +453,13 @@ orchestrator/
 │   │   │                       #     (AgentCoreRuntimeAgent) vs a2a (A2AAgent, somebody else's service)
 │   │   ├── runtime.py          #   AgentCore entrypoint (start / resume / rerun_from / evaluate / insights)
 │   │   └── server.py           #   local dev server (same API + UI)
+│   ├── tools/<source>/         # YOURS TO EDIT: one folder per `type: "lambda"` tool that gives
+│   │   └── pricing/handler.py  #   `source`. The framework packages and deploys each as its own
+│   │                           #   Lambda and wires it to the Gateway. Excluded from the
+│   │                           #   orchestrator image (.dockerignore) — it runs as a Lambda, not
+│   │                           #   in the container. The sample's one function publishes
+│   │                           #   `aws_prices`: real AWS on-demand unit rates from the PUBLIC
+│   │                           #   Price List Query API (rates only, never a total)
 │   └── subagents/<name>/       # one self-contained package per agent WHOSE CODE YOU SHIP
 │                               #   (agent.py + prompts.py + __init__.py): intake, knowledge_research,
 │                               #   web_search, documentation_search, cost_research, report.
@@ -466,9 +480,6 @@ orchestrator/
 ├── bff/chatbot.py              # in-app assistant: Bedrock Converse tool-use loop (config-driven tools,
 │                               #   action tools withheld from callers authz denies)
 ├── kb_lambda/handler.py        # Gateway Lambda target: Bedrock KB retrieve
-├── tool_lambda/handler.py      # the built-in `type: "lambda"` demo function (source: "tool_lambda"):
-│                               #   publishes `aws_prices` — real AWS on-demand unit rates from the
-│                               #   Price List Query API (rates only, never a total)
 ├── app/keys.json               # FRAMEWORK-OWNED: which keys workflow.json may contain, where each
 │                               #   is legal, and what reads it. Its key order IS the canonical order
 ├── app/vocabulary.json         # FRAMEWORK-OWNED: the closed VALUE sets, read by all three planes

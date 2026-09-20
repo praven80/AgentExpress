@@ -114,14 +114,20 @@ export function validateTools(
             `the framework only registers it) or "source" (a function the framework ships and deploys).`
         );
       }
-      // `source` is deliberately NOT a general "deploy any directory" feature: a
-      // framework-deployed function needs an execution role config cannot express.
+      // `source` names a FOLDER UNDER app/tools/, and is deliberately NOT a general
+      // "deploy any directory" feature: a framework-deployed function needs an execution
+      // role config cannot express.
       if (t.source && t.source !== BUILTIN_LAMBDA_SOURCE) {
         throw new Error(
-          `workflow.json tools.${name} has "source": ${JSON.stringify(t.source)}, but the only value is ` +
-            `"${BUILTIN_LAMBDA_SOURCE}" — the run-history demo function the framework ships under ` +
-            `orchestrator/${BUILTIN_LAMBDA_SOURCE}/. To use a function of your own, deploy it yourself ` +
-            `and set "lambdaArn" instead.`
+          `workflow.json tools.${name} has "source": ${JSON.stringify(t.source)}. ` +
+            `"source" names a folder under orchestrator/app/tools/, and the only one the ` +
+            `framework ships is "${BUILTIN_LAMBDA_SOURCE}" ` +
+            `(orchestrator/app/tools/${BUILTIN_LAMBDA_SOURCE}/). It is not a general ` +
+            `"deploy any directory" option: the execution role is fixed at logs plus ` +
+            `read-only on the PUBLIC AWS price list, which is right for that function and ` +
+            `wrong for a connector that needs VPC config or a secret. To use a function of ` +
+            `your own, deploy it yourself and set "lambdaArn" instead — the framework then ` +
+            `registers it as a Gateway target and touches neither its code nor its role.`
         );
       }
       if (t.lambdaArn && !LAMBDA_ARN.test(String(t.lambdaArn))) {
@@ -1187,7 +1193,7 @@ export class OrchestratorStack extends cdk.Stack {
           agentName,
           tools: declaredTools,
           toolApiKeys: props.toolApiKeys,
-          // Only used by the built-in `source: "tool_lambda"` demo function, which
+          // Only used by the built-in `source: "pricing"` demo function, which
           // reports on run history and gets READ-ONLY access to them.
           statusTable,
           telemetryTable,
