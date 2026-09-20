@@ -799,25 +799,3 @@ before any non-sandbox use.
   and persists across HITL pauses up to the 8-hour limit.
 - Known limits: the UI **polls** rather than receiving push, and the cross-runtime call to a
   dedicated agent is synchronous request/response.
-
-## Current limitations
-
-- **Two authorization layers, two subjects.** Cedar at the Gateway authorizes *agents
-  calling tools*; `authorization` authorizes *humans acting on runs*. Neither partitions
-  run **visibility**.
-- **UI transport is polling.** Swap to DynamoDB Streams → WebSocket/AppSync for push
-  without changing the runtime.
-- **Multi-agent re-run is scoped to one parallel stage.** Re-running several agents at once
-  requires them to be in the same gated `parallel` step; any single agent can be re-run on
-  its own, including one inside a `sequence`.
-- **Evaluations and Insights need a deployed runtime.** Both read the AgentCore Evaluate /
-  BatchEvaluation APIs and CloudWatch traces, so locally they return an explicit "not
-  available" note. Insights additionally needs Transaction Search enabled and at least one
-  completed run.
-- **Evaluation scores are LLM-as-judge** — a regression signal across versions, not an
-  absolute grade.
-- **Costs shown are estimates** from a hand-maintained price book
-  (`app/features/observability/pricing.py`). Update the constants there when prices change
-  or you have negotiated rates.
-- **The grounding check warns rather than blocking**, and matches unit-bearing figures
-  only. A figure worded so the matcher cannot see it will pass.
