@@ -476,6 +476,71 @@ sets. A corpus naming a folder that doesn't exist is rejected at plan time — b
 that check existed, it produced a Cedar filter on a `doc_type` no chunk carried and
 retrieval quietly returned nothing.
 
+**The embedding model and its dimension are a validated pair.**
+
+```json
+"kb": {
+  "type": "kb",
+  "corpora": ["reference"],
+  "embeddingModel": "amazon.titan-embed-text-v2:0",
+  "dimensions": 512
+}
+```
+
+Both are optional: `dimensions` defaults to the model's first supported size, and the
+model defaults to Titan v2 at 1024, which is what was hardcoded before either key
+existed. Declaring a size the model does not support is rejected at plan/synth, and that
+check matters more than most — Bedrock does **not** reject a mismatch when you deploy. It
+fails later at *ingestion*, so the stack reports success and the corpus is silently empty.
+
+Changing either key **replaces** the vector index and the Knowledge Base, because neither
+property can be altered in place. Both IaC paths derive those resource names from a digest
+of the pair, which is what turns the replacement into a working deploy instead of
+CloudFormation refusing to replace a custom-named resource.
+
+**Retrieval is config, with one deliberate exception.**
+
+| Key | Default | What it does |
+|---|---|---|
+| `maxResults` | 5 | Retrieval depth. |
+| `corpusKey` | `doc_type` | Which metadata attribute an agent's `corpus` is matched against. Set it when your documents are already tagged by customer id, product line or classification, so a corpus need not be a folder name. |
+| `corpusOperator` | `equals` | How `corpus` is compared. Single-value operators only — see below. |
+| `filter` | none | A Bedrock-shaped filter (`andAll`/`orAll`/…) applied to **every** call, set on the target and invisible to the agent. |
+| `rerank` | none | `{ "model": "amazon.rerank-v1:0", "count": 3 }` — reorder retrieved chunks with a second model. Costs one extra model call per retrieval; the framework grants exactly that model and no other. |
+
+**Why there are two filters, and why only one of them is rich.** The filter an *agent*
+sends is a single scalar, its `corpus`. That is not a limitation, it is what makes the
+permit enforceable: the generated Cedar rule is a value match
+(`["reference"].contains(context.input.filter)`), evaluated at the Gateway *before* the
+retrieve Lambda runs. A list-valued operator would make that argument a list, which the
+rule cannot express — so it would degrade to "has a filter at all" while still looking
+enforced. Hence `corpusOperator` offers only `equals`, `notEquals`, `startsWith` and
+`stringContains`.
+
+Multi-condition narrowing therefore lives in `filter`, on the target, where the caller
+cannot influence it. It is **ANDed** with the agent's corpus filter, so it can only ever
+narrow. A filter an agent supplies is scoping; a filter it cannot reach is a boundary.
+
+```json
+"filter": {
+  "andAll": [
+    { "equals": { "key": "tier", "value": "public" } },
+    { "orAll": [
+      { "equals": { "key": "region", "value": "emea" } },
+      { "equals": { "key": "region", "value": "amer" } }
+    ]}
+  ]
+}
+```
+
+**There is no `searchType`, and that is deliberate.** One was added, deployed and removed
+the same day: S3 Vectors — the only vector store this framework provisions — refuses
+hybrid search (`HYBRID search type is not supported for search operation on index …`),
+which left `SEMANTIC`, the default, as the only legal value. A key whose one working value
+is the default expresses nothing, and whose other value fails at *retrieval* after a green
+deploy is worse than no key. If this framework ever provisions OpenSearch Serverless
+instead, hybrid becomes real and the key comes back.
+
 ### `type: "websearch"`
 
 One per deployment, and only in `us-east-1`, `eu-west-1`, `ap-northeast-1`.

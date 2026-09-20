@@ -272,6 +272,17 @@ different boundaries, both config-driven.
   config only. This sample ships three of its nine agents as `dedicated`
   (`knowledge_research`, `web_search`, `documentation_search`), two as `a2a`
   (`analysis`, `recommendation`); the rest are `main`.
+- **Each dedicated agent gets its OWN execution role, scoped from its own config.**
+  This was one role shared by every dedicated runtime, which meant an agent that
+  enables nothing still carried the union of every other agent's permissions —
+  measured on this sample, `knowledge_research` could call `ApplyGuardrail` it never
+  calls, and all three could read the semantic memory store although not one of them
+  declares long-term memory. The grants are now derived from the same `agentcore`
+  block that switches each feature on, so there is still no IAM for a customer to
+  write: enable memory for an agent and that agent gets memory access; enable it for
+  nobody and the statement appears on no role. What every role keeps unconditionally
+  is what a container needs merely to run — pull the image, emit spans and metrics,
+  call a model, write its own telemetry row.
 - `runtime: "a2a"` is the third value, and it is not a placement of your code — it is a
   **trust boundary**. The step is run by an agent you do not operate, reached over the
   **Agent2Agent protocol** at its Agent Card URL (`app/common/a2a_agent.py`): the card
@@ -402,7 +413,8 @@ different boundaries, both config-driven.
   `include` is set.
 
 ### RAG — Bedrock Knowledge Base on S3 Vectors
-- A single Bedrock Knowledge Base (Titan Text Embeddings v2) backed by **S3 Vectors**
+- A single Bedrock Knowledge Base backed by **S3 Vectors**, embedded with the model the
+  `kb` tool declares (default Titan Text Embeddings v2 at 1024 dims)
   (serverless). The retrieve Lambda returns ranked chunks to ground answers.
 - The RAG agent is scoped to its own corpus via a **`doc_type` metadata filter**
   (a sidecar `.metadata.json` on ingest tags each doc with its folder; the agent

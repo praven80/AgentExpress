@@ -60,12 +60,26 @@ for your use case.
 > the full suite (757 Python + 138 TypeScript), `terraform validate` and `cdk synth`
 > with no other change.
 >
-> Four couplings remain, none of which blocks a typical use case: the five tool
-> *types* (`kb`/`websearch`/`mcp`/`openapi`/`lambda`) are code, all dedicated agents
-> share one IAM role, KB retrieval parameters are fixed to `query` + `filter`, and the
-> embedding model is Titan v2 / 1024 dims. The `lambda` type is the escape hatch for
-> the rest: anything the Gateway cannot reach directly — a warehouse, an RDBMS, an
-> internal service, a VPC resource — is reachable by pointing at a function.
+> **Two couplings remain**, neither of which blocks a typical use case: the five tool
+> *types* (`kb`/`websearch`/`mcp`/`openapi`/`lambda`) are code, and Knowledge Base
+> storage is S3 Vectors. The `lambda` type is the escape hatch for the first:
+> anything the Gateway cannot reach directly — a warehouse, an RDBMS, an internal
+> service, a VPC resource — is reachable by pointing at a function.
+>
+> Three others used to be on that list and are config now. The **embedding model and
+> dimension** are keys on the `kb` tool, defaulted as a validated pair because a
+> mismatch is not rejected at deploy — Bedrock fails at ingestion afterwards, leaving a
+> green stack and an empty corpus. **Each dedicated agent gets its own execution role**,
+> scoped from its own `agentcore` block, so an agent that enables nothing no longer
+> carries the union of everything. And **KB retrieval** takes `corpusKey`,
+> `corpusOperator`, `rerank` and a target-level `filter`.
+>
+> That last one is worth reading as a boundary rather than a feature. The filter an
+> agent sends is one scalar — its corpus — because the generated Cedar permit is a
+> scalar value match, and that is what makes it enforceable at the Gateway. The rich
+> multi-condition filter is set on the *target*, invisible to the agent, and ANDed with
+> the agent's so it can only narrow. A filter an agent supplies is scoping; one it
+> cannot reach is a boundary.
 >
 > Your own **vocabulary** is not a coupling either. `assetType`, `sourceType` and
 > `sectionType` are open strings, so a "claim-file" or a "policy-doc" survives into
