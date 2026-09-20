@@ -139,6 +139,54 @@ def test_vagueness_is_not_grounds_for_pricing_nothing(_=None):
     assert "too vague" not in prompt, "the old escape hatch must not come back"
 
 
+def test_free_services_are_kept_out_of_the_price_lookup(_=None):
+    """Observed live on "Design an analytics application in AWS": the model listed "AWS
+    Identity and Access Management" among the services to price, the Price List API
+    returned no rate for it, and the asset carried "No rate was returned for AWS Identity
+    and Access Management" as a data limitation.
+
+    Every word of that is true and the whole of it is misleading. IAM has no consumption
+    charge, so the absence is the answer rather than a gap — but the asset presents it the
+    same way it presents a service whose rate genuinely could not be found, which is the
+    one thing a reader might act on. The fix belongs in the prompt because the agent
+    cannot tell the two apart after the fact: "no rows came back" looks identical either
+    way."""
+    from app.subagents.cost_research.prompts import SYSTEM_PROMPT
+
+    assert "ONLY SERVICES THAT CHARGE FOR CONSUMPTION" in SYSTEM_PROMPT
+    # Named, because "services that charge" is not obviously false of IAM to a model that
+    # knows IAM is required. Required and billable are different properties.
+    for free in ("IAM", "CloudFormation", "Auto Scaling"):
+        assert free in SYSTEM_PROMPT, free
+    # And the reason stated, so the rule generalises past the three named.
+    assert "reads as a gap in the data rather than as" in SYSTEM_PROMPT
+    assert "architecture, not cost" in SYSTEM_PROMPT
+
+
+def test_the_free_service_rule_does_not_reopen_the_vagueness_escape_hatch(_=None):
+    """The rule above tells the model to leave things OUT, and the rule below tells it
+    that vagueness is not grounds for returning nothing. They must not be read together
+    as licence to return an empty list. Ordering is what keeps them apart: the empty
+    answer stays reserved for a request with no runnable workload."""
+    from app.subagents.cost_research.prompts import SYSTEM_PROMPT
+
+    consumption = SYSTEM_PROMPT.index("ONLY SERVICES THAT CHARGE FOR CONSUMPTION")
+    answerable = SYSTEM_PROMPT.index("A VAGUE REQUEST IS STILL ANSWERABLE")
+    empty = SYSTEM_PROMPT.index("Return an EMPTY list only when")
+    assert consumption < answerable < empty, "the free-service rule must not be the last word"
+
+
+def test_the_rules_are_numbered_without_a_duplicate(_=None):
+    """A duplicated number is how a model loses track of which rule it has applied, and
+    inserting the consumption rule mid-list is exactly when it happens."""
+    import re
+
+    from app.subagents.cost_research.prompts import SYSTEM_PROMPT
+
+    numbers = [int(m) for m in re.findall(r"(?:^|\n)(\d+)\. ", SYSTEM_PROMPT)]
+    assert numbers == sorted(set(numbers)) and numbers == list(range(1, len(numbers) + 1)), numbers
+
+
 def test_the_tool_is_asked_for_the_services_the_model_chose(_=None):
     """Not the run's objective. `call_tool_rows` defaults to the retrieval query,
     which would price nothing here."""

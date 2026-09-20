@@ -81,6 +81,17 @@ _ROLES = ("version", "released", "activeUntil", "supportedUntil", "isEol", "isLt
 # turn into a 30-call fan-out. Each product is one HTTP request through the Gateway.
 MAX_PRODUCTS = 6
 
+#: Said when the design has no versioned dependency at all — which is a real answer for a
+#: system built entirely from managed services, not a failed lookup. The point of the
+#: wording is that "no end-of-life dates" must not be read as "no support": the services
+#: carry their own commitments, this source does not track them, and the moment someone
+#: picks a runtime version there WILL be dates worth having.
+NO_VERSIONED_DEPENDENCIES = (
+    "This is not a statement that the design is unsupported. Managed services carry "
+    "their own support commitments, which this source does not track; a runtime, engine "
+    "or OS version chosen later WILL have published dates, so re-run this agent once "
+    "one is named.")
+
 # How many releases to name per product. A long-lived product has twenty, and listing
 # all of them buries the two a reader acts on. The ones kept are chosen by the API's
 # own `isEol`, newest first by release date, so this trims noise rather than evidence.
@@ -258,14 +269,21 @@ class LifecycleResearchAgent(Agent):
         title = assets.brief_title(brief, ctx)
 
         if not products:
+            # AN EMPTY LIST IS AN ANSWER, NOT A FAILURE, and the `basis` is the whole of
+            # it — so it is carried through rather than replaced by a fixed sentence.
+            # A design built entirely from managed services has no support dates to
+            # report, and saying WHICH services led to that conclusion is what makes the
+            # finding checkable. The earlier fixed wording ("the dependency set could
+            # not be established") described a lookup that went wrong, which for this
+            # case is simply untrue and invites a reviewer to re-run it.
+            basis = " ".join(str(payload.get("basis") or "").split())
             return _asset(
                 ctx, title, version,
-                summary=("No versioned dependencies could be derived for this "
-                         "request, so no support dates were looked up."),
+                summary=("No dependency in this design publishes a support lifecycle, "
+                         "so there are no end-of-life dates to report."
+                         + (f" {basis}" if basis else "")),
                 findings=[],
-                limits=[("The dependency set for this design could not be "
-                         "established, so no lifecycle dates were retrieved."),
-                        *truncated_note],
+                limits=[NO_VERSIONED_DEPENDENCIES, *truncated_note],
                 sources=[],
             )
 

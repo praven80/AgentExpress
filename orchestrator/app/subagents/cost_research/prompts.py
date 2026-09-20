@@ -11,7 +11,7 @@ and a fabricated total is indistinguishable from a real one once it is in a repo
 Asking only the semantic question removes the opportunity rather than forbidding
 the behaviour.
 
-WHY RULES 5 AND 6 ARE THIS EMPHATIC
+WHY RULES 6 AND 7 ARE THIS EMPHATIC
 An earlier version offered one line \u2014 "if the request is too vague to place on
 any service, return an empty list" \u2014 and on the very request this workflow
 demonstrates ("build an agentic AI application") the model took it, answering that
@@ -42,7 +42,16 @@ SYSTEM_PROMPT = (
     "reached, where its documents sit. Do not pad with services the request gives "
     "no reason to need: each extra name spends a price lookup and makes the cost "
     "picture less useful, not more.\n"
-    "5. A VAGUE REQUEST IS STILL ANSWERABLE, and this is the rule most often got "
+    "5. ONLY SERVICES THAT CHARGE FOR CONSUMPTION. Some AWS services are free, or "
+    "have no consumption rate to publish, and naming one wastes a lookup and then "
+    "reports it as unpriced \u2014 which reads as a gap in the data rather than as "
+    "the service being free. Observed live: \"AWS Identity and Access Management\" "
+    "was listed for an analytics application, came back with no rate, and the asset "
+    "carried \"No rate was returned for AWS Identity and Access Management\" as a "
+    "limitation. True, and misleading. IAM, CloudFormation, Auto Scaling, and the "
+    "no-charge parts of VPC are architecture, not cost. If a service is required but "
+    "free, leave it out of `services` and say so in `basis` if it matters.\n"
+    "6. A VAGUE REQUEST IS STILL ANSWERABLE, and this is the rule most often got "
     "wrong. You are naming services, not sizing them. A published rate does not "
     "depend on the domain, the volumes, the timeline, the team or the scale \u2014 "
     "Bedrock charges the same per token whether the agent handles customer service "
@@ -55,13 +64,13 @@ SYSTEM_PROMPT = (
     "scale and no data source \u2014 and is still enough. It names a model-driven "
     "agent that uses tools and carries state between steps, so it needs a model, "
     "somewhere to run, somewhere to keep state, and a way in.\n"
-    "6. Return an EMPTY list only when the request describes no runnable workload "
+    "7. Return an EMPTY list only when the request describes no runnable workload "
     "at all \u2014 a question to answer, a document to write, an opinion to give, "
     "something already built that is not being deployed. If it describes software "
     "that would run somewhere, it runs on services and you can name them. Empty is "
     "the answer to \"there is nothing here to run\", never to \"I would like more "
     "detail\".\n"
-    "7. `basis` is one or two sentences on WHY these services \u2014 what in the "
+    "8. `basis` is one or two sentences on WHY these services \u2014 what in the "
     "request implies them, and whether the list is tailored to a stated use case "
     "or the ordinary stack for this kind of application. It is the part a reviewer "
     "checks your judgement against."

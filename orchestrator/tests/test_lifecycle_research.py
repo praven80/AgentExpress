@@ -29,7 +29,7 @@ import importlib
 import json
 
 import pytest
-from conftest import needs_agent, needs_tool
+from conftest import ORCH_ROOT, needs_agent, needs_tool
 
 pytestmark = [needs_agent("lifecycle_research"), needs_tool("lifecycle")]
 
@@ -46,7 +46,6 @@ def mod():
 # same role->field translation a deployment does rather than a hand-written copy.
 @pytest.fixture
 def field_map():
-    from conftest import ORCH_ROOT
     wf = json.loads((ORCH_ROOT / "app" / "workflow.json").read_text())
     return dict(wf["tools"]["lifecycle"]["rowFields"])
 
@@ -187,3 +186,90 @@ def test_a_path_traversal_identifier_is_refused(mod):
     """The value becomes a path segment on somebody else's API. The model is not a
     trusted source of path components."""
     assert mod._products({"products": ["../../etc/passwd", "a/b", "ok"]}) == ["ok"]
+
+
+# ---------------------------------------------------------------------------
+# Defect 3: researching a stack the design does not use
+# ---------------------------------------------------------------------------
+# Given "Design an analytics application in AWS" the agent answered python, nodejs,
+# postgresql, redis, kubernetes, terraform. Six real products, six real lookups, dates
+# returned correctly — and not one of them a dependency of the design, which every other
+# agent in the run took to be S3, Glue, Athena, Redshift Serverless and QuickSight.
+#
+# Nothing downstream was fooled, which is the part worth noticing: `analysis` reduced the
+# whole asset to a single claim, `recommendation` produced no item mentioning a runtime or
+# an upgrade, and the report carried no date from it at all. The agent ran and contributed
+# nothing. A correct answer to the wrong question is the failure mode a research agent has,
+# and no contract check catches it.
+#
+# The cause was two rules pointing opposite ways, with the weaker one winning: "only
+# things with a published version line" versus "a vague request is still answerable, fall
+# back on the ordinary stack for that kind of system". These tests pin the resolution,
+# which is necessarily about the PROMPT — the judgement is the model's, so what can be
+# held is the instruction it is given and what the code does with an empty answer.
+
+def test_the_vagueness_fallback_is_explicitly_subordinate_to_the_version_line_rule():
+    """The two rules have to be ordered, or the model picks whichever it reads last."""
+    from app.subagents.lifecycle_research.prompts import SYSTEM_PROMPT
+
+    assert "BUT RULE 3 COMES FIRST" in SYSTEM_PROMPT
+    # And the fallback must say what it does NOT license, not merely be outranked.
+    assert "does NOT license is substituting a generic stack" in SYSTEM_PROMPT
+
+
+def test_deployment_tooling_and_unused_platforms_are_ruled_out_by_name():
+    """Terraform and Kubernetes were the two worst answers, for different reasons: one is
+    how you would deploy the thing, the other a platform the design replaced. Named
+    explicitly because "things with a support lifecycle" is true of both."""
+    from app.subagents.lifecycle_research.prompts import SYSTEM_PROMPT
+
+    for phrase in ("infrastructure-as-code tool", "CI system", "test framework",
+                   "platform the design replaced"):
+        assert phrase in SYSTEM_PROMPT, phrase
+    # The reason, not just the list: an IaC tool's EOL does not stop the app running.
+    assert "nothing the application RUNS ON stops working" in SYSTEM_PROMPT
+
+
+def test_an_empty_answer_is_described_as_an_answer_rather_than_a_failure():
+    """The old rule offered empty only for "nothing here runs at all", so a design made
+    of managed services had no correct response available to it."""
+    from app.subagents.lifecycle_research.prompts import SYSTEM_PROMPT
+
+    assert "built entirely from managed" in SYSTEM_PROMPT
+    assert "is a USEFUL answer" in SYSTEM_PROMPT
+    # Still not a hedge: the "I would like more detail" escape stays closed.
+    assert "Empty is never the answer to" in SYSTEM_PROMPT
+
+
+def test_an_empty_product_list_carries_the_models_basis_into_the_asset(mod):
+    """WHY: when there is nothing to look up, `basis` is the entire answer — which
+    services the design was read as being made of, and that they publish no dates. The
+    fixed sentence it replaced ("the dependency set could not be established") described
+    a lookup that had gone wrong, which for this case is untrue and invites a reviewer to
+    re-run it."""
+    asset = json.loads(mod._asset(
+        _Ctx(), "AWS Analytics Application Design", 1,
+        summary=("No dependency in this design publishes a support lifecycle, so there "
+                 "are no end-of-life dates to report. The design names S3, Glue, Athena "
+                 "and QuickSight, none of which publishes a version line."),
+        findings=[], limits=["x"], sources=[]))
+    assert "S3, Glue, Athena" in asset["summary"]
+    assert asset["findings"] == []
+
+
+def test_the_empty_case_does_not_claim_the_design_is_unsupported(mod):
+    """A reader must not take "no end-of-life dates" as "no support". Managed services
+    carry their own commitments that this source does not track, and a runtime chosen
+    later will have dates — so the limitation says both, and says to re-run."""
+    limit = mod.NO_VERSIONED_DEPENDENCIES
+    assert "not a statement that the design is unsupported" in limit
+    assert "re-run this agent" in limit
+    # It must not read as a lookup that failed, which is what invites a pointless retry
+    # and what the wording it replaced did say.
+    assert "could not be established" not in limit
+
+
+class _Ctx:
+    """The two attributes `_asset` reads. Not a full AgentContext: this is about the
+    asset's wording, and a stub keeps the failure pointing at that."""
+    agent_id = "lifecycle_research"
