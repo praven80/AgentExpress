@@ -587,17 +587,18 @@ button, .act {
   flex-direction: column;
   align-items: center;
   gap: 8px;
-  /* The gutters hold the stage number (left) and the Review/Branch pills (right),
-     both absolutely positioned. A pill is up to ~96px wide, so a narrower gutter
-     puts it on top of the node — which is what 56px did. Symmetric, so the node
-     still sits on the centre line the connectors are drawn down. */
-  padding: 0 132px;
+  /* Only the stage NUMBER lives in the gutter now, so 56px is enough. The
+     Review/Branch pills used to be absolutely positioned out here and were CLIPPED
+     the moment the split panel narrowed the content column — found on the live site,
+     not by the stub, because the stub's viewport was wide enough to hide it. They are
+     in normal flow below. */
+  padding: 0 56px;
 }
 
 /* Stage number, as Step Functions numbers a state. */
 .stage-num {
   position: absolute;
-  left: 92px;                       /* 132px gutter − 24px badge − 16px gap */
+  left: 8px;
   top: 8px;
   width: 24px; height: 24px;
   border-radius: 50%;
@@ -611,10 +612,17 @@ button, .act {
   justify-content: center;
 }
 
+/* A row of annotations above the stage, right-aligned over it. In normal flow, so it
+   cannot escape the container at any width. */
+.stage-pills {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+  align-self: stretch;
+  min-height: 22px;
+}
 .stage-gate, .stage-branch {
-  position: absolute;
-  left: calc(100% - 116px);         /* content's right edge + 16px */
-  right: auto;
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -626,8 +634,8 @@ button, .act {
   white-space: nowrap;
   cursor: default;
 }
-.stage-gate  { top: 6px;  background: #fbf4e6; color: var(--awsui-warning); border: 1px solid #f0d99a; }
-.stage-branch{ top: 34px; background: #f2f8fd; color: var(--awsui-blue);    border: 1px solid #b8d9f5; }
+.stage-gate  { background: #fbf4e6; color: var(--awsui-warning); border: 1px solid #f0d99a; }
+.stage-branch{ background: #f2f8fd; color: var(--awsui-blue);    border: 1px solid #b8d9f5; }
 
 /* A parallel / sequence group: Step Functions draws these as a labelled frame. */
 .stage-group {
@@ -1107,9 +1115,15 @@ button, .act {
    Responsive
    ========================================================================== */
 
-@media (max-width: 1400px) { .splitpanel { flex-basis: 440px; } }
-@media (max-width: 1100px) {
+/* Below ~1400px the graph, the run list and the detail panel are all competing for
+   one row. The graph is the thing being read, so the other two give ground first. */
+@media (max-width: 1400px) {
   .sidebar { flex-basis: 240px; }
+  .splitpanel { flex-basis: 420px; }
+  .wrap { padding: 20px; }
+}
+@media (max-width: 1100px) {
+  .sidebar { flex-basis: 220px; }
   .splitpanel { flex-basis: 380px; }
 }
 @media (max-width: 900px) {
@@ -1570,9 +1584,13 @@ function stageHtml(step, i, nodes) {
   const numBadge = `<div class="stage-num">${i + 1}</div>`;
   // Named gateBadge, not `gate`: that would shadow the global gate(action) authz
   // helper for the rest of this function.
-  const gateBadge = step.hitl ? '<div class="stage-gate" title="Human review gate after this stage">🔒 Review</div>' : "";
+  const gateBadge = step.hitl ? '<span class="stage-gate" title="Human review gate after this stage">🔒 Review</span>' : "";
   const branchBadge = step.branch
-    ? `<div class="stage-branch" title="${esc(branchSummary(step.branch))}">⑂ Branch</div>` : "";
+    ? `<span class="stage-branch" title="${esc(branchSummary(step.branch))}">⑂ Branch</span>` : "";
+  // One flow row, emitted only when there is something to put in it, so a plain
+  // stage keeps its spacing.
+  const pills = (gateBadge || branchBadge)
+    ? `<div class="stage-pills">${branchBadge}${gateBadge}</div>` : "";
 
   // Parallel group: agents in a grid, TWO PER ROW (they run concurrently, so
   // there is no order to show). min(2, count) so a single-agent group renders one
@@ -1584,7 +1602,7 @@ function stageHtml(step, i, nodes) {
     // Two columns, as Step Functions lays out a Parallel state's branches side by
     // side. min(2, count) so a one-branch group does not reserve an empty column.
     const cols = Math.min(2, ids.length);
-    return `<div class="stage-body">${numBadge}${gateBadge}${branchBadge}
+    return `<div class="stage-body">${numBadge}${pills}
       <div class="stage-group"><div class="stage-group-title">${title}</div>
         <div class="stage-col" style="grid-template-columns:repeat(${cols},240px)">${cards}</div></div></div>`;
   }
@@ -1595,13 +1613,13 @@ function stageHtml(step, i, nodes) {
     const title = "→ " + esc(step.gateName || "Sequential") + " · " + ids.length + " in sequence";
     const seqArrow = '<div class="seq-arrow"><svg viewBox="0 0 24 18"><line x1="0" y1="9" x2="16" y2="9" stroke="currentColor" stroke-width="2.5"/><path d="M14 3 L23 9 L14 15 Z" fill="currentColor"/></svg></div>';
     const cards = ids.map(id => nodeCard(nodes, id)).join(seqArrow);
-    return `<div class="stage-body">${numBadge}${gateBadge}${branchBadge}
+    return `<div class="stage-body">${numBadge}${pills}
       <div class="stage-group seq"><div class="stage-group-title">${title}</div>
         <div class="stage-row">${cards}</div></div></div>`;
   }
 
   // Single agent.
-  return `<div class="stage-body">${numBadge}${gateBadge}${branchBadge}${nodeCard(nodes, step.agent)}</div>`;
+  return `<div class="stage-body">${numBadge}${pills}${nodeCard(nodes, step.agent)}</div>`;
 }
 
 function dagHtml(nodes) {
