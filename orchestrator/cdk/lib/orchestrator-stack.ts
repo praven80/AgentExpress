@@ -66,7 +66,14 @@ export const TARGET_NAME_RE = /^[A-Za-z][A-Za-z0-9]*$/;
 export function validateTools(
   raw: Record<string, any>,
   agents: Record<string, any>,
-  region: string
+  region: string,
+  /**
+   * The orchestrator/ directory, needed only to check that a `source` a tool names
+   * really has a file in it. Optional because most callers are asking "is this config
+   * self-consistent", which is answerable without a filesystem; the stack passes it, so
+   * a real synth still gets the check.
+   */
+  orchRoot?: string
 ): Record<string, ToolSpec> {
   const tools: Record<string, ToolSpec> = {};
   for (const [name, t] of Object.entries(raw)) {
@@ -95,10 +102,39 @@ export function validateTools(
         `workflow.json tools.${name} has type="mcp" and so requires "endpoint" (your MCP server's Streamable HTTP URL).`
       );
     }
-    if (t.type === "openapi" && !t.schemaS3Uri) {
-      throw new Error(
-        `workflow.json tools.${name} has type="openapi" and so requires "schemaS3Uri" (s3:// URI of the OpenAPI schema).`
-      );
+    // --- type=openapi ---------------------------------------------------
+    // The Gateway loads an OpenAPI schema from S3 and nowhere else, so one of two
+    // keys has to say which object. Mirrors terraform/tools.tf.
+    if (t.type === "openapi") {
+      if (!!t.schemaS3Uri === !!t.source) {
+        throw new Error(
+          `workflow.json tools.${name} needs EXACTLY ONE of "schemaS3Uri" (an s3:// object you ` +
+            `already host) or "source" (a folder under orchestrator/app/tools/ holding ` +
+            `openapi.json, which the framework uploads for you so the committed config carries ` +
+            `no bucket name).`
+        );
+      }
+      // Unlike type="lambda", `source` here is NOT closed to a known list: uploading a
+      // schema needs no permissions, so any folder name is legitimate and the only
+      // meaningful check is that the file is really there. Caught at synth; otherwise
+      // the asset is empty and the target fails when the Gateway loads it.
+      if (t.source && orchRoot) {
+        const schemaPath = path.join(orchRoot, "app", "tools", String(t.source), "openapi.json");
+        if (!fs.existsSync(schemaPath)) {
+          throw new Error(
+            `workflow.json tools.${name} has "source": ${JSON.stringify(t.source)}, but ` +
+              `orchestrator/app/tools/${t.source}/openapi.json does not exist. A type="openapi" ` +
+              `tool's "source" names a folder under orchestrator/app/tools/ containing that file.`
+          );
+        }
+      }
+      if (t.schemaS3Uri && !/^s3:\/\/[a-z0-9.-]{3,63}\/.+/.test(String(t.schemaS3Uri))) {
+        throw new Error(
+          `workflow.json tools.${name} has type="openapi" and so requires "schemaS3Uri": a full ` +
+            `s3:// URI including the object key, e.g. "s3://my-bucket/schemas/orders.json". ` +
+            `Got: ${JSON.stringify(t.schemaS3Uri)}.`
+        );
+      }
     }
     // --- type=lambda ----------------------------------------------------
     // The Gateway will not discover a Lambda's tools for itself — there is no
@@ -1183,7 +1219,8 @@ export class OrchestratorStack extends cdk.Stack {
     const declaredTools: Record<string, ToolSpec> = validateTools(
       workflow.tools ?? {},
       workflow.agents ?? {},
-      this.region
+      this.region,
+      ORCH_ROOT
     );
     // Agents + steps + kb_docs corpora (see terraform_data.workflow_validation).
     validateWorkflow(workflow, ORCH_ROOT, agentName, props.idp);
@@ -2016,6 +2053,10 @@ export function toolsEnv(tools: Record<string, ToolSpec>): Record<string, any> {
     // deterministic agent config-driven: repoint the tool at another source and set
     // these to its field names, with no agent code change.
     if (t.rowFields && Object.keys(t.rowFields).length) spec.rowFields = t.rowFields;
+    // rowPath: WHERE those rows are in the response, for a target that nests them
+    // somewhere the framework does not probe for. Projected alongside rowFields
+    // because the two are useless apart — field names for rows you cannot find.
+    if (t.rowPath) spec.rowPath = t.rowPath;
     out[name] = spec;
   }
   return out;

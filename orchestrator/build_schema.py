@@ -166,14 +166,32 @@ def _entry_schema(block: dict, vocab: dict) -> dict:
         aliases = block.get("$variantAliases") or {}
         for variant in variants:
             allowed, required = [], []
+            # A key whose allowed VALUES depend on the variant (`vocabularyFor`), so the
+            # enum lands in this branch only. `source` is the case: for type="lambda" it
+            # is closed to what the framework has an execution role for, and for
+            # type="openapi" it is any folder name, because uploading a schema file needs
+            # no permissions. One enum on the key itself could only state the stricter
+            # rule, which would reject a customer's own schema folder in an editor while
+            # the deploy accepted it.
+            narrowed: dict[str, dict] = {}
             for key, spec in keys.items():
                 scope = spec.get("appliesTo")
                 if scope == "*" or variant in _expand(scope, aliases):
                     allowed.append(key)
                 if variant in _expand(spec.get("requiredFor") or [], aliases):
                     required.append(key)
+                vocabulary = (spec.get("vocabularyFor") or {}).get(variant)
+                if vocabulary:
+                    narrowed[key] = {
+                        **props[key],
+                        "enum": vocab[vocabulary]["values"],
+                        "description": props[key]["description"] + (
+                            f"\n\nFor type=\"{variant}\" the allowed values "
+                            f"({vocabulary} in app/vocabulary.json) are: "
+                            + ", ".join(repr(v) for v in vocab[vocabulary]["values"])),
+                    }
             head = sorted({k.partition(".")[0] for k in allowed})
-            clause: dict = {"properties": {k: props[k] for k in head},
+            clause: dict = {"properties": {k: narrowed.get(k, props[k]) for k in head},
                             "additionalProperties": False}
             if required:
                 clause["required"] = sorted({k.partition(".")[0] for k in required})

@@ -55,6 +55,14 @@ export interface ToolSpec {
    *   { "id": "sessionId", "label": "topic", "outcome": "overall", "timestamp": "created" }
    */
   rowFields?: Record<string, string>;
+  /**
+   * Dot path to the LIST of records in this target's response, e.g. "result.releases".
+   * Needed only when the list is somewhere the framework does not already probe for
+   * (results, result, items, documents, content.result, content.results) — which is
+   * common for a REST API you did not design. Without it an agent that computes sees
+   * zero rows and reports "nothing found" for a response that was full of data.
+   */
+  rowPath?: string;
   /** type=mcp: the MCP server's Streamable HTTP URL. Change this, nothing else. */
   endpoint?: string;
   /** type=openapi: s3:// URI of the OpenAPI schema. */
@@ -188,6 +196,8 @@ export class ToolPlane extends Construct {
   public readonly gatewayId: string;
   /** tool name -> ARN, for each function the framework deployed from `source`. */
   private readonly builtinLambdaArns: Record<string, string> = {};
+  /** tool name -> s3:// URI, for each openapi schema the framework uploaded from `source`. */
+  private readonly uploadedSchemaUris: Record<string, string> = {};
   public readonly gatewayArn: string;
   /** Policy mode to report in the UI, "" when policy is off. */
   public readonly policyModeEnv: string;
@@ -569,6 +579,80 @@ export class ToolPlane extends Construct {
       });
     }
 
+    // ---- type=openapi -----------------------------------------------------
+    // Mirrors aws_s3_bucket.tool_schemas + aws_s3_object.openapi_schema and the
+    // ReadOpenApiSchemas statement in terraform/gateway.tf.
+    //
+    // The Gateway loads an OpenAPI schema from S3 and nowhere else, and it loads it AS
+    // THE GATEWAY ROLE. Before this existed the role had no s3:GetObject at all, so
+    // `type: "openapi"` could not work in either plane: target creation failed on a
+    // schema it was not allowed to read, and the message named neither the bucket nor
+    // the permission.
+    const openApiTools = entries.filter(([, s]) => s.type === "openapi");
+    const schemaSourceTools = openApiTools.filter(([, s]) => s.source);
+    const schemaReadArns: string[] = [];
+    /** tool name -> its upload, so the target can depend on the object existing. */
+    const schemaUploads: Record<string, s3deploy.BucketDeployment> = {};
+
+    if (schemaSourceTools.length) {
+      // Created only when a tool actually uses `source`, so a deployment that hosts
+      // its own schemas — or declares no openapi tool — pays for no bucket.
+      //
+      // Private and encrypted, and NOT because these schemas are secret (the one this
+      // sample ships describes a public API). A schema enumerates which operations an
+      // agent may reach, so it is part of the authorization surface, and a
+      // world-readable copy is an inventory of your endpoints for anyone who finds the
+      // bucket.
+      const schemaBucket = new s3.Bucket(this, "ToolSchemasBucket", {
+        // Same shape as the KB buckets: `agentcore-<dashed agent name>-<what>-<account>`.
+        // The agent name is dashed because an S3 bucket name may not contain an
+        // underscore, and the region is NOT in it because the first version of this
+        // name was 64 characters — one over the limit — which fails at synth.
+        bucketName: `agentcore-${dashName}-schemas-${account}`,
+        blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+        encryption: s3.BucketEncryption.S3_MANAGED,
+        versioned: true,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+        autoDeleteObjects: true,
+      });
+      schemaReadArns.push(schemaBucket.arnForObjects("*"));
+
+      for (const [name, spec] of schemaSourceTools) {
+        // One deployment per tool, keyed by the tool name rather than by `source`, so
+        // two tools may legitimately share one schema folder and still get their own
+        // object and their own target.
+        schemaUploads[name] = new s3deploy.BucketDeployment(this, `ToolSchema-${name}`, {
+          destinationBucket: schemaBucket,
+          destinationKeyPrefix: name,
+          sources: [
+            s3deploy.Source.asset(path.join(orchRoot, "app", "tools", spec.source!), {
+              exclude: ["*", "!openapi.json"],
+            }),
+          ],
+          prune: false,
+        });
+        this.uploadedSchemaUris[name] = schemaBucket.s3UrlForObject(`${name}/openapi.json`);
+      }
+    }
+
+    // A schema the CUSTOMER hosts still needs the grant, scoped to that exact object
+    // rather than to "*" — the URI is parsed rather than trusted wholesale so a
+    // malformed one cannot widen the grant to a whole bucket.
+    for (const [, spec] of openApiTools.filter(([, s]) => s.schemaS3Uri)) {
+      const m = /^s3:\/\/([^/]+)\/(.+)$/.exec(String(spec.schemaS3Uri));
+      if (m) schemaReadArns.push(`arn:aws:s3:::${m[1]}/${m[2]}`);
+    }
+
+    if (schemaReadArns.length) {
+      gatewayRole.addToPolicy(
+        new iam.PolicyStatement({
+          sid: "ReadOpenApiSchemas",
+          actions: ["s3:GetObject"],
+          resources: schemaReadArns,
+        })
+      );
+    }
+
     // ---- type=lambda ------------------------------------------------------
     // Mirrors the tool_lambda resources + aws_iam_role_policy.gateway_invoke_lambda
     // + aws_lambda_permission.gateway_invoke_tool_lambda in terraform/tools.tf
@@ -740,6 +824,15 @@ export class ToolPlane extends Construct {
       });
 
       if (spec.type === "kb") dependOnDefaultPolicy(target, gatewayRole);
+      // An openapi target is the one kind whose creation READS something: the Gateway
+      // fetches and parses the schema as the gateway role. So both the grant and the
+      // upload have to land first, or creation fails on a schema that is missing or
+      // unreadable — and it fails at deploy, after a clean synth.
+      if (spec.type === "openapi") {
+        dependOnDefaultPolicy(target, gatewayRole);
+        const upload = schemaUploads[name];
+        if (upload) target.node.addDependency(upload);
+      }
       if (previousTarget) target.node.addDependency(previousTarget);
       previousTarget = target;
       targets.push(target);
@@ -863,10 +956,18 @@ export class ToolPlane extends Construct {
           },
         };
 
-      case "openapi":
-        if (!spec.schemaS3Uri)
-          throw new Error(`tools.${name} has type="openapi" and so requires "schemaS3Uri".`);
-        return { openApiSchema: { s3: { uri: spec.schemaS3Uri } } };
+      case "openapi": {
+        // Either a schema you host (by URI) or one the framework uploaded from
+        // `source`. Mirrors the lambdaArn/source split below, for the same reason:
+        // a bucket name is as account-specific as a function ARN, so a committed
+        // workflow.json cannot carry one and stay deployable anywhere else.
+        const uri = spec.source ? this.uploadedSchemaUris[name] : spec.schemaS3Uri;
+        if (!uri)
+          throw new Error(
+            `tools.${name} has type="openapi" and so requires "schemaS3Uri" or "source".`
+          );
+        return { openApiSchema: { s3: { uri } } };
+      }
 
       case "lambda": {
         // Either a function you own (by ARN) or one the framework deployed from

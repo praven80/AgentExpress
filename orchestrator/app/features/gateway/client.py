@@ -181,8 +181,22 @@ def _unwrap_mcp(result):
     return result
 
 
-def _result_list(data):
-    """The list of results inside `data`, wherever this tool chose to put it."""
+def _result_list(data, row_path: str = ""):
+    """The list of results inside `data`, wherever this tool chose to put it.
+
+    `row_path` is the tool's `rowPath` from workflow.json: an explicit dot path, for a
+    target that nests its records somewhere _RESULT_PATHS does not guess. It is tried
+    FIRST and, when it is set, it is the only answer accepted — probing on after an
+    explicit path failed would silently hand back a different list than the one the
+    config named, and an agent computing over the wrong list cannot tell.
+    """
+    if row_path:
+        node = data
+        for key in row_path.split("."):
+            if not isinstance(node, dict) or key not in node:
+                return None
+            node = node[key]
+        return node if isinstance(node, list) else None
     if isinstance(data, list):
         return data
     if not isinstance(data, dict):
@@ -470,7 +484,7 @@ async def _query_tool_impl(tool_key: str, query: str,
     return (_extract_chunks(result), "gateway")
 
 
-def extract_rows(result) -> list[dict]:
+def extract_rows(result, row_path: str = "") -> list[dict]:
     """A tool result as its LIST OF RECORDS, before it is flattened to prose.
 
     `_extract_chunks` renders a result for a model to read. This returns the same
@@ -493,12 +507,13 @@ def extract_rows(result) -> list[dict]:
     """
     data = _unwrap_mcp(result)
     if (isinstance(data, list)
-            and any(isinstance(d, dict) and _result_list(d) is not None for d in data)):
+            and any(isinstance(d, dict) and _result_list(d, row_path) is not None
+                    for d in data)):
         rows: list = []
         for part in data:
-            rows.extend(_result_list(part) or [])
+            rows.extend(_result_list(part, row_path) or [])
     else:
-        rows = _result_list(data) or []
+        rows = _result_list(data, row_path) or []
     return [r for r in rows if isinstance(r, dict)]
 
 
@@ -522,7 +537,7 @@ async def query_tool_rows(tool_key: str, query: str) -> tuple[list[dict], str]:
                       "gen_ai.tool.mode": "gateway"}):
         result = await _query_tool_impl(tool_key, query, raw=True)
     latency_ms = int((time.perf_counter() - start) * 1000)
-    rows = extract_rows(result)
+    rows = extract_rows(result, str((TOOLS.get(tool_key) or {}).get("rowPath") or ""))
     # Record the rendered text so the timeline/observability view of this call looks
     # the same as any other tool call — a reviewer should not have to know which
     # agents compute and which generate to read the trace.

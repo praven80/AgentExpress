@@ -99,6 +99,24 @@ resource "aws_iam_role_policy" "gateway" {
         Action   = ["bedrock-agentcore:InvokeGateway"]
         Resource = "arn:aws:bedrock-agentcore:${var.region}:${local.account_id}:gateway/*"
       }
+      # An OpenAPI target's schema is loaded from S3 BY THE GATEWAY, using this role.
+      # Without this statement `type: "openapi"` cannot work at all: target creation
+      # fails on a schema it may not read, and the message names neither the bucket
+      # nor the permission. Generated from config, and scoped to the exact objects
+      # the tools block declares — whether the framework uploaded the schema or the
+      # customer hosts it themselves.
+      ], length(local.openapi_tools) == 0 ? [] : [
+      {
+        Sid    = "ReadOpenApiSchemas"
+        Effect = "Allow"
+        Action = ["s3:GetObject"]
+        Resource = concat(
+          length(local.openapi_source_tools) == 0 ? [] : [
+            "${aws_s3_bucket.tool_schemas[0].arn}/*"
+          ],
+          local.external_openapi_arns,
+        )
+      }
     ])
   })
 }

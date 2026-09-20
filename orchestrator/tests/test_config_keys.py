@@ -487,3 +487,92 @@ def test_the_shipped_workflow_only_uses_declared_values():
         assert tool["type"] in vocabulary.TOOL_TYPES, label
     for action in (w.get("authorization") or {}).get("actions") or {}:
         assert action in vocabulary.AUTHORIZATION_ACTIONS, action
+
+
+# ---------------------------------------------------------------------------
+# TOOLS_JSON: three independent projections of one list
+# ---------------------------------------------------------------------------
+# The app never reads workflow.json's `tools` block in a deployment. Each IaC path
+# projects it into a TOOLS_JSON env var, and app/common/config.py projects it again as
+# the local-dev fallback. Three implementations of one decision, so drift is possible
+# and — this is the problem — SILENT: the tool still works, just without whatever the
+# missing key configured, and only under one deployment path.
+#
+# Both known instances were found by a human noticing wrong output, not by a test.
+# `publishedFrom`/`publishedTo` reached the app under Terraform and not under CDK. Then
+# `rowPath` was added to config.py and to NEITHER IaC path, and a live agent read zero
+# rows out of a response full of them, correctly reported "no lifecycle record was
+# found", and looked for all the world like a working agent against an empty API.
+
+def _read(*parts: str) -> str:
+    return (ORCH_ROOT.joinpath(*parts)).read_text()
+
+
+def _block(text: str, start: str, comment: str) -> str:
+    """The brace-balanced block beginning at `start`, with comments stripped.
+
+    Comments have to go, and finding that out cost a round trip. The first version of
+    this test searched whole files for the key name and PASSED with the projection
+    deleted — because the explanatory comment above the deleted line still said
+    "rowPath". A test that a nearby comment can satisfy is not a test.
+    """
+    at = text.index(start)
+    depth, end = 0, at
+    for i, ch in enumerate(text[at:], at):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    body = text[at:end]
+    return "\n".join(line.split(comment)[0] for line in body.splitlines())
+
+
+def test_both_iac_paths_project_every_tool_key_the_app_reads():
+    """Every key in APP_TOOL_KEYS appears in the projection EXPRESSION of both planes.
+
+    Scoped to the projection itself rather than the whole file, and with comments
+    stripped, so the only thing that can satisfy it is code that really emits the key.
+    """
+    from app.common.config import APP_TOOL_KEYS
+
+    planes = {
+        "terraform/tools.tf `tools_env`": _block(
+            _read("terraform", "tools.tf"), "tools_env = jsonencode({", "#"),
+        "cdk/lib/orchestrator-stack.ts `toolsEnv`": _block(
+            _read("cdk", "lib", "orchestrator-stack.ts"),
+            "export function toolsEnv(", "//"),
+    }
+    for key in APP_TOOL_KEYS:
+        for where, body in planes.items():
+            assert key in body, (
+                f"app/common/config.py APP_TOOL_KEYS contains {key!r}, but {where} "
+                f"does not emit it — so a tool declaring {key!r} loses it on that "
+                f"deploy path, silently, while the other path honours it.")
+
+
+def test_the_app_projection_drops_every_deploy_time_key():
+    """The other direction, and the security-relevant one. A key the IaC consumes must
+    NOT reach the app: `domains` is enforced on the Gateway target, so an app able to
+    send one would be substituting a caller-supplied scope for a boundary, and
+    `endpoint`/`lambdaArn`/`schemaS3Uri` would let a request name its own backend."""
+    from app.common.config import APP_TOOL_KEYS
+
+    for key in ("endpoint", "source", "lambdaArn", "schemaS3Uri", "toolSchema",
+                "auth", "service", "domains", "listingMode", "connectorVersion",
+                "description", "policy"):
+        assert key not in APP_TOOL_KEYS, (
+            f"{key!r} is deploy-time detail the IaC consumes; the app must not be able "
+            f"to put it in a tool request")
+
+
+def test_every_app_tool_key_is_a_declared_workflow_key():
+    """APP_TOOL_KEYS cannot contain something workflow.json may not even carry —
+    that would be a projection of a key no customer can set."""
+    from app.common.config import APP_TOOL_KEYS
+
+    declared = set(json.loads(_read("app", "keys.json"))["tool"]["keys"])
+    assert set(APP_TOOL_KEYS) <= declared, (
+        f"not keys of a tools entry: {sorted(set(APP_TOOL_KEYS) - declared)}")

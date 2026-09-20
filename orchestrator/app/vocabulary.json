@@ -72,7 +72,7 @@
   },
 
   "builtinLambdaSource": {
-    "$comment": "A `type: \"lambda\"` tool's `source`: the folder under orchestrator/app/tools/ whose code the framework zips and deploys. Closed to the one the repo ships, because a framework-deployed function needs an execution role config cannot express - the role that exists grants logs plus read-only on the PUBLIC AWS price list, which is right for that function and wrong for a connector that needs VPC config or a secret. Your own function is deployed by you and declared with `lambdaArn`; the framework only registers it as a Gateway target.",
+    "$comment": "A `type: \"lambda\"` tool's `source`: the folder under orchestrator/app/tools/ whose code the framework zips and deploys. Closed to the one the repo ships, because a framework-deployed function needs an execution role config cannot express - the role that exists grants logs plus read-only on the PUBLIC AWS price list, which is right for that function and wrong for a connector that needs VPC config or a secret. Your own function is deployed by you and declared with `lambdaArn`; the framework only registers it as a Gateway target. NOTE this closes `source` for type=\"lambda\" ONLY, via `vocabularyFor` in app/keys.json. A type=\"openapi\" `source` is deliberately OPEN: the framework only uploads a file, which needs no permissions, so closing it would force a customer to edit this framework-owned file to add a schema of their own. That one is checked by whether app/tools/<source>/openapi.json exists.",
     "values": ["pricing"]
   }
 }

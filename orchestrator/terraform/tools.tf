@@ -39,15 +39,21 @@ locals {
       # private VPC resource, none of which the Gateway can reach directly. The
       # framework does not create or deploy the function; it registers it.
       lambda_arn = try(t.lambdaArn, "")
-      # type=lambda alternative to lambdaArn: name a function the FRAMEWORK ships
-      # and deploys, so the committed config stays account-neutral (a real ARN
-      # would pin workflow.json to one AWS account). The value is a FOLDER NAME
-      # under app/tools/ — `source = "pricing"` means app/tools/pricing/ — and the
-      # validator accepts only the one the repo ships, because a framework-deployed
-      # function needs an execution role that config cannot express. A function of
-      # YOUR OWN goes in via lambdaArn, and the framework then touches neither its
-      # code nor its execution role.
-      lambda_source = try(t.source, "")
+      # `source` — let the FRAMEWORK supply this tool's artifact, so the committed
+      # config stays account-neutral (a real ARN or bucket name would pin
+      # workflow.json to one AWS account). The value is a FOLDER NAME under
+      # app/tools/, and WHICH FILE is read there depends on the type:
+      #
+      #   type=lambda    app/tools/<source>/handler.py    zipped and deployed
+      #   type=openapi   app/tools/<source>/openapi.json  uploaded, URI derived
+      #
+      # It is the alternative to lambdaArn / schemaS3Uri respectively. The accepted
+      # VALUES differ per type, and only one of the two is genuinely restricted: a
+      # framework-deployed FUNCTION runs on a role config cannot express, so that
+      # one is closed to what the repo ships a role for. An uploaded SCHEMA needs no
+      # permissions at all, so type=openapi takes any folder name and is checked by
+      # whether the file is actually there.
+      source = try(t.source, "")
       # A list of tool definitions, because ONE Lambda may publish several tools
       # (the Gateway passes the tool name through so the handler can dispatch).
       # Each entry: { name, description, properties: { <arg>: { type, required,
@@ -92,6 +98,7 @@ locals {
       # tool's DATA instead of its prose rendering (ctx.call_tool_rows). Optional:
       # only a deterministic agent needs it.
       row_fields = try(t.rowFields, {})
+      row_path   = try(t.rowPath, "")
 
       # How the Gateway discovers the server's tools:
       #   DEFAULT — the Gateway synchronises the catalog when the target is
@@ -161,8 +168,31 @@ locals {
 
   # Split by where the function comes from. `source` = one the framework ships and
   # deploys; `lambdaArn` = one you already own, which the framework only registers.
-  builtin_lambda_tools  = { for n, t in local.lambda_tools : n => t if t.lambda_source != "" }
-  external_lambda_tools = { for n, t in local.lambda_tools : n => t if t.lambda_source == "" }
+  builtin_lambda_tools  = { for n, t in local.lambda_tools : n => t if t.source != "" }
+  external_lambda_tools = { for n, t in local.lambda_tools : n => t if t.source == "" }
+
+  # The same split for OpenAPI targets, on the same key and for the same reason.
+  # `source` = a schema in app/tools/<source>/openapi.json that the framework uploads;
+  # `schemaS3Uri` = an object you already host.
+  openapi_source_tools   = { for n, t in local.openapi_tools : n => t if t.source != "" }
+  external_openapi_tools = { for n, t in local.openapi_tools : n => t if t.source == "" }
+
+  # Every openapi tool's effective schema URI, whichever way it was supplied, so the
+  # Gateway target and the IAM grant both read one map and neither has to care.
+  openapi_schema_uris = merge(
+    { for n, t in local.external_openapi_tools : n => t.schema_s3_uri },
+    { for n, t in local.openapi_source_tools :
+    n => "s3://${aws_s3_bucket.tool_schemas[0].id}/${aws_s3_object.openapi_schema[n].key}" },
+  )
+
+  # A customer-hosted schema's bucket and key, parsed out of the s3:// URI so the
+  # Gateway role can be granted GetObject on exactly that object rather than on "*".
+  # Without SOME grant the target fails at INVOKE time with an opaque schema-load
+  # error, which is what made type="openapi" unusable before this existed.
+  external_openapi_arns = [
+    for n, t in local.external_openapi_tools :
+    "arn:aws:s3:::${replace(t.schema_s3_uri, "s3://", "")}"
+  ]
 
   # Every declared lambda tool's effective ARN, whichever way it was supplied. The
   # Gateway target and the IAM grant both read this, so neither has to care.
@@ -459,6 +489,10 @@ locals {
       # ctx.call_tool_rows). Repointing the tool at another source is then a config
       # edit — set these to its field names — instead of an agent code change.
       length(keys(t.row_fields)) > 0 ? { rowFields = t.row_fields } : {},
+      # rowPath: WHERE those rows are in the response, for a target that nests them
+      # somewhere the framework does not probe for. Projected alongside rowFields
+      # because the two are useless apart — field names for rows you cannot find.
+      t.row_path != "" ? { rowPath = t.row_path } : {},
     )
   })
 }
@@ -493,9 +527,30 @@ resource "terraform_data" "tools_validation" {
       condition     = alltrue([for n, t in local.mcp_tools : t.endpoint != ""])
       error_message = "A tools entry with type=\"mcp\" requires \"endpoint\" (your MCP server's Streamable HTTP URL)."
     }
+    # --- type=openapi -----------------------------------------------------
     precondition {
-      condition     = alltrue([for n, t in local.openapi_tools : t.schema_s3_uri != ""])
-      error_message = "A tools entry with type=\"openapi\" requires \"schemaS3Uri\" (s3:// URI of the OpenAPI schema)."
+      # Exactly one source of truth for WHICH schema object to load. The Gateway can
+      # only read a schema from S3, so neither set leaves the target unable to
+      # publish any tool at all; both set is ambiguous.
+      condition = alltrue([
+        for n, t in local.openapi_tools :
+        (t.schema_s3_uri != "") != (t.source != "")
+      ])
+      error_message = "A tools entry with type=\"openapi\" needs EXACTLY ONE of \"schemaS3Uri\" (an s3:// object you already host) or \"source\" (a folder under orchestrator/app/tools/ holding openapi.json, which the framework uploads for you so the committed config carries no bucket name). Offending: ${join(", ", [for n, t in local.openapi_tools : n if(t.schema_s3_uri != "") == (t.source != "")])}."
+    }
+    precondition {
+      # The file has to BE there. Unlike type=lambda, `source` here is not closed to
+      # a known list - uploading a schema needs no permissions, so any folder name is
+      # legitimate and the only meaningful check is existence. Caught at plan time;
+      # otherwise the upload is of nothing and the Gateway target fails at invoke.
+      condition = alltrue([for n, t in local.openapi_source_tools :
+      fileexists("${path.module}/../app/tools/${t.source}/openapi.json")])
+      error_message = "A type=\"openapi\" tool's \"source\" names a folder under orchestrator/app/tools/ containing openapi.json, and that file is missing. Offending: ${join(", ", [for n, t in local.openapi_source_tools : "${n} (expected orchestrator/app/tools/${t.source}/openapi.json)" if !fileexists("${path.module}/../app/tools/${t.source}/openapi.json")])}."
+    }
+    precondition {
+      condition = alltrue([for n, t in local.external_openapi_tools :
+      can(regex("^s3://[a-z0-9.-]{3,63}/.+", t.schema_s3_uri))])
+      error_message = "A type=\"openapi\" tool's \"schemaS3Uri\" must be a full s3:// URI including the object key, e.g. \"s3://my-bucket/schemas/orders.json\". Offending: ${join(", ", [for n, t in local.external_openapi_tools : n if !can(regex("^s3://[a-z0-9.-]{3,63}/.+", t.schema_s3_uri))])}."
     }
     # --- type=lambda ------------------------------------------------------
     # The Gateway will not discover a Lambda's tools for itself: unlike an MCP
@@ -507,17 +562,17 @@ resource "terraform_data" "tools_validation" {
       # ambiguous; neither means there is nothing to register.
       condition = alltrue([
         for n, t in local.lambda_tools :
-        (t.lambda_arn != "") != (t.lambda_source != "")
+        (t.lambda_arn != "") != (t.source != "")
       ])
-      error_message = "A tools entry with type=\"lambda\" needs EXACTLY ONE of \"lambdaArn\" (a function you already own \u2014 the framework only registers it) or \"source\" (a function the framework ships and deploys). Offending: ${join(", ", [for n, t in local.lambda_tools : n if(t.lambda_arn != "") == (t.lambda_source != "")])}."
+      error_message = "A tools entry with type=\"lambda\" needs EXACTLY ONE of \"lambdaArn\" (a function you already own \u2014 the framework only registers it) or \"source\" (a function the framework ships and deploys). Offending: ${join(", ", [for n, t in local.lambda_tools : n if(t.lambda_arn != "") == (t.source != "")])}."
     }
     precondition {
       # `source` is deliberately NOT a general "deploy any directory" feature —
       # a framework-deployed function needs an execution role the config cannot
       # express, so only the built-in demo function is supported.
       condition = alltrue([for n, t in local.builtin_lambda_tools :
-      contains(local.vocab.builtinLambdaSource.values, t.lambda_source)])
-      error_message = "A type=\"lambda\" tool's \"source\" names a folder under orchestrator/app/tools/, and the only one the framework ships is \"pricing\" (orchestrator/app/tools/pricing/). It is not a general \"deploy any directory\" option: a framework-deployed function needs an execution role that config cannot express - the one that exists grants logs plus read-only on the PUBLIC AWS price list, which is right for that function and wrong for a warehouse or database connector that needs VPC config and a secret. To use a function of your own: deploy it yourself, then set \"lambdaArn\" instead of \"source\". Offending: ${join(", ", [for n, t in local.builtin_lambda_tools : n if !contains(local.vocab.builtinLambdaSource.values, t.lambda_source)])}."
+      contains(local.vocab.builtinLambdaSource.values, t.source)])
+      error_message = "A type=\"lambda\" tool's \"source\" names a folder under orchestrator/app/tools/, and the only one the framework ships is \"pricing\" (orchestrator/app/tools/pricing/). It is not a general \"deploy any directory\" option: a framework-deployed function needs an execution role that config cannot express - the one that exists grants logs plus read-only on the PUBLIC AWS price list, which is right for that function and wrong for a warehouse or database connector that needs VPC config and a secret. To use a function of your own: deploy it yourself, then set \"lambdaArn\" instead of \"source\". Offending: ${join(", ", [for n, t in local.builtin_lambda_tools : n if !contains(local.vocab.builtinLambdaSource.values, t.source)])}."
     }
     precondition {
       condition = alltrue([
@@ -935,6 +990,71 @@ resource "aws_bedrockagentcore_gateway_target" "mcp_server" {
 # The Gateway translates MCP tool calls into HTTP requests. Tool names come from
 # the schema's operationIds, so you control them (and can avoid the "___"
 # delimiter problem entirely).
+#
+# The Gateway loads the schema from S3 and nowhere else, which leaves a customer two
+# ways to supply one, and the framework supports both:
+#
+#   schemaS3Uri  an object YOU host. The framework uploads nothing and only grants
+#                the Gateway role GetObject on that exact key.
+#   source       app/tools/<source>/openapi.json, which the framework uploads to a
+#                bucket it owns and whose URI it then derives. This is what keeps a
+#                committed workflow.json account-neutral: a bucket name is as
+#                account-specific as a Lambda ARN, so hardcoding one would make the
+#                sample undeployable anywhere but the account that wrote it.
+
+# Created only when some openapi tool actually uses `source`, so a deployment with no
+# openapi tool - or one that hosts its own schema - pays for no bucket.
+resource "aws_s3_bucket" "tool_schemas" {
+  count = length(local.openapi_source_tools) > 0 ? 1 : 0
+  # Same shape as the KB buckets in kb.tf, and dashed for the same reason: an S3
+  # bucket name may not contain an underscore, which var.agent_name does.
+  bucket        = "agentcore-${replace(var.agent_name, "_", "-")}-schemas-${local.account_id}"
+  force_destroy = true
+}
+
+# Private and encrypted, and NOT because the schemas here are secret - this one is a
+# public API. A schema describes which operations an agent may reach, so it is part of
+# the authorization surface; a readable-by-anyone copy of it is an inventory of your
+# internal endpoints for anyone who finds the bucket.
+resource "aws_s3_bucket_public_access_block" "tool_schemas" {
+  count                   = length(local.openapi_source_tools) > 0 ? 1 : 0
+  bucket                  = aws_s3_bucket.tool_schemas[0].id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "tool_schemas" {
+  count  = length(local.openapi_source_tools) > 0 ? 1 : 0
+  bucket = aws_s3_bucket.tool_schemas[0].id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_versioning" "tool_schemas" {
+  count  = length(local.openapi_source_tools) > 0 ? 1 : 0
+  bucket = aws_s3_bucket.tool_schemas[0].id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_object" "openapi_schema" {
+  for_each = local.openapi_source_tools
+  bucket   = aws_s3_bucket.tool_schemas[0].id
+  key      = "${each.key}/openapi.json"
+  source   = "${path.module}/../app/tools/${each.value.source}/openapi.json"
+  # So editing the schema re-uploads it AND replaces the Gateway target, which is
+  # the only way a schema change reaches the published tools. Without this the
+  # object is uploaded once and every later edit is silently ignored.
+  etag         = filemd5("${path.module}/../app/tools/${each.value.source}/openapi.json")
+  content_type = "application/json"
+}
+
 resource "aws_bedrockagentcore_gateway_target" "openapi" {
   for_each           = local.openapi_tools
   gateway_identifier = aws_bedrockagentcore_gateway.mcp[0].gateway_id
@@ -945,11 +1065,16 @@ resource "aws_bedrockagentcore_gateway_target" "openapi" {
     mcp {
       open_api_schema {
         s3 {
-          uri = each.value.schema_s3_uri
+          # Whichever way the schema was supplied — see openapi_schema_uris.
+          uri = local.openapi_schema_uris[each.key]
         }
       }
     }
   }
+
+  # The Gateway reads the schema AS the gateway role, so the grant has to exist
+  # before the target is created or creation fails on an unreadable schema.
+  depends_on = [aws_iam_role_policy.gateway]
 
   dynamic "credential_provider_configuration" {
     for_each = (each.value.auth == "apikey" || each.value.api_key != "") ? [1] : []
@@ -1004,7 +1129,7 @@ resource "aws_bedrockagentcore_gateway_target" "openapi" {
 data "archive_file" "tool_lambda" {
   for_each    = local.builtin_lambda_tools
   type        = "zip"
-  source_dir  = "${path.module}/../app/tools/${each.value.lambda_source}"
+  source_dir  = "${path.module}/../app/tools/${each.value.source}"
   output_path = "${path.module}/.build/${each.key}.zip"
 }
 

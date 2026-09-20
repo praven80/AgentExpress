@@ -207,6 +207,26 @@ def upstream_of(agent_id: str) -> list[str]:
         f"to upstream_of() to match.")
 
 
+#: The ONLY tool keys the running app ever sees. Three places have to agree on this
+#: list — this one, `tools_env` in terraform/tools.tf, and `toolsEnv` in
+#: cdk/lib/orchestrator-stack.ts — because each builds TOOLS_JSON independently. A key
+#: missing from one of them is SILENT: the tool still works, just without whatever that
+#: key configured, and only under that one deployment path. It has happened twice.
+#: `publishedFrom`/`publishedTo` reached the app under Terraform and not under CDK; then
+#: `rowPath` was added here and to neither IaC path, so a live agent read zero rows from
+#: a response that was full of them and reported "nothing found". Named as a constant so
+#: tests/test_config_keys.py can hold all three to it.
+#:
+#: What is deliberately NOT here is as load-bearing as what is. `endpoint`, `source`,
+#: `lambdaArn`, `schemaS3Uri`, `toolSchema`, `auth` and `policy` are deploy-time detail
+#: the IaC consumes; the app neither needs them nor should be able to put them in a
+#: request. `domains` is the sharpest case: web search's domain filter is enforced ON THE
+#: GATEWAY TARGET, so if the app could send one it would be offering a caller-supplied
+#: scope in place of a boundary.
+APP_TOOL_KEYS = ("type", "corpora", "maxResults", "publishedFrom", "publishedTo",
+                 "call", "arg", "args", "rowPath", "rowFields")
+
+
 def _load_tools() -> dict:
     """The `tools` block from app/workflow.json, injected by the IaC as TOOLS_JSON:
 
@@ -228,16 +248,8 @@ def _load_tools() -> dict:
             pass
     # Local dev / BFF: fall back to the `tools` block of the workflow already
     # loaded above, keeping only the call-shape fields the app needs.
-    # Must match the projection both IaC paths build (terraform/tools.tf
-    # `tools_env`, cdk/lib/orchestrator-stack.ts `toolsEnv`). A field missing here
-    # is silently dropped on the fallback path, which is how `publishedFrom` /
-    # `publishedTo` came to work under one deployment and not the other.
-    # `domains` is deliberately absent: web search's domain filter is applied on the
-    # Gateway target, so the app neither needs it nor should be able to send one.
-    keep = ("type", "corpora", "maxResults",
-            "publishedFrom", "publishedTo", "call", "arg", "args", "rowFields")
     return {
-        name: {k: v for k, v in (spec or {}).items() if k in keep}
+        name: {k: v for k, v in (spec or {}).items() if k in APP_TOOL_KEYS}
         for name, spec in (WORKFLOW.get("tools") or {}).items()
     }
 

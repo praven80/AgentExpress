@@ -255,6 +255,11 @@
         "keys": ["lambdaArn", "source"],
         "appliesTo": ["lambda"],
         "why": "lambdaArn = a function you already own, which the framework only registers. source = one the framework ships and deploys. Same rule, for the same reason, as an a2a agent's agentCard vs source."
+      },
+      {
+        "keys": ["schemaS3Uri", "source"],
+        "appliesTo": ["openapi"],
+        "why": "The Gateway can only load an OpenAPI schema from S3, so one of the two has to say which object. schemaS3Uri = one you already host. source = a file in app/tools/<source>/openapi.json that the framework uploads for you, so the committed config carries no bucket name and works in any account. Neither set leaves the target with no schema; both set is ambiguous."
       }
     ],
     "$removed": {
@@ -302,8 +307,7 @@
         "group": "target",
         "type": "string",
         "appliesTo": ["openapi"],
-        "requiredFor": ["openapi"],
-        "doc": "s3:// URI of the OpenAPI schema describing the REST API to expose.",
+        "doc": "s3:// URI of an OpenAPI schema YOU already host. The framework reads nothing and uploads nothing; it points the Gateway target at this object and grants the Gateway role GetObject on it. Exclusive with source.",
         "reads": "tools.tf, tool-plane.ts"
       },
       "lambdaArn": {
@@ -316,10 +320,10 @@
       "source": {
         "group": "target",
         "type": "string",
-        "appliesTo": ["lambda"],
-        "vocabulary": "builtinLambdaSource",
-        "doc": "Deploy the demo function this repo ships instead of naming your own ARN. Deliberately not a general \"deploy any directory\" option: a framework-deployed function needs an execution role config cannot express.",
-        "reads": "tools.tf builtin_lambda_tools, tool-plane.ts"
+        "appliesTo": ["lambda", "openapi"],
+        "vocabularyFor": { "lambda": "builtinLambdaSource" },
+        "doc": "Let the framework supply this tool's artifact from orchestrator/app/tools/<source>/ instead of you hosting it, so the committed config names no ARN and no bucket and works in any account. type=\"lambda\" reads handler.py there, zips it and deploys it; type=\"openapi\" reads openapi.json there, uploads it and derives the s3:// URI. Closed to a known set for \"lambda\" only, because a framework-deployed FUNCTION runs on a role config cannot express; an uploaded SCHEMA needs no permissions, so \"openapi\" takes any folder name and is checked by whether the file is there. Exclusive with lambdaArn / schemaS3Uri.",
+        "reads": "tools.tf builtin_lambda_tools + openapi_source_tools, tool-plane.ts"
       },
       "connectorVersion": {
         "group": "target",
@@ -356,6 +360,13 @@
         "appliesTo": ["mcp", "openapi", "lambda"],
         "doc": "Fixed extra arguments sent on every call, e.g. a page size.",
         "reads": "TOOLS_JSON -> gateway/client.py"
+      },
+      "rowPath": {
+        "group": "call",
+        "type": "string",
+        "appliesTo": ["mcp", "openapi", "lambda"],
+        "doc": "Dot path to the LIST of records in this target's response, e.g. \"result.releases\". Only needed when the list is somewhere the framework does not already probe for (results, result, items, documents, content.result, content.results) - which is common for a REST API you did not design. Without it an agent that computes sees zero rows and would report \"nothing found\" for a response that was full of data.",
+        "reads": "TOOLS_JSON -> gateway/client.py extract_rows"
       },
       "rowFields": {
         "group": "call",

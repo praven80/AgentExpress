@@ -88,10 +88,59 @@ describe("validateTools", () => {
     );
   });
 
-  it("requires a schema URI for an openapi tool", () => {
-    expect(() => validateTools({ a: { type: "openapi" } }, {}, "us-east-1")).toThrow(
-      /requires "schemaS3Uri"/
-    );
+  describe("type=openapi", () => {
+    // The Gateway loads an OpenAPI schema from S3 and nowhere else, so the config has
+    // to name an object. Two ways to do that, and the pair behaves like lambdaArn vs
+    // source for the same reason: a bucket name is as account-specific as a function
+    // ARN, so a committed workflow.json cannot carry one and stay portable.
+    it("requires exactly one of schemaS3Uri or source", () => {
+      expect(() => validateTools({ a: { type: "openapi" } }, {}, "us-east-1")).toThrow(
+        /EXACTLY ONE of "schemaS3Uri".*or "source"/s
+      );
+      expect(() =>
+        validateTools(
+          { a: { type: "openapi", schemaS3Uri: "s3://my-schemas/orders.json", source: "lifecycle" } },
+          {},
+          "us-east-1"
+        )
+      ).toThrow(/EXACTLY ONE of "schemaS3Uri"/s);
+    });
+
+    it("accepts either one on its own", () => {
+      expect(() =>
+        validateTools({ a: { type: "openapi", schemaS3Uri: "s3://my-schemas/orders.json" } }, {}, "us-east-1")
+      ).not.toThrow();
+      // No orchRoot passed, so the file-existence check is skipped — that is the
+      // documented behaviour of the optional parameter, not an accident.
+      expect(() =>
+        validateTools({ a: { type: "openapi", source: "lifecycle" } }, {}, "us-east-1")
+      ).not.toThrow();
+    });
+
+    it("rejects a schemaS3Uri that is not a full s3:// object URI", () => {
+      // A bucket with no key silently points the target at nothing. Caught here
+      // because the Gateway's own failure names neither the bucket nor the key.
+      for (const bad of ["s3://just-a-bucket", "https://b.s3.amazonaws.com/k.json", "b/k.json"]) {
+        expect(() =>
+          validateTools({ a: { type: "openapi", schemaS3Uri: bad } }, {}, "us-east-1")
+        ).toThrow(/full s3:\/\/ URI including the object key/);
+      }
+    });
+
+    it("rejects a source whose openapi.json is not on disk", () => {
+      // Only checkable when orchRoot is supplied; the real stack always supplies it.
+      expect(() =>
+        validateTools(
+          { a: { type: "openapi", source: "no-such-folder" } },
+          {},
+          "us-east-1",
+          ORCH_ROOT
+        )
+      ).toThrow(/app\/tools\/no-such-folder\/openapi\.json does not exist/);
+      expect(() =>
+        validateTools({ a: { type: "openapi", source: "lifecycle" } }, {}, "us-east-1", ORCH_ROOT)
+      ).not.toThrow();
+    });
   });
 
   it("requires a non-empty corpora list for a kb tool", () => {

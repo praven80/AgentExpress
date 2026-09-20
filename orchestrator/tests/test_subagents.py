@@ -345,17 +345,42 @@ def test_the_previewed_entry_is_already_in_canonical_order():
 TOOLS_DIR = ORCH_ROOT / "app" / "tools"
 
 
-def test_a_tool_that_the_framework_deploys_has_its_source_under_app_tools():
-    """`source` is a folder name under app/tools/, so a declared one must exist on disk —
-    otherwise the IaC zips nothing and the Gateway target points at an empty function."""
+# WHICH FILE a `source` folder must hold depends on the tool's type, because `source`
+# means "the framework supplies this tool's artifact" and the artifact differs: a
+# `lambda` target needs code to deploy, an `openapi` target needs a schema to upload.
+# Both IaC paths check exactly this, and they check it because getting it wrong is
+# silent — the upload or the zip succeeds with nothing in it and the Gateway target
+# fails later, at invoke, naming neither the folder nor the file.
+SOURCE_ARTIFACT = {"lambda": "handler.py", "openapi": "openapi.json"}
+
+
+def _source_tools():
+    """(tool name, source folder, required filename) for every tool using `source`."""
     for name, spec in (SHIPPED.get("tools") or {}).items():
         source = spec.get("source")
-        if not source:
-            continue
-        folder = TOOLS_DIR / source
-        assert (folder / "handler.py").exists(), (
+        if source:
+            yield name, source, SOURCE_ARTIFACT[spec["type"]]
+
+
+def test_a_tool_the_framework_supplies_has_its_source_under_app_tools():
+    """`source` is a folder name under app/tools/, so a declared one must exist on disk —
+    otherwise the IaC packages nothing and the Gateway target points at an empty
+    function or an absent schema."""
+    for name, source, artifact in _source_tools():
+        assert (TOOLS_DIR / source / artifact).exists(), (
             f"tools.{name} declares source {source!r}, but "
-            f"app/tools/{source}/handler.py does not exist")
+            f"app/tools/{source}/{artifact} does not exist")
+
+
+def test_every_tool_type_that_can_use_source_is_covered_by_the_artifact_map():
+    """The map above is the test's own knowledge of what `source` means per type. If a
+    sixth tool type ever accepts `source`, this fails rather than the map silently
+    KeyError-ing on the first workflow that uses it."""
+    keys = json.loads((ORCH_ROOT / "app" / "keys.json").read_text())
+    applies = keys["tool"]["keys"]["source"]["appliesTo"]
+    assert set(applies) == set(SOURCE_ARTIFACT), (
+        f"app/keys.json says `source` applies to {sorted(applies)}, but this test "
+        f"knows the artifact for {sorted(SOURCE_ARTIFACT)}")
 
 
 def test_no_tool_source_folder_is_orphaned():
@@ -389,6 +414,7 @@ def test_a_tool_function_is_not_importable_as_an_agent():
             continue
         assert not (folder / "__init__.py").exists(), (
             f"app/tools/{folder.name}/ has an __init__.py, which makes it an importable "
-            f"package — a Lambda handler is not an agent and is not imported here")
+            f"package — a tool's handler or schema is not an agent and is not "
+            f"imported here")
         assert folder.name not in (SHIPPED.get("agents") or {}), (
             f"app/tools/{folder.name}/ collides with an agent id")

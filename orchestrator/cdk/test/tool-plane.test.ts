@@ -413,3 +413,101 @@ describe("no lambda tools declared", () => {
     template.resourceCountIs("AWS::Lambda::Permission", 0);
   });
 });
+
+// ===========================================================================
+// type=openapi
+// ===========================================================================
+// The shipped workflow.json now declares one of these, so stack.test.ts covers the
+// `source` path end to end. What is here is the part that file cannot reach: the
+// customer-hosted `schemaS3Uri` path, and the IAM grant that made the whole tool type
+// work. That grant did not exist before — the Gateway role had no s3:GetObject at all,
+// so an openapi target failed when the Gateway tried to LOAD its schema, with a message
+// naming neither the bucket nor the permission. A tool type that cannot work is worse
+// than one that is absent, because the config accepts it.
+describe("type=openapi", () => {
+  const SOURCE_TOOL: ToolSpec = {
+    type: "openapi",
+    description: "Product lifecycle dates, from a schema the framework uploads.",
+    source: "lifecycle",
+    call: "getProductLifecycle",
+    arg: "product",
+  };
+  const HOSTED_TOOL: ToolSpec = {
+    type: "openapi",
+    description: "An API whose schema the customer already hosts.",
+    schemaS3Uri: "s3://customer-schemas/orders/v2.json",
+    call: "listOrders",
+    arg: "query",
+  };
+
+  it("uploads a `source` schema and points the target at the derived URI", () => {
+    // The whole reason `source` exists: a bucket name is as account-specific as a
+    // function ARN, so a committed workflow.json cannot carry one. The URI is
+    // therefore DERIVED, and the target must read the derived value rather than a
+    // literal — otherwise the sample only deploys in the account that wrote it.
+    const template = plane({ lifecycle: SOURCE_TOOL });
+    template.hasResourceProperties("AWS::S3::Bucket", {
+      BucketName: `agentcore-test-orch-schemas-${ACCOUNT}`,
+      PublicAccessBlockConfiguration: {
+        BlockPublicAcls: true,
+        BlockPublicPolicy: true,
+        IgnorePublicAcls: true,
+        RestrictPublicBuckets: true,
+      },
+      VersioningConfiguration: { Status: "Enabled" },
+    });
+    const target = Object.values<any>(
+      template.findResources("AWS::BedrockAgentCore::GatewayTarget")
+    )[0];
+    const uri = target.Properties.TargetConfiguration.Mcp.OpenApiSchema.S3.Uri;
+    // Built from the bucket ref, so it is a CFN join rather than a plain string.
+    expect(JSON.stringify(uri)).toContain("lifecycle/openapi.json");
+  });
+
+  it("creates no bucket when every schema is customer-hosted", () => {
+    // A deployment that hosts its own schemas should pay for nothing. The bucket is
+    // conditional on some tool actually using `source`.
+    const template = plane({ orders: HOSTED_TOOL });
+    const buckets = Object.values<any>(template.findResources("AWS::S3::Bucket")).filter(
+      (b) => String(b.Properties?.BucketName ?? "").includes("schemas")
+    );
+    expect(buckets).toHaveLength(0);
+    const target = Object.values<any>(
+      template.findResources("AWS::BedrockAgentCore::GatewayTarget")
+    )[0];
+    expect(target.Properties.TargetConfiguration.Mcp.OpenApiSchema.S3.Uri).toEqual(
+      "s3://customer-schemas/orders/v2.json"
+    );
+  });
+
+  it("grants the Gateway role GetObject on exactly the schema objects declared", () => {
+    // Scoped to the object, not the bucket and not "*". A schema enumerates which
+    // operations an agent may reach, so read access to all of them is a wider grant
+    // than this tool type needs.
+    const template = plane({ lifecycle: SOURCE_TOOL, orders: HOSTED_TOOL });
+    const grant = statements(template).find((s) => s.Sid === "ReadOpenApiSchemas");
+    expect(grant).toBeDefined();
+    expect(grant.Action).toEqual("s3:GetObject");
+    const resources = asList(grant.Resource);
+    // The customer-hosted one is a literal ARN built from the parsed URI.
+    expect(resources).toContain("arn:aws:s3:::customer-schemas/orders/v2.json");
+    // The framework-uploaded one is a ref to the bucket it just created.
+    expect(JSON.stringify(resources)).toContain("ToolSchemasBucket");
+  });
+
+  it("adds no grant at all when no openapi tool is declared", () => {
+    const template = plane({ fn: LAMBDA_TOOL });
+    expect(statements(template).find((s) => s.Sid === "ReadOpenApiSchemas")).toBeUndefined();
+  });
+
+  it("publishes a Cedar permit for an openapi tool like any other type", () => {
+    // The tool type must not be a hole in authorization. `openapi` is the one type
+    // whose tool NAMES come from the schema's operationIds rather than from config,
+    // which is exactly the case where a permit could plausibly have been skipped.
+    const template = plane({ lifecycle: SOURCE_TOOL });
+    const policies = Object.values<any>(
+      template.findResources("AWS::BedrockAgentCore::Policy")
+    );
+    expect(JSON.stringify(policies)).toContain("permit_lifecycle");
+  });
+});

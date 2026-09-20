@@ -131,6 +131,22 @@
           }
         }
       ]
+    },
+    "lifecycle": {
+      "type": "openapi",
+      "description": "Support and end-of-life dates for versioned products, via a REST API described by an OpenAPI schema. The type=\"openapi\" demonstration: a service that already speaks HTTP and already has a contract needs no function and no MCP server - the Gateway loads the schema, publishes each operationId as a tool, and translates the call. Returns DATES as published, never a judgement about them.",
+      "source": "lifecycle",
+      "call": "getProductLifecycle",
+      "arg": "product",
+      "rowPath": "result.releases",
+      "rowFields": {
+        "version": "name",
+        "released": "releaseDate",
+        "activeUntil": "eoasFrom",
+        "supportedUntil": "eolFrom",
+        "isEol": "isEol",
+        "isLts": "isLts"
+      }
     }
   },
   "agents": {
@@ -264,6 +280,21 @@
           "evaluators": ["Builtin.Faithfulness", "Builtin.Coherence", "Builtin.Conciseness"]
         }
       }
+    },
+    "lifecycle_research": {
+      "name": "Lifecycle Research",
+      "runtime": "main",
+      "produces": "research-finding",
+      "maxTokens": 1500,
+      "tool": "lifecycle",
+      "agentcore": {
+        "evaluations": {
+          "enabled": true,
+          "auto": false,
+          "evaluators": ["Builtin.Faithfulness", "Builtin.ResponseRelevance"]
+        },
+        "policy": { "enabled": true }
+      }
     }
   },
   "steps": [
@@ -278,7 +309,13 @@
       }
     },
     {
-      "parallel": ["knowledge_research", "web_search", "documentation_search", "cost_research"],
+      "parallel": [
+        "knowledge_research",
+        "web_search",
+        "documentation_search",
+        "cost_research",
+        "lifecycle_research"
+      ],
       "hitl": true,
       "gateId": "research",
       "gateName": "Research"
