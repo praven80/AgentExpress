@@ -50,7 +50,7 @@ and that is a working human-reviewed pipeline. No tools, no guardrail, no `runti
 defaults to `main`), no `agentcore` block. Add each of those when you want what it does,
 not before.
 
-For scale: the shipped eight-agent sample uses **6 keys per agent** on average and 11
+For scale: the shipped nine-agent sample uses **6 keys per agent** on average and 11
 distinct agent keys in total. The full tables below are a reference, not a checklist.
 
 ## Two commands
@@ -447,8 +447,8 @@ Five types:
 | `kb` | Bedrock Knowledge Base over `kb_docs/`, on S3 Vectors | `corpora` |
 | `websearch` | The AWS-managed AgentCore Web Search connector | — |
 | `mcp` | Any remote MCP server over Streamable HTTP | `endpoint` |
-| `openapi` | Any REST API, from an OpenAPI schema in S3 | `schemaS3Uri` |
-| `lambda` | Any Lambda you own | `lambdaArn` **or** `source`, plus `toolSchema` |
+| `openapi` | Any REST API, from an OpenAPI schema in S3 | `schemaS3Uri` **or** `source` |
+| `lambda` | A Lambda — yours, or one the framework deploys | `lambdaArn` **or** `source`, plus `toolSchema` |
 
 Shared keys:
 
@@ -459,6 +459,7 @@ Shared keys:
 | `arg` | The parameter the agent's query goes into. Default `query`. This is what makes an arbitrary MCP server reachable from config: every server names its parameters differently. |
 | `args` | Fixed extra arguments sent on every call. |
 | `rowFields` | Maps the roles an agent needs to the field names your payload actually uses, so an agent that *computes* from tool output stays config-driven. See [`rowFields`](#rowfields--for-an-agent-that-computes-rather-than-narrates) below. |
+| `rowPath` | Dot path to the **list** of records in the response, e.g. `result.releases`. Needed only when the list is somewhere the framework does not already probe for (`results`, `result`, `items`, `documents`, `content.result`, `content.results`) — common for a REST API you did not design. Pairs with `rowFields`: this says *where* the rows are, that says what they are called. Without it an agent that computes sees **zero** rows and reports "nothing found" for a response that was full of data, which is exactly how it was first found. |
 | `auth` | Outbound auth to the endpoint: `none`, `apikey` (vaulted, sent as `X-API-Key`), `sigv4` (the Gateway signs with its own role — no secret). |
 | `policy.tool` | Narrow the Cedar permit to one tool name. Omit for a target-level permit, which is what a remote MCP server needs since its tool names aren't known at deploy time. |
 | `policy.restrictTo` | Argument allow-lists, e.g. `{ "filter": ["reference"] }`. Enforced at the Gateway, so a prompt-injected attempt to widen access is refused by infrastructure rather than by prompt wording. |
@@ -538,6 +539,61 @@ fine; nothing splits on `___`.
 paginated, and a target whose tools land on page two looks empty if you only read
 page one.
 
+### `type: "openapi"`
+
+For a service that already speaks HTTP and already has a contract: an internal
+microservice, a partner API, a vendor's catalogue. The Gateway loads the schema,
+publishes **each `operationId` in it** as an MCP tool, and translates the call into an
+HTTP request. There is no function to write and no server to run — the API is reached
+as it already is.
+
+```json
+"lifecycle": {
+  "type": "openapi",
+  "description": "Support and end-of-life dates for versioned products.",
+  "source": "lifecycle",
+  "call": "getProductLifecycle",
+  "arg": "product",
+  "rowPath": "result.releases",
+  "rowFields": { "version": "name", "supportedUntil": "eolFrom", "isEol": "isEol" }
+}
+```
+
+**`call` is an `operationId`, and `arg` is a parameter name from the schema.** Both are
+yours to choose, because you wrote the schema — which also means you can avoid the
+`___` delimiter awkwardness that `mcp` targets inherit.
+
+**Supply the schema one of two ways.** The Gateway can only load one from S3, so one of
+these has to say which object:
+
+- `schemaS3Uri` — an object **you** host, e.g. `s3://my-schemas/orders/v2.json`. The
+  framework uploads nothing; it points the target at that key and grants the Gateway
+  role `GetObject` on exactly it.
+- `source` — a folder under `orchestrator/app/tools/` holding `openapi.json`, which the
+  framework uploads to a bucket it owns and whose URI it then derives. This is what
+  keeps a committed `workflow.json` account-neutral: **a bucket name is as
+  account-specific as a Lambda ARN**, so hardcoding one makes the config undeployable
+  anywhere else. Unlike `source` on a `lambda` tool, this takes **any** folder name —
+  uploading a file needs no permissions, so there is nothing to restrict, and the check
+  is simply whether the file is there.
+
+**The schema is the allow-list, so keep it small.** Describe the one or two operations
+the agent needs, not the service. Anything you leave out is unreachable — not merely
+undocumented — and the same goes for response fields. The schema this sample ships is
+~80 lines against an API that publishes far more.
+
+**Write down where the rows are.** A REST API you did not design nests its records
+wherever it likes. This one returns `{"result": {"releases": [...]}}`, which none of the
+locations the framework probes for matches, so `rowPath` names it. Skip it and an agent
+that computes gets zero rows from a full response and truthfully reports finding
+nothing — a failure that looks exactly like a working agent against an empty API.
+
+**A wrong identifier is a 404, not an empty result.** An `openapi` target is addressed
+by path, so there is no fuzzy matching: an agent that builds a path segment from model
+output should expect individual calls to fail and say which ones did, rather than
+failing the run. See `app/subagents/lifecycle_research/agent.py`, which collects the
+identifiers that did not resolve and names them in the asset's limitations.
+
 ### `type: "lambda"`
 
 The escape hatch: a Lambda reaches what the Gateway cannot — a warehouse (Redshift,
@@ -563,11 +619,20 @@ Supply the function **one** of two ways:
   beside `app/tools/pricing/` if you like the symmetry — nothing reads it there unless
   `source` names it.
 
-  `app/tools/` is excluded from the orchestrator container image, because these
-  functions run as Lambdas and the orchestrator calls them through the Gateway rather
-  than importing them. It is the only *code* under `app/` that is excluded — the other
-  two exclusions there, `app/keys.json` and `app/workflow.schema.json`, are
-  editor-facing documentation the runtime never reads.
+  **`source` means the same thing for `type: "openapi"`** — "the framework supplies this
+  tool's artifact from `app/tools/<source>/`" — and only the artifact differs:
+  `handler.py` here, `openapi.json` there. The accepted VALUES differ because only one
+  of the two restrictions is real. A deployed *function* needs an execution role, so it
+  is closed; an uploaded *schema* needs no permissions, so `openapi` takes any folder
+  name. Your editor enforces exactly that split, because the enum is attached to the
+  `lambda` branch of the schema only.
+
+  `app/tools/` is excluded from the orchestrator container image, because nothing in it
+  runs inside the container — a `lambda` tool's handler runs as its own Lambda and an
+  `openapi` tool's schema is read by the Gateway, and the orchestrator reaches both
+  through the Gateway rather than importing anything. It is the only *code* under `app/`
+  that is excluded — the other two exclusions there, `app/keys.json` and
+  `app/workflow.schema.json`, are editor-facing documentation the runtime never reads.
 
 **What the shipped demo does, and why it is that.** `aws_prices(services, region)`
 takes service names and returns their real on-demand unit rates from the AWS Price
@@ -753,7 +818,7 @@ review gate on the same step the human approves first, then the branch reads the
 output they approved.
 
 **The branch this sample ships**, on its intake step — two guards that fire only on a
-degenerate brief, so the eight-agent demo is unchanged:
+degenerate brief, so the nine-agent demo is unchanged:
 
 ```json
 { "agent": "intake", "hitl": true,

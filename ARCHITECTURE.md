@@ -269,7 +269,7 @@ different boundaries, both config-driven.
   The orchestrator's node body (`AgentCoreRuntimeAgent`) calls `InvokeAgentRuntime`
   with the same inputs an in-process agent would read, and returns the output. Same
   `Agent` interface either way, so the graph wiring is identical — placement is
-  config only. This sample ships three of its eight agents as `dedicated`
+  config only. This sample ships three of its nine agents as `dedicated`
   (`knowledge_research`, `web_search`, `documentation_search`), two as `a2a`
   (`analysis`, `recommendation`); the rest are `main`.
 - `runtime: "a2a"` is the third value, and it is not a placement of your code — it is a
@@ -328,7 +328,7 @@ different boundaries, both config-driven.
   | `kb` | Lambda | `bedrock:Retrieve` against a Bedrock Knowledge Base on S3 Vectors |
   | `websearch` | **connector** (`connectorId: web-search`) | the AWS-managed AgentCore Web Search index |
   | `mcp` | MCP server | any remote MCP server over Streamable HTTP |
-  | `openapi` | OpenAPI schema | any REST API, from a schema in S3 |
+  | `openapi` | OpenAPI schema | any REST API, from a schema in S3. Either `schemaS3Uri` (an object **you** host) or `source` (a folder under `orchestrator/app/tools/` holding `openapi.json`, which the framework uploads and whose URI it derives). The Gateway reads it as its own role, so both planes grant `s3:GetObject` on exactly the objects declared |
   | `lambda` | Lambda | a function — the escape hatch for a warehouse, an RDBMS, an internal service, or anything inside a VPC. Either `lambdaArn` (one **you** deployed, with whatever role and VPC config it needs) or `source` (a folder under `orchestrator/app/tools/` the framework packages and deploys for you, on a fixed least-privilege role) |
 
   A target's KEY is both its Gateway name and the label an agent binds to via its

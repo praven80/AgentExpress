@@ -10,7 +10,7 @@ Memory, Identity, Observability, Guardrails, Evaluations, Policy, Optimization),
 all declared in one `workflow.json`.
 
 This is a **reference pattern**, not a finished product for any one domain. The
-sample topic (`"Design a serverless data pipeline on AWS"`) and the eight agents
+sample topic (`"Design a serverless data pipeline on AWS"`) and the nine agents
 are intentionally generic — swap the prompts, contracts, and Knowledge Base corpus
 for your use case.
 
@@ -80,8 +80,8 @@ for your use case.
   order, one gate after both), side by side so the difference is explicit.
 - **Five tool patterns, one config block** — every data source an agent can reach
   is declared in the `tools` block of `workflow.json`, and both IaC paths generate
-  the Gateway target **and** the Cedar permit from it. The sample ships **four live
-  side by side**, one per agent in the parallel research stage:
+  the Gateway target **and** the Cedar permit from it. The sample ships **all five
+  live side by side**, one per agent in the parallel research stage:
   **`kb`** (Bedrock Knowledge Base on **S3 Vectors**, corpus-scoped via metadata
   filtering), **`websearch`** (the AWS-managed **AgentCore Web Search** connector),
   **`mcp`** (**any** remote MCP server — swap the endpoint; the default is AWS's fully
@@ -92,8 +92,13 @@ for your use case.
   **you** already deployed, or give `source` and the framework packages and deploys
   `orchestrator/app/tools/<source>/` for you. The one in this sample takes the second
   form — `source: "pricing"` builds `app/tools/pricing/`, which queries the public AWS
-  Price List Query API. The fifth, **`openapi`**, fronts a REST API from a schema in S3.
-  Adding a data source is a JSON edit: no HCL, no TypeScript, no policy to write.
+  Price List Query API. And **`openapi`** fronts a REST API that already speaks HTTP
+  and already has a contract, from a schema in S3: the Gateway publishes each
+  `operationId` as a tool and translates the call, so there is no function to write
+  and no server to run. `source` works here too — `source: "lifecycle"` uploads
+  `app/tools/lifecycle/openapi.json` and derives the URI, which is what keeps the
+  committed config free of a bucket name. Adding a data source is a JSON edit: no HCL,
+  no TypeScript, no policy to write.
 - **Human-in-the-loop (HITL)** — approval gates with **approve / revise / deny**
   after a single agent, after the **parallel group** (revise re-runs only the
   agents you flag), and after the **sequential group** (revise re-runs the whole
@@ -124,7 +129,7 @@ for your use case.
   orchestrator (`runtime: "main"`) or, by flipping one config field, in its **own
   dedicated AgentCore Runtime** (`runtime: "dedicated"`), invoked cross-runtime
   via `InvokeAgentRuntime` with the **trace context propagated** so a run is one
-  distributed trace. In this sample three of the four research agents run on their own
+  distributed trace. In this sample three of the five research agents run on their own
   dedicated runtimes; the rest run in-process.
 - **Configuration-driven identity** — one variable (`idp`) selects **Cognito**,
   **Auth0**, or **no login** for both auth boundaries: end-user **SPA login** for the
@@ -205,20 +210,20 @@ deliberately contrasts a **parallel** group with a **sequential** group:
 
 Agents are keyed by **semantic ids** in `workflow.json` (e.g. `intake`,
 `analysis`); each agent whose code you ship has a self-contained package under
-`app/subagents/<id>/`. Two of the eight do not, because they are not yours to ship —
+`app/subagents/<id>/`. Two of the nine do not, because they are not yours to ship —
 see stage 3.
 
 | # | Stage | Agent id(s) | Pattern | Notes |
 |---|-------|-------------|---------|-------|
 | 1 | Request Intake | `intake` | single | LLM turns the request into a structured brief; HITL gate after, then a **`branch`** on that brief (see below) |
-| 2 | Research | `knowledge_research`, `web_search`, `documentation_search`, `cost_research` | **parallel** (**RAG** ‖ **Web Search** ‖ **MCP** ‖ **Lambda**), the first three on a **dedicated runtime** | run concurrently — one per tool pattern; one HITL group gate after all four |
+| 2 | Research | `knowledge_research`, `web_search`, `documentation_search`, `cost_research`, `lifecycle_research` | **parallel** (**RAG** ‖ **Web Search** ‖ **MCP** ‖ **Lambda** ‖ **OpenAPI**), the first three on a **dedicated runtime** | run concurrently — one per tool pattern, so one deployment exercises all five; one HITL group gate after all five |
 | 3 | Analysis → Recommendation | `analysis`, `recommendation` | **sequential**, and both **`runtime: "a2a"`** — agents this deployment does not operate, reached over the **Agent2Agent protocol** | run one after another; one HITL gate after both complete (revise re-runs the whole chain). No folder under `app/subagents/` for either: the code is somebody else's. Both still produce real contract assets — the framework stamps the asset envelope on a structured reply, so `report` traces its sections to their `assetId`s exactly as it would a local agent's |
 | 4 | Report | `report` | terminal | assembles the final sectioned report (no gate) |
 
 Each agent entry binds to a data source with one field — `tool` (a key in the
 `tools` block) plus `corpus` for a Knowledge Base tool — and carries declarative
 `access` / `produces` metadata surfaced as chips in the UI, plus the
-`agentcore` block that switches its features on. The eight agents deliberately use
+`agentcore` block that switches its features on. The nine agents deliberately use
 **different** combinations so one deployment exercises the whole surface:
 
 | Agent | Runtime | Tool | Reasons with | Long-term memory | Guardrails | Evaluations | Policy |
@@ -228,6 +233,7 @@ Each agent entry binds to a data source with one field — `tool` (a key in the
 | `web_search` | dedicated | `websearch` | **Strands** | — | output | on demand | **enabled** |
 | `documentation_search` | dedicated | `docs` (MCP) | `ctx.llm` | — | output | on demand | **enabled** |
 | `cost_research` | main | `pricing` (**a Lambda**, from `app/tools/pricing/`) | `ctx.llm` + code | — | — | on demand | **enabled** |
+| `lifecycle_research` | main | `lifecycle` (**OpenAPI** REST target, schema from `app/tools/lifecycle/`) | `ctx.llm` + code | — | — | on demand | **enabled** |
 | `analysis` | **a2a** | its own | someone else's | semantic | output | on demand, role descriptor | outside ours |
 | `recommendation` | **a2a** | its own | someone else's | semantic + summary | output | on demand, role descriptor | outside ours |
 | `report` | main | — | `ctx.llm` | — | input + output | auto | — |
@@ -270,7 +276,7 @@ This is the branch the sample actually ships, on the intake step:
 Read it as: *if the brief has no objective there is nothing downstream can work
 with, so end the run rather than spend seven more agents; if it has no research
 questions there is nothing for the research stage to gather, so jump straight to
-analysis over the brief.* Neither fires on a normal request, so the eight-agent
+analysis over the brief.* Neither fires on a normal request, so the nine-agent
 demo is unchanged — you'll see one timeline line saying no rule matched.
 
 #### `field` is a key in the agent's OUTPUT, not in your prompt
@@ -390,7 +396,9 @@ Browser ─▶ CloudFront ─┬─▶ S3 (static UI)
                        │     (permits generated from the `tools` block)
                        ├─ target: KB retrieve Lambda ▶ Bedrock KB (S3 Vectors)   type=kb
                        ├─ target: AgentCore Web Search (managed connector)       type=websearch
-                       └─ target: your MCP server / REST API                     type=mcp | openapi
+                       ├─ target: a remote MCP server                            type=mcp
+                       ├─ target: a REST API, from an OpenAPI schema in S3       type=openapi
+                       └─ target: a Lambda (yours, or one built from app/tools/)  type=lambda
                        │
                        ├─▶ Bedrock Guardrails (ApplyGuardrail, per agent in/out)
                        ├─▶ AgentCore Evaluations (LLM-as-judge over the real run)
@@ -453,16 +461,21 @@ orchestrator/
 │   │   │                       #     (AgentCoreRuntimeAgent) vs a2a (A2AAgent, somebody else's service)
 │   │   ├── runtime.py          #   AgentCore entrypoint (start / resume / rerun_from / evaluate / insights)
 │   │   └── server.py           #   local dev server (same API + UI)
-│   ├── tools/<source>/         # YOURS TO EDIT: one folder per `type: "lambda"` tool that gives
-│   │   └── pricing/handler.py  #   `source`. The framework packages and deploys each as its own
-│   │                           #   Lambda and wires it to the Gateway. Excluded from the
-│   │                           #   orchestrator image (.dockerignore) — it runs as a Lambda, not
-│   │                           #   in the container. The sample's one function publishes
-│   │                           #   `aws_prices`: real AWS on-demand unit rates from the PUBLIC
-│   │                           #   Price List Query API (rates only, never a total)
+│   ├── tools/<source>/         # YOURS TO EDIT: one folder per tool that gives `source`, i.e.
+│   │   │                       #   asks the framework to supply its artifact. WHICH FILE depends
+│   │   │                       #   on the tool's type. Excluded from the orchestrator image
+│   │   │                       #   (.dockerignore) — these run outside the container
+│   │   ├── pricing/handler.py   #   type="lambda": zipped, deployed, wired to the Gateway.
+│   │   │                       #     Publishes `aws_prices` — real AWS on-demand unit rates
+│   │   │                       #     from the PUBLIC Price List Query API (rates, never a total)
+│   │   └── lifecycle/openapi.json # type="openapi": uploaded to S3 and the URI derived, so the
+│   │                           #     committed config carries no bucket name. Each operationId
+│   │                           #     in it becomes a tool; everything omitted is unreachable,
+│   │                           #     which makes the schema the allow-list
 │   └── subagents/<name>/       # one self-contained package per agent WHOSE CODE YOU SHIP
 │                               #   (agent.py + prompts.py + __init__.py): intake, knowledge_research,
-│                               #   web_search, documentation_search, cost_research, report.
+│                               #   web_search, documentation_search, cost_research,
+│                               #   lifecycle_research, report.
 │                               #   `analysis` and `recommendation` have no folder — they are
 │                               #   runtime: "a2a", so the code is somebody else's
 │       └── _shared/            # SAMPLE code the agents share, not framework: research.py (gather
@@ -599,7 +612,7 @@ only need the explicit calls for extra checks (see
 
 `run()` is a plain `async def`. Whatever happens inside it is yours, including
 driving another agentic framework — **per agent**, so one agent can be a Strands
-agent and the next a CrewAI crew and the next neither. Two of the four research
+agent and the next a CrewAI crew and the next neither. Two of the five research
 agents shipped here do exactly that, so the pattern is demonstrated rather than
 asserted:
 

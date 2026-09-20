@@ -468,8 +468,8 @@ from (so prefer `auto: false`, and drop Faithfulness — there is no source cont
 faithful to), and the remote agent's tool calls are outside your Cedar policy.
 
 **No local agent for it means no folder — and the sample proves it.** Its own stage 3
-(`analysis` → `recommendation`) is two `a2a` agents, so `app/subagents/` has six
-packages for eight agents.
+(`analysis` → `recommendation`) is two `a2a` agents, so `app/subagents/` has seven
+packages for nine agents.
 
 The `runtime: "a2a"` placement needs an agent you do not operate, so the framework also
 ships a real one to point at: an A2A server in its own Lambda behind an IAM-authed
@@ -626,7 +626,9 @@ the exact problem:
 
 **Tools**
 - a tool with an unknown `type`, or `type: "mcp"` with no `endpoint`
-- `type: "openapi"` with no `schemaS3Uri`
+- `type: "openapi"` with neither `schemaS3Uri` nor `source`, or with both; a `source`
+  whose `app/tools/<source>/openapi.json` is not on disk; a `schemaS3Uri` that names a
+  bucket but no object key
 - more than one `kb` or `websearch` tool
 - a `kb` tool with an empty `corpora` list
 - an agent whose `tool` doesn't match any key in `tools`

@@ -5,7 +5,7 @@ prefer `cdk deploy`. It provisions:
 
 - the **orchestrator** AgentCore Runtime (built from `../Dockerfile`, ARM64),
 - one **dedicated** AgentCore Runtime per `dedicated` agent in `../app/workflow.json`
-  (three of the four research agents),
+  (three of the five research agents),
 - **DynamoDB** tables — status, events, telemetry (+ `by_date` GSI), insights,
 - **AgentCore Memory ×2** — the LangGraph checkpointer *and* the long-term store
   (semantic + summary strategies) that `memory.longTerm` agents recall from,
