@@ -102,7 +102,7 @@ resource "aws_lambda_function" "a2a" {
   function_name    = "A2AAgent-${var.agent_name}"
   description      = "Stand-in A2A (Agent2Agent) agent for runtime = \"a2a\""
   role             = aws_iam_role.a2a_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.13"
   handler          = "handler.lambda_handler"
   filename         = data.archive_file.a2a_lambda[0].output_path
   source_code_hash = data.archive_file.a2a_lambda[0].output_base64sha256
@@ -163,10 +163,24 @@ resource "aws_iam_role_policy" "runtime_invoke_a2a" {
   role  = aws_iam_role.runtime.id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["lambda:InvokeFunctionUrl"]
-      Resource = aws_lambda_function.a2a[0].arn
-    }]
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["lambda:InvokeFunctionUrl"]
+        Resource = aws_lambda_function.a2a[0].arn
+      },
+      # BOTH actions are required, which the docs do not spell out: a Function URL
+      # request signed by a principal holding only `lambda:InvokeFunctionUrl` is
+      # rejected with a bare 403 before the function is ever entered (verified
+      # live — the identical request succeeds the moment this statement exists).
+      # The condition keeps the grant to URL traffic, so this does not quietly
+      # become a licence to call the function through the plain Invoke API.
+      {
+        Effect    = "Allow"
+        Action    = ["lambda:InvokeFunction"]
+        Resource  = aws_lambda_function.a2a[0].arn
+        Condition = { Bool = { "lambda:InvokedViaFunctionUrl" = "true" } }
+      },
+    ]
   })
 }
