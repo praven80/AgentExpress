@@ -73,7 +73,13 @@ locals {
           ]
         }
       ]
-      max_results = try(t.maxResults, local.tool_defaults_by_type.maxResults[lower(try(t.type, ""))])
+      # `maxResults` applies to kb and websearch only, so `lookup` with a null fallback
+      # rather than an index: a lambda/mcp/openapi tool has no per-type default, and
+      # indexing the map for one of them fails the whole plan. Null is honest here —
+      # nothing reads this field for those types (tools_env projects it for websearch,
+      # kb_max_results reads it for the kb) — whereas a number would be a default for a
+      # key that does not apply.
+      max_results = try(t.maxResults, lookup(local.tool_defaults_by_type.maxResults, lower(try(t.type, "")), null))
       # Which domains web search may return. ONE key, applied on the target: hidden
       # from the agent and enforced on every request. It replaced four keys — a
       # request-level includeDomains/excludeDomains pair and a target-level
@@ -1231,6 +1237,13 @@ resource "aws_lambda_function" "tool" {
       PRICING_API_REGION = "us-east-1"
     }
   }
+  # The log group must exist BEFORE the function, or Lambda creates
+  # /aws/lambda/<name> itself and Terraform's CreateLogGroup then fails with
+  # ResourceAlreadyExistsException. Nothing in the function's arguments references the
+  # group, so without this they are created in parallel and the apply is a race — which
+  # is exactly how it failed on the first real apply, for two of the four functions.
+  # (The CDK path gets this ordering for free by passing the group as `logGroup:`.)
+  depends_on = [aws_cloudwatch_log_group.tool]
 }
 
 # --- Gateway targets for every lambda tool, however the ARN was supplied ---

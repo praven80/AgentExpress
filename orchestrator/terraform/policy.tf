@@ -50,6 +50,24 @@ resource "aws_bedrockagentcore_policy" "tool" {
     }
   }
 
+  # The engine's analyser emits ADVISORY findings, and the default
+  # (FAIL_ON_ANY_FINDINGS) turns one into a hard apply failure:
+  #   "Overly Permissive: Policy Engine will allow every request for the specified
+  #    principal (AgentCore::IamEntity), action (websearch___WebSearch) and resource
+  #    ... combination if the policy is added or updated"
+  # with the resource never reaching ACTIVE.
+  #
+  # That finding is CORRECT and intended: every agent shares one M2M identity, so a tool
+  # permit deliberately applies to any authenticated caller. The authorization boundary
+  # being demonstrated is per-TOOL (and per-argument for the KB corpus), not
+  # per-principal. Findings are still recorded; they just no longer block the apply.
+  #
+  # cdk/lib/tool-plane.ts has set the CDK equivalent (validationMode) since the policy
+  # engine was added; this path did not, so the SAME config deployed under CDK and failed
+  # under Terraform. Found by the first real `terraform apply` — `validate` and `plan`
+  # both pass, because the finding only exists once the engine evaluates the statement.
+  validation_mode = "IGNORE_ALL_FINDINGS"
+
   # The Cedar engine validates action names against the gateway's REGISTERED
   # targets, so a policy can only be created after the target it governs exists.
   # Without this a fresh single apply can order the policy first and fail with

@@ -137,6 +137,13 @@ resource "aws_lambda_function" "bff" {
       # about eleven agents' worth of it.
     }
   }
+  # The log group must exist BEFORE the function, or Lambda creates
+  # /aws/lambda/<name> itself and Terraform's CreateLogGroup then fails with
+  # ResourceAlreadyExistsException. Nothing in the function's arguments references the
+  # group, so without this they are created in parallel and the apply is a race — which
+  # is exactly how it failed on the first real apply, for two of the four functions.
+  # (The CDK path gets this ordering for free by passing the group as `logGroup:`.)
+  depends_on = [aws_cloudwatch_log_group.bff]
 }
 
 resource "aws_apigatewayv2_api" "bff" {

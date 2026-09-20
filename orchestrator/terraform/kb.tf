@@ -15,7 +15,11 @@ locals {
   # Provisioned only when workflow.json declares a tool with type="kb".
   kb_enabled = local.kb_tool_name != ""
   # The kb tool's own entry, so the retrieval settings below read from ONE place.
-  kb_spec = local.kb_enabled ? local.tools_raw[local.kb_tool_name] : {}
+  # `try` rather than a conditional: the two branches of `enabled ? tools_raw[name] : {}`
+  # are an object with the kb tool's attributes and an empty object, and HCL refuses to
+  # unify those ("Inconsistent conditional result types"). An absent key fails the index,
+  # which is exactly the condition we want to fall back on.
+  kb_spec = try(local.tools_raw[local.kb_tool_name], {})
 
   # --- Embedding model + dimension, from config -----------------------------
   # Both were hardcoded here and in cdk/lib/tool-plane.ts. They are a PAIR: a model
@@ -343,6 +347,13 @@ resource "aws_lambda_function" "kb_retrieve" {
       KB_RERANK          = local.kb_rerank
     }
   }
+  # The log group must exist BEFORE the function, or Lambda creates
+  # /aws/lambda/<name> itself and Terraform's CreateLogGroup then fails with
+  # ResourceAlreadyExistsException. Nothing in the function's arguments references the
+  # group, so without this they are created in parallel and the apply is a race — which
+  # is exactly how it failed on the first real apply, for two of the four functions.
+  # (The CDK path gets this ordering for free by passing the group as `logGroup:`.)
+  depends_on = [aws_cloudwatch_log_group.kb_retrieve[0]]
 }
 
 # Allow the Gateway (via its execution role) to invoke the retrieve Lambda.
