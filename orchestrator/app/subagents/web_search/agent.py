@@ -9,9 +9,12 @@ from the tool's entry in workflow.json.
 
 AUTHORED WITH STRANDS AGENTS. This is the demonstration that the agentic framework
 inside an agent is YOUR choice: the reasoning step runs in a `strands.Agent`, while
-the three sibling research agents use CrewAI, a nested LangGraph, and no framework
-at all. All four gather evidence the same declared way and emit the same
-ResearchOutput contract, so the choice changes nothing outside this file.
+`knowledge_research` uses a nested LangGraph and `documentation_search` and
+`cost_research` use no framework at all. All four gather evidence the same declared
+way and emit the same ResearchOutput contract, so the choice changes nothing outside
+this file. (Strands and LangGraph are the two shipped; CrewAI is documented as a
+pattern in README.md but deliberately not in requirements.txt — it measured 804 MB
+against this image's 153, and every agent shares one image.)
 
 The one rule is that the model call goes through `ctx.llm` — see
 app/subagents/_shared/strands_bridge.py for what that buys and what it costs.

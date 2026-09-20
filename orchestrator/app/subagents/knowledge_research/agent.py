@@ -7,8 +7,9 @@ The shared runner in app/subagents/_shared/research.py does the rest.
 To point this at your own documents, replace the contents of kb_docs/ — each
 top-level folder is a corpus. No change here.
 
-AUTHORED WITH A NESTED LANGGRAPH. Its sibling research agents use Strands, CrewAI,
-and no framework at all. LangGraph is already this repo's outer orchestrator, and
+AUTHORED WITH A NESTED LANGGRAPH. Its sibling research agents use Strands
+(`web_search`) and no framework at all (`documentation_search`, `cost_research`).
+LangGraph is already this repo's outer orchestrator, and
 there is nothing stopping an agent from running a graph of its own inside a single
 node of that one — which is what this does.
 

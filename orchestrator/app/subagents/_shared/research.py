@@ -216,9 +216,12 @@ async def synthesize(ctx, *, system_prompt: str,
                            with an agentic framework of your choice — Strands,
                            CrewAI, LangGraph, anything — while the evidence
                            gathering above and the contract below stay put. See
-                           strands_bridge.py / crewai_bridge.py in this folder for
-                           two worked examples, and the three research agents for
-                           how they are wired.
+                           strands_bridge.py in this folder for a worked example
+                           of satisfying a framework's model-provider interface
+                           with `ctx.llm` (a CrewAI `BaseLLM` or a LangChain
+                           `BaseChatModel` is the same shape), and the four
+                           research agents for the three ways they are wired:
+                           Strands, a nested LangGraph, and no framework.
 
                            WHATEVER YOU PASS MUST REACH THE MODEL THROUGH
                            `ctx.llm`. That is not a style rule: guardrails, cost
