@@ -65,15 +65,13 @@ as a literal — `tests/test_config_keys.py` fails on any fallback in Python, HC
 TypeScript whose right-hand side is a hardcoded value instead of the accessor
 (`app/common/defaults.py`, `cdk/lib/defaults.ts`, `local.key_defaults`). The values reach
 the running code through `app/defaults.json`, which `python3 build_schema.py` projects out
-of `keys.json`; `keys.json` itself is 40 KB of prose and deliberately does not ship in the
+of `keys.json`; `keys.json` itself is 45 KB of prose and deliberately does not ship in the
 container image.
 
-The reason for the rule is that a drifted default is quieter than a drifted value. A value
-this framework does not allow is rejected at plan or synth with a message naming it. A
+The reason for the rule: a drifted default is quieter than a drifted value. A value this
+framework does not allow is rejected at plan or synth with a message naming it, whereas a
 default that differs between the Terraform and CDK paths deploys cleanly on both and
-behaves differently — which is indistinguishable from the feature working. That had already
-happened inside a single file: `maxResults` carried both `10` and `5` in
-`terraform/tools.tf`, and only one of them reached the Knowledge Base Lambda.
+behaves differently — indistinguishable from the feature working.
 
 ## Two commands
 
@@ -115,9 +113,8 @@ between accounts.
 
 ### What else you may edit
 
-This file plus `app/subagents/<id>/` and `kb_docs/` is the whole surface. Nothing
-outside it should need changing, and three things that used to live in framework
-code have been moved so they don't:
+This file plus `app/subagents/<id>/` and `kb_docs/` is the whole surface. Nothing outside
+it should need changing:
 
 | Yours to change | Where it lives |
 |---|---|
@@ -375,15 +372,11 @@ like wrong config. Observed on a live run, because `auth` defaults to `none`.
 Point an agent at a real partner's `agentCard` instead and none of that infrastructure
 is provisioned.
 
-> **There is no `repair` key, and this file used to claim there was.** An earlier
-> version of the framework shipped an output-rules engine that could re-ask an agent
-> to fix its own violations. It was removed, because it encoded one editorial standard
-> (`document`, `record`, `evidence`, `transcript` were treated as artifact nouns) that
-> would misfire in a legal or medical domain — and a framework has no business holding
-> that opinion. The section documenting it outlived it, which is exactly the failure
-> `tests/test_config_keys.py` exists to prevent, in reverse: a key a reader believes in
-> and nothing reads. If you want output checks, put them in your own agent under
-> `app/subagents/<id>/`, where the standard is yours.
+> **There is no `repair` key.** An earlier output-rules engine that re-asked an agent to
+> fix its own violations was removed: it encoded one editorial standard (`document`,
+> `record`, `evidence`, `transcript` treated as artifact nouns) that misfires in a legal or
+> medical domain, and a framework has no business holding that opinion. If you want output
+> checks, put them in your own agent under `app/subagents/<id>/`.
 
 ### `maxTokens` — why it is per agent
 
@@ -424,13 +417,14 @@ or off is a config change. Omit a block to leave the capability off.
 
 | Key | Read by | Notes |
 |---|---|---|
-| `memory.longTerm` | `context.py` | List of strategies: `semantic` extracts discrete insights into `insights/{actor}` (cross-run), `summary` maintains a running summary in `summary/{actor}/{session}` (session-scoped). Before `run()` the framework recalls past insights into the system prompt; after, it stores new ones. Namespaced per agent **and** per subject, so insights don't leak between topics. **Only `semantic` and `summary`** — those are the strategies the IaC provisions, and an unrecognised name is rejected at container start. It used to be accepted and then searched as its own namespace, which nothing writes to, so recall returned nothing and reported success. **Where the recall/store runs depends on the placement:** for `main` it is the orchestrator; for `dedicated` it is inside that agent's own container, because that is where `ctx.llm` injects the insights; for `a2a` it is the orchestrator, which carries the recalled insights to the remote agent inside the A2A task (`recalledContext`, with the caveat attached) and stores its reply afterwards. |
+| `memory.longTerm` | `context.py` | List of strategies: `semantic` extracts discrete insights into `insights/{actor}` (cross-run), `summary` maintains a running summary in `summary/{actor}/{session}` (session-scoped). Before `run()` the framework recalls past insights into the system prompt; after, it stores new ones. Namespaced per agent **and** per subject, so insights don't leak between topics. **Only `semantic` and `summary`** — those are the strategies the IaC provisions, and an unrecognised name is rejected at container start rather than silently searched as a namespace nothing writes to. **Where the recall/store runs depends on the placement:** for `main` it is the orchestrator; for `dedicated` it is inside that agent's own container, because that is where `ctx.llm` injects the insights; for `a2a` it is the orchestrator, which carries the recalled insights to the remote agent inside the A2A task (`recalledContext`, with the caveat attached) and stores its reply afterwards. |
 | `identity.outbound` | `context.py` | Credential providers this agent may fetch an OAuth token from, to call an external API **directly** via `ctx.get_identity_token`. Not needed for anything reached through the Gateway. |
 | `guardrails.input` | `context.py` | Run the Bedrock guardrail on the agent's input, before the model sees it. |
 | `guardrails.output` | `context.py` | Run it on the agent's output. Use this on any agent handling untrusted text. |
+| `guardrails.guardrailId` | `context.py` → the `GuardrailIdentifier` on the Bedrock call | Use a **different** guardrail for this one agent instead of the deployment's own — for a step whose content policy genuinely differs, such as a medical or legal stage inside a general pipeline. Omit and the deployment guardrail applies. |
 | `evaluations.enabled` | `evaluations/service.py` | Enables AgentCore Evaluations (LLM-as-judge) and shows the Evaluate button. |
 | `evaluations.auto` | same | `true` scores the agent automatically at run completion; `false` means on demand only. Each evaluator is a billed model call, so `false` is the cheaper default. |
-| `evaluations.evaluators` | same | Built-ins, `Builtin.<Name>`: `Coherence`, `Conciseness`, `Correctness`, `Faithfulness`, `GoalSuccessRate`, `Harmfulness`, `Helpfulness`, `InstructionFollowing`, `Refusal`, `ResponseRelevance`, `Stereotyping`, `ToolParameterAccuracy`, `ToolSelectionAccuracy`. Validated on SHAPE (`Builtin.<Name>` or `Custom.<Name>`) rather than against this list, so an evaluator AWS adds later needs no framework edit — but a typo like `Faithfullness` is caught at container start instead of surfacing as an API error the first time an evaluation runs. |
+| `evaluations.evaluators` | same | Built-ins, `Builtin.<Name>`: `Coherence`, `Conciseness`, `Correctness`, `Faithfulness`, `GoalSuccessRate`, `Harmfulness`, `Helpfulness`, `InstructionFollowing`, `Refusal`, `ResponseRelevance`, `Stereotyping`, `ToolParameterAccuracy`, `ToolSelectionAccuracy`. Validated on SHAPE (`Builtin.<Name>` or `Custom.<Name>`) rather than against this list, so an evaluator AWS adds later needs no framework edit, while a typo like `Faithfullness` is still caught at container start rather than as an API error mid-run. |
 | `policy.enabled` | `context.py` | An **app-level** Cedar check via `ctx.policy_check`. Secondary: tool calls through the Gateway are already authorized server-side by the attached engine. |
 
 **Deliberately not per-agent**, though it might look like it should be:
@@ -454,13 +448,11 @@ The key is **both** the Gateway target name **and** the label an agent binds to 
 
 > **The key must be letters and digits, starting with a letter** — `policyDocs`, not
 > `policy_docs` and not `policy-docs`. Narrower than an agent id, which *may* contain
-> underscores, and the reason is worth knowing because the rule looks arbitrary
-> otherwise: the key builds two AWS names whose constraints contradict each other. The
-> Gateway target is `<key>` and forbids underscores; the Cedar policy is `permit_<key>`
-> and forbids hyphens. Neither separator survives both. camelCase matches the rest of
-> this file anyway (`maxTokens`, `agentCard`, `gateId`). All four planes reject a bad key
-> up front — that was worth adding, because both halves of this were originally found by
-> CloudFormation refusing a change set *after* a clean `cdk synth`.
+> underscores, because the key builds two AWS names with contradictory constraints: the
+> Gateway target is `<key>` and forbids underscores, the Cedar policy is `permit_<key>`
+> and forbids hyphens. Neither separator survives both, and camelCase matches the rest of
+> this file (`maxTokens`, `agentCard`, `gateId`). All four planes reject a bad key up
+> front, rather than letting CloudFormation refuse the change set after a clean synth.
 
 Five types:
 
@@ -937,5 +929,5 @@ on every request and the branch looks like it is working.
 
 Both IaC paths validate this file at plan/synth time and name the exact problem.
 See §7 of [`GETTING_STARTED.md`](../../GETTING_STARTED.md) for the full list. The
-corpora and `lambda` schema checks matter most, because those are the failures that
-used to be silent.
+corpora and `lambda` schema checks matter most: those are the ones whose failure mode
+is a clean deploy that retrieves nothing.

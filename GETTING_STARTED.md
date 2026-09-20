@@ -1,15 +1,15 @@
 # Getting started — your own multi-agent system in a day
 
-This framework is **configuration driven**. To run your own multi-agent
-architecture against your own documents and your own MCP servers, you edit
-**two files** and add **one folder per agent** — plus, only if you ask the framework
-to deploy a function for you, one folder per such tool:
+This framework is **configuration driven**. To run your own multi-agent architecture
+against your own documents and your own MCP servers, you edit **two files** and add **one
+folder per agent** — plus, only if you ask the framework to supply a tool's artifact, one
+folder per such tool:
 
 | What | Where | You change |
 |---|---|---|
 | The workflow | `orchestrator/app/workflow.json` | your tools, your agents, your topology, gates, RBAC, guardrail, UI strings |
 | Each agent's logic | `orchestrator/app/subagents/<agent_id>/` | a prompt, a contract, a `run()` |
-| A framework-deployed tool function | `orchestrator/app/tools/<source>/` | a `handler.py`. Only for `type: "lambda"` with `source`; skip it entirely if you use `lambdaArn` or no `lambda` tool at all |
+| A tool whose artifact the framework supplies | `orchestrator/app/tools/<source>/` | a `handler.py` for `type: "lambda"`, or an `openapi.json` for `type: "openapi"` — only when the entry declares `source`. Skip it entirely if you use `lambdaArn` / `schemaS3Uri`, or neither type |
 | Your documents | `orchestrator/kb_docs/` | each top-level folder becomes a corpus |
 | The deployment | `orchestrator/terraform/terraform.tfvars` | region, login provider, model, Gateway on/off |
 
@@ -42,8 +42,8 @@ terraform apply                                   # builds the image, provisions
 
 Prerequisites: Terraform, a container engine that builds `linux/arm64`
 (Finch/Docker/Podman), AWS credentials, and **Bedrock model access** in your
-region for the model in `terraform.tfvars` plus **Titan Text Embeddings V2**
-(the Knowledge Base embeds with it).
+region for the model in `terraform.tfvars` plus the Knowledge Base's embedding model
+(**Titan Text Embeddings V2** by default; override with `embeddingModel` on the `kb` tool).
 
 Then create yourself a login and open the UI:
 
@@ -67,9 +67,12 @@ detail — including CDK, Auth0 and no-login — is in
 
 ## 2. Point it at your own data
 
-Everything an agent can call is declared in the **`tools`** block of
-`workflow.json`. The key of each entry is both the Gateway target name and the
-label an agent references. Five types cover the common cases:
+Everything an agent can call is declared in the **`tools`** block of `workflow.json`. The
+key of each entry is both the Gateway target name and the label an agent references, and
+must be **letters and digits starting with a letter** — `internalTools`, not
+`internal_tools` or `internal-tools`. (The Gateway target forbids underscores and the
+generated Cedar permit forbids hyphens, so camelCase is the only form that survives both.)
+Five types cover the common cases:
 
 ### Your documents (RAG)
 
@@ -100,7 +103,7 @@ available in `us-east-1`, `eu-west-1`, `ap-northeast-1`.
 ### Your MCP server
 
 ```json
-"internal_tools": {
+"internalTools": {
   "type": "mcp",
   "endpoint": "https://mcp.your-company.com/mcp",
   "call": "search_docs",
@@ -123,13 +126,13 @@ Change the endpoint; that's the whole change. For an authenticated server, keep
 the key out of `workflow.json`:
 
 ```bash
-export TF_VAR_tool_api_keys='{"internal_tools":"your-key"}'   # CDK: TOOL_API_KEYS
+export TF_VAR_tool_api_keys='{"internalTools":"your-key"}'   # CDK: TOOL_API_KEYS
 ```
 
 It's vaulted in an AgentCore credential provider and sent by the Gateway as an
 `X-API-Key` header, so the agent never sees it.
 
-> **Two things worth knowing about tool names.**
+> **Two things about tool names.**
 >
 > **1. The Gateway composes them.** Every published tool is
 > `<targetName>___<toolName>`, formed server-side — `kb.tf` declares the tool as
@@ -140,7 +143,7 @@ It's vaulted in an AgentCore credential provider and sent by the Gateway as an
 >
 > **2. `tools/list` is PAGINATED. Follow `nextCursor`.** This trips people up: read
 > only the first page and a target looks empty when its tools are simply on page two.
-> This deployment has four targets, and the remote MCP server alone publishes five
+> This deployment has five targets, and the remote MCP server alone publishes five
 > tools, so the catalogue does not fit on one page. The app paginates correctly —
 > verification scripts often don't.
 >
@@ -460,7 +463,7 @@ written.
 **What carries across, and what does not.** Guardrails apply, because the framework
 wraps the call on your side. Long-term memory works both ways: the recall is sent to the
 remote agent inside the task (with the caveat that it is recollection, not evidence) and
-the reply is stored as a new insight — worth knowing, because that means your
+the reply is stored as a new insight, which means your
 accumulated recollections leave your deployment, which is why it follows
 `agentcore.memory` rather than happening unconditionally. Two things genuinely degrade:
 evaluations drop to role-level, because there is no local model call to capture a prompt
@@ -665,7 +668,7 @@ means the run just takes the default on every request, and the branch looks wire
   backward edge would be a cycle the run could not leave)
 - `branch` on a `parallel` step (no single agent decides) or on the last step
 
-**Knowledge Base corpora** — the ones that used to fail *silently*
+**Knowledge Base corpora** — the checks whose failure mode is silent
 - a `corpora` entry with no matching folder under `kb_docs/`
 - an agent whose `corpus` isn't in the declared `corpora`
 - a document sitting at the root of `kb_docs/` instead of in a corpus folder
@@ -717,8 +720,8 @@ the runtimes; editing `kb_docs/` re-ingests the corpus and nothing else.
 ### Check your config before you deploy it
 
 ```bash
-cd orchestrator     && pytest      # runtime side — 429 tests, a few seconds
-cd orchestrator/cdk && npm test    # IaC side + Terraform↔CDK parity — 149 tests
+cd orchestrator     && pytest      # runtime side — 827 tests, ~12s
+cd orchestrator/cdk && npm test    # IaC side + Terraform↔CDK parity — 168 tests
 ```
 
 Neither needs AWS credentials, a model, or a container builder.

@@ -61,7 +61,10 @@ cognito = { create = true }
 # ---------------------------------------------------------------------------
 # The UI and /api/* deploy OPEN to anyone with the URL. Fine for a quick local
 # trial; never for anything shared. Requires enable_gateway = false, because the
-# Gateway authorizer needs an OIDC provider (MCP + RAG then run simulated).
+# Gateway authorizer needs an OIDC provider — so every tool-bound agent (all five
+# research agents) then fails fast with ToolUnavailable. Nothing is simulated.
+# You must also remove authorization.actions from app/workflow.json: with no
+# authorizer there are no claims, so every group check would deny everyone.
 # idp            = "none"
 # enable_gateway = false
 
@@ -86,6 +89,7 @@ region = "us-east-1"
 # model_id                 = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 # container_engine         = "finch"                     # or "docker" / "podman"
 # memory_event_expiry_days = 30
+# log_retention_days       = 30
 # enable_gateway           = true    # false = no tool plane; an agent with a `tool` then fails loudly
 # X-Ray/Transaction Search trace indexing rate. 100 indexes every trace — turn it
 # down to cut cost on a long-running deployment.

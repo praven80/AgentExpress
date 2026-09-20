@@ -1,30 +1,31 @@
 # Architecture
 
 Generic multi-agent orchestrator (LangGraph + Amazon Bedrock AgentCore), with a
-**pluggable identity provider** at the front door and an **AgentCore Gateway**
-fronting the MCP/tool plane. This describes what is actually deployed.
+**pluggable identity provider** at the front door and an **AgentCore Gateway** fronting
+the MCP/tool plane. This describes what is actually deployed.
 
-> **Infrastructure as code — two options, same architecture.** Everything below is
-> provisioned by **either** the **Terraform** config (`orchestrator/terraform/`) or
-> the **CDK / TypeScript** app (`orchestrator/cdk/`). Both read `app/workflow.json`
-> as the single source of truth, build the same container image, and create the same
-> resources including the AgentCore Gateway, the Bedrock Knowledge Base, the
-> Guardrail, the Cedar policy engine and Transaction Search.
+> **Two IaC options, same architecture.** Everything below is provisioned by **either**
+> the **Terraform** config (`orchestrator/terraform/`) or the **CDK / TypeScript** app
+> (`orchestrator/cdk/`). Both read `app/workflow.json` as the single source of truth,
+> build the same container image, and create the same resources — including the AgentCore
+> Gateway, the Bedrock Knowledge Base, the Guardrail, the Cedar policy engine and
+> Transaction Search.
 >
-> One switch changes the feature surface in both: `enable_gateway` /
-> `-c enableGateway`. Left off, no Gateway/KB/policy engine is created, and any agent
-> bound to a `tool` **fails fast** — the framework does not fabricate evidence (see
-> `app/common/errors.py`). Turned on, MCP, RAG and Cedar authorization are all live.
+> One switch changes the feature surface in both: `enable_gateway` (Terraform, default
+> `true`) / `-c enableGateway` (CDK, default `false`). Left off, no Gateway, KB or policy
+> engine is created and every agent bound to a `tool` **fails fast** — the framework does
+> not fabricate evidence (`app/common/errors.py`). Turned on, MCP, RAG and Cedar
+> authorization are all live.
 >
-> **Both options take the same `idp` switch** — `cognito`, `auth0`, or `none` — and
-> both can auto-create Cognito (`cognito = { create = true }` in Terraform,
-> `-c createCognito=true` in CDK) so you don't need a pre-existing User Pool. They
-> can safely target **different accounts or regions** simultaneously (e.g. CDK →
-> us-east-1, Terraform → us-west-2) since resource names include the account ID.
+> Both take the same `idp` switch — `cognito`, `auth0` or `none` — and both can
+> auto-create Cognito (`cognito = { create = true }` / `-c createCognito=true`), so no
+> pre-existing User Pool is needed. They can target **different accounts or regions**
+> simultaneously, since resource names include the account id.
 
 - [1. Deployed architecture](#1-deployed-architecture)
 - [2. Where each concern lives](#2-where-each-concern-lives)
 - [3. Key decisions](#3-key-decisions)
+- [3a. Security posture](#3a-security-posture-sample-vs-production)
 - [4. Future enhancements](#4-future-enhancements)
 
 ---
@@ -62,7 +63,7 @@ fronting the MCP/tool plane. This describes what is actually deployed.
                         │  AgentCore Runtime        │─────────────────▶│ AgentCore Memory ×2       │
                         │  (orchestrator)           │  (graph state)   │ • checkpointer (HITL)     │
                         │  LangGraph                │  recall / store  │ • long-term semantic +    │
-                        │  1→[2‖2‖2‖2]→[3→3]→4          │◀────────────────▶│   summary (per agent +    │
+                        │  1→[2‖2‖2‖2‖2]→[3→3]→4        │◀────────────────▶│   summary (per agent +    │
                         │                           │                  │   per subject)            │
                         │                           │                  └───────────────────────────┘
                         │                           │  write progress  ┌───────────────────────────┐
@@ -91,11 +92,11 @@ fronting the MCP/tool plane. This describes what is actually deployed.
             in app/workflow.json (terraform/tools.tf, cdk/lib/tool-plane.ts)
                   ┌───────────────────────┼───────────────────────┐
                   ▼                       ▼                       ▼
-        ┌───────────────────┐ ┌──────────────────┐ ┌────────────────────────┐
-        │ type=kb (Lambda)  │ │ type=websearch   │ │ type=mcp | openapi     │
-        │ retrieve ▶ Bedrock│ │ AgentCore Web    │ │ your MCP server or     │
-        │ KB (S3 Vectors)   │ │ Search connector │ │ REST API (+ vaulted key)│
-        └───────────────────┘ └──────────────────┘ └────────────────────────┘
+        ┌───────────────────┐ ┌──────────────────┐ ┌─────────────────────────┐
+        │ type=kb (Lambda)  │ │ type=websearch   │ │ type=mcp | openapi |    │
+        │ retrieve ▶ Bedrock│ │ AgentCore Web    │ │ lambda — your MCP server,│
+        │ KB (S3 Vectors)   │ │ Search connector │ │ REST API or function     │
+        └───────────────────┘ └──────────────────┘ └─────────────────────────┘
 
    Quality loop (out-of-band, reading the same run):
      OTEL spans ─▶ CloudWatch (Transaction Search)
@@ -105,21 +106,25 @@ fronting the MCP/tool plane. This describes what is actually deployed.
               (failure patterns / user intents / execution summaries)
 ```
 
-Workflow (4 stages, 8 agents) — a parallel group next to a sequential group:
-`1 Intake ─(HITL)▶ 2 [knowledge_research ‖ web_search ‖ documentation_search ‖
-cost_research] ─(HITL)▶ 3 [analysis → recommendation] ─(HITL)▶ 4 Report`, with a
-`branch` on step 1 that can skip step 2 or end the run (see §Pipeline). The four
-research agents exist to show four different tool patterns behind one Gateway — a
-Knowledge Base, a managed connector, a remote MCP server and a Lambda. Three share
-one runner and one contract, a line of config apart; `cost_research` deliberately
-does not — it runs `main` rather than `dedicated`, on a smaller token budget, and
-reads the tool's DATA rows through `ctx.call_tool_rows` instead of treating the
-result as evidence to paraphrase.
+Workflow (4 stages, 9 agents) — a parallel group next to a sequence group:
+`1 intake ─(HITL)▶ 2 [knowledge_research ‖ web_search ‖ documentation_search ‖
+cost_research ‖ lifecycle_research] ─(HITL)▶ 3 [analysis → recommendation] ─(HITL)▶
+4 report`, with a `branch` on step 1 that can skip step 2 or end the run.
+
+The five research agents exist to show the five tool patterns behind one Gateway: a
+Knowledge Base, a managed connector, a remote MCP server, a Lambda and an OpenAPI REST
+target. Three of them (`knowledge_research`, `web_search`, `documentation_search`) share
+one runner and one contract, a line of config apart. `cost_research` and
+`lifecycle_research` deliberately do not: both run `main` rather than `dedicated`, on a
+smaller token budget, and read the tool's DATA rows through `ctx.call_tool_rows` instead
+of treating the result as evidence to paraphrase.
+
 Stage 3 is the other deliberate contrast: `analysis` and `recommendation` are
-`runtime: "a2a"` — agents this deployment does not operate, reached over the
-Agent2Agent protocol. They sit in a `sequence` behind a single gate like any other
-step, which is the point: the trust boundary changes what the framework can enforce
-about them, not how they are wired.
+`runtime: "a2a"` — agents this deployment does not operate, reached over the Agent2Agent
+protocol. They sit in a `sequence` behind a single gate like any other step, which is the
+point: the trust boundary changes what the framework can enforce about them, not how they
+are wired.
+
 The runtime writes to two independent stores (there is no Memory→DynamoDB flow):
 durable graph state to **AgentCore Memory** (the LangGraph checkpointer, for HITL
 pause/resume) and live per-session progress to **DynamoDB** (status + events),
@@ -170,8 +175,12 @@ user can approve" is the wrong default. That second question is answered by
 }
 ```
 
-- **Six mutating actions** are recognised: `decision` (approve/revise/deny a gate),
-  `rerun`, `cancel`, `evaluate`, `insights`, `delete`. Read endpoints are not gated —
+`start` is recognised too and is left unrestricted here, so any authenticated user can
+begin a run.
+
+- **Seven mutating actions** are recognised: `start`, `decision` (approve/revise/deny a
+  gate), `rerun`, `cancel`, `evaluate`, `insights`, `delete`. The sample restricts six and
+  leaves `start` unrestricted. Read endpoints are not gated —
   they are already behind the authorizer, and hiding a run from someone who can see the
   UI buys nothing.
 - **Semantics chosen so the default stays backwards compatible.** An action *not
@@ -241,22 +250,17 @@ different boundaries, both config-driven.
   for code it does not own.
 - **Figures are checked against the assets they came from, not just asked for.**
   Every synthesis prompt carries the rule "no figure that is not in an upstream asset,
-  not even as an illustration", and for three releases that rule was only ever stated.
-  A measured run showed the cost: the analysis asset wrote in its own `limitations`
-  that the evidence "does not supply numerical thresholds" for Lambda cold starts, and
-  the recommendation built from it then advised measuring against "typically
-  100–1000 ms". The same workflow on a second deployment invented nothing, which is the
-  tell — a prompt edit would not have fixed it. `app/common/grounding.py` now extracts
-  the unit-bearing figures from each asset and warns on the session timeline about any
-  whose value appears in no upstream asset and not in the request, which puts it in
-  front of the reviewer at the next HITL gate. It runs in the **node wrapper**, so it
-  covers `runtime: "a2a"` agents whose model call happens in another account — the
-  placement the defect was actually found in. **An agent with a `tool` is exempt**, and
-  that is the whole test: a tool is a live evidence source, so a real AWS rate or EOL
-  date that no upstream asset knows is its job. No new config key expresses this
-  because `tool` already does, and it warns rather than failing — the matcher is a
-  strong signal, not a proof, and ending a five-minute run on one would trade a
-  reviewable warning for a lost run.
+  not even as an illustration", and a stated rule is not a control: a model that has
+  just written "the evidence supplies no numerical thresholds" will still supply one.
+  `app/common/grounding.py` extracts the unit-bearing figures from each asset and warns
+  on the session timeline about any whose value appears in no upstream asset and not in
+  the request, which puts it in front of the reviewer at the next HITL gate. It runs in
+  the **node wrapper**, so it also covers `runtime: "a2a"` agents whose model call happens
+  in another account. **An agent with a `tool` is exempt**, and that is the whole test: a
+  tool is a live evidence source, so a real AWS rate or EOL date that no upstream asset
+  knows is its job — no new config key is needed, because `tool` already says it. It
+  warns rather than failing: the matcher is a strong signal, not a proof, and ending a
+  five-minute run on one would trade a reviewable warning for a lost run.
 - **The agentic framework inside an agent is per-agent and is the author's choice.**
   `run()` is a plain `async def`, so an agent may drive Strands, CrewAI, LlamaIndex,
   a graph of its own, or nothing. `research.synthesize` exposes this as a `think`
@@ -275,14 +279,14 @@ different boundaries, both config-driven.
   returns text, so it cannot carry a `toolUse` block) — the bridge raises rather
   than dropping tools, and data access stays declared in `workflow.json` and called
   through `ctx.call_tool`/`ctx.retrieve`. The other cost is the image: one container
-  serves every agent, so every agent pays for every framework in it (measured:
-  `+ strands-agents` 153 → 166 MB; `+ crewai` 804 MB, which is why CrewAI is
-  documented and not shipped).
+  serves every agent, so every agent pays for every framework in it. Measured on Python
+  3.13 site-packages: this repo is 153 MB, `+ strands-agents` 166 MB, `+ crewai` 804 MB —
+  which is why CrewAI is documented and not shipped.
 
 ### Agent runtime placement — in-process, dedicated, or not yours at all
 - `runtime: "main"` — the agent runs in-process as a LangGraph node inside the
   orchestrator runtime.
-- `runtime: "dedicated"` — Terraform provisions a **separate AgentCore Runtime**
+- `runtime: "dedicated"` — both IaC paths provision a **separate AgentCore Runtime**
   for that agent (same image; an `AGENT_ID` env var selects which agent it hosts).
   The orchestrator's node body (`AgentCoreRuntimeAgent`) calls `InvokeAgentRuntime`
   with the same inputs an in-process agent would read, and returns the output. Same
@@ -291,16 +295,13 @@ different boundaries, both config-driven.
   (`knowledge_research`, `web_search`, `documentation_search`), two as `a2a`
   (`analysis`, `recommendation`); the rest are `main`.
 - **Each dedicated agent gets its OWN execution role, scoped from its own config.**
-  This was one role shared by every dedicated runtime, which meant an agent that
-  enables nothing still carried the union of every other agent's permissions —
-  measured on this sample, `knowledge_research` could call `ApplyGuardrail` it never
-  calls, and all three could read the semantic memory store although not one of them
-  declares long-term memory. The grants are now derived from the same `agentcore`
-  block that switches each feature on, so there is still no IAM for a customer to
-  write: enable memory for an agent and that agent gets memory access; enable it for
-  nobody and the statement appears on no role. What every role keeps unconditionally
-  is what a container needs merely to run — pull the image, emit spans and metrics,
-  call a model, write its own telemetry row.
+  A single shared role would give an agent that enables nothing the union of every other
+  agent's permissions. The grants are derived from the same `agentcore` block that
+  switches each feature on, so there is still no IAM for a customer to write: enable
+  memory for an agent and that agent gets memory access; enable it for nobody and the
+  statement appears on no role. What every role keeps unconditionally is what a container
+  needs merely to run — pull the image, emit spans and metrics, call a model, write its
+  own telemetry row.
 - `runtime: "a2a"` is the third value, and it is not a placement of your code — it is a
   **trust boundary**. The step is run by an agent you do not operate, reached over the
   **Agent2Agent protocol** at its Agent Card URL (`app/common/a2a_agent.py`): the card
@@ -380,7 +381,7 @@ different boundaries, both config-driven.
   prefix. `call` is matched against the published name; nothing splits on `___`.
 - **`tools/list` is PAGINATED — follow `nextCursor`.** This is the one real trap.
   A client that reads only the first page sees a subset and concludes a target
-  published nothing, when its tools are simply on page two. This deployment has four
+  published nothing, when its tools are simply on page two. This deployment has five
   targets, and the remote MCP server alone publishes five tools, so the catalogue
   does not fit one page. The app's MCP client paginates correctly; hand-rolled
   verification scripts often do not.
@@ -395,11 +396,10 @@ different boundaries, both config-driven.
   *list* of parts, each carrying the real payload re-encoded as text. Code that
   inspects the envelope for a `results` key finds nothing, falls through to a generic
   "stringify and clip" path, and hands the model a truncated blob of raw JSON with the
-  `url` and `publishedDate` fields still buried in it. That is exactly what happened
-  here: citations came back `null` from a connector that always returns them, and
-  agents listed truncated evidence as a limitation of their own findings. The client
-  now parses each text part, flattens result lists across parts, and pulls
-  title/URL/date/text by trying the field names the different backends use.
+  `url` and `publishedDate` fields still buried in it — which reads as null citations from
+  a connector that always returns them. The client parses each text part, flattens result
+  lists across parts, and pulls title/URL/date/text by trying the field names the
+  different backends use.
 - **Evidence has a budget, not a hard clip.** `MAX_EVIDENCE_CHARS` (20000, env-tunable)
   bounds the whole evidence block and `MAX_RESULT_CHARS` (4000) bounds any single
   result, so one verbose result cannot crowd out the rest. Results are numbered so a
@@ -431,9 +431,9 @@ different boundaries, both config-driven.
   `include` is set.
 
 ### RAG — Bedrock Knowledge Base on S3 Vectors
-- A single Bedrock Knowledge Base backed by **S3 Vectors**, embedded with the model the
-  `kb` tool declares (default Titan Text Embeddings v2 at 1024 dims)
-  (serverless). The retrieve Lambda returns ranked chunks to ground answers.
+- A single serverless Bedrock Knowledge Base backed by **S3 Vectors**, embedded with the
+  model the `kb` tool declares (`embeddingModel`; default `amazon.titan-embed-text-v2:0`
+  at 1024 dimensions). The retrieve Lambda returns ranked chunks to ground answers.
 - The RAG agent is scoped to its own corpus via a **`doc_type` metadata filter**
   (a sidecar `.metadata.json` on ingest tags each doc with its folder; the agent
   carries a `KB_FILTER`), so one KB can serve many agents while each retrieves only
@@ -555,7 +555,9 @@ different boundaries, both config-driven.
   "docs":      { "type": "mcp", "endpoint": "https://knowledge-mcp.global.api.aws",
                  "call": "aws___search_documentation", "arg": "search_phrase" },
   "pricing":   { "type": "lambda", "source": "pricing", "call": "aws_prices",
-                 "arg": "services", "rowFields": {...}, "toolSchema": [...] }
+                 "arg": "services", "rowFields": {...}, "toolSchema": [...] },
+  "lifecycle": { "type": "openapi", "source": "lifecycle", "call": "getProductLifecycle",
+                 "arg": "product", "rowPath": "result.releases", "rowFields": {...} }
 },
 "agents": {
   "knowledge_research": { "name": "Knowledge Base Research", "runtime": "dedicated",
@@ -566,7 +568,8 @@ different boundaries, both config-driven.
                                          "policy": {"enabled": true} } },
   "web_search":           { "name": "Web Search Research",       "runtime": "dedicated", "tool": "websearch", ... },
   "documentation_search": { "name": "MCP Documentation Research", "runtime": "dedicated", "tool": "docs", ... },
-  "cost_research":        { "name": "Cost Research",            "runtime": "main",      "tool": "pricing", "maxTokens": 1500, ... },
+  "cost_research":        { "name": "Cost Research",            "runtime": "main",      "tool": "pricing",   "maxTokens": 1500, ... },
+  "lifecycle_research":   { "name": "Lifecycle Research",       "runtime": "main",      "tool": "lifecycle", "maxTokens": 1500, ... },
   "analysis":  { "name": "Analysis", "runtime": "a2a", "source": "a2a_lambda",
                  "skill": "analysis", "auth": "sigv4", "produces": "analysis",
                  "agentcore": { "memory": {"longTerm": ["semantic"]},
@@ -577,7 +580,7 @@ different boundaries, both config-driven.
     "branch": { "when": [{ "field": "objective",    "exists": false, "goto": "END" },
                          { "field": "keyQuestions", "lt": 1, "goto": "analysis_reco" }] } },
   { "parallel": ["knowledge_research", "web_search", "documentation_search",
-                 "cost_research"],
+                 "cost_research", "lifecycle_research"],
     "hitl": true, "gateId": "research", "gateName": "Research" },
   { "sequence": ["analysis", "recommendation"], "hitl": true, "gateId": "analysis_reco",
     "gateName": "Analysis & Recommendation (A2A)" },
@@ -594,7 +597,7 @@ and the IaC consumes `policy` (Cedar on/off + mode) and `chatbot` (assistant on/
 sibling top-level blocks are cross-cutting rather than per-agent: `ui` (presentation
 strings), `guardrail` (the content-safety policy), `authorization` (who may act on a
 run) and `tools` (the data sources agents may reach).
-**Terraform reads the same file**, so a feature needing infrastructure (a dedicated
+**Both IaC paths read the same file**, so a feature needing infrastructure (a dedicated
 runtime, a policy engine) is provisioned from this one source of truth.
 
 ### Testing — the config plane, not the data plane
@@ -613,13 +616,12 @@ neither AWS credentials nor a container builder:
 **Deliberately not tested: prompt quality.** That is non-deterministic and has its own
 machinery — the HITL gates and AgentCore Evaluations.
 
-The split matters because the config plane is where a customer's edits land, and its
-failures are *quiet*: a renamed first agent that drops the request brief, a section
-type discarded from a report, a guard applied to five routes out of six, a projection
-that drifts between the two IaC paths so one deployment loses features the other
-keeps. Every one of those actually shipped at some point. Both suites were
-mutation-checked — each bug was reintroduced and confirmed to turn the suite red —
-rather than merely being green. See the two `README.md` files in those directories.
+The split matters because the config plane is where a customer's edits land and its
+failures are *quiet*: a renamed first agent that drops the request brief, a section type
+discarded from a report, a guard applied to five routes out of six, a projection that
+drifts between the two IaC paths. Each of those shipped at some point. Both suites are
+mutation-checked — every guard was removed and confirmed to turn the suite red. See the
+`README.md` in each directory.
 
 **The config surface is described once and consumed four ways.**
 `orchestrator/app/keys.json` holds every key `workflow.json` may contain, which
@@ -642,25 +644,23 @@ tool-schema property types, a2a auth modes and sources, memory strategies, the R
 names, guardrail strengths and PII actions are each declared once, with a comment saying why
 that set is closed.
 
-They used to be written out two or three times — the tool types and the RBAC action names
-existed in all three languages — and a copy that got missed rejected a config the other planes
-accepted, so whether a workflow deployed depended on which IaC path you used. It is
+One home rather than three because a copy that gets missed rejects a config the other planes
+accept, which makes "does this workflow deploy" depend on which IaC path you used. It is
 framework-owned rather than part of `workflow.json` on purpose: a customer's file must not be
 able to widen a set the framework enforces.
 
 The parity suite exists because nothing structural keeps the two IaC paths in step:
-they are independent implementations of the same infrastructure, and the one time they
-drifted it was found by comparing two live deployments. It reads the HCL as text and
+they are independent implementations of the same infrastructure, and each time they have
+drifted it was found by comparing two live deployments rather than by a test. It reads the HCL as text and
 compares the API route list, the tool-plane shapes, and the constants duplicated across
 HCL / TypeScript / Python (notably the seven RBAC action names, which
 `tests/test_authz.py` additionally proves are the exact set the routes enforce).
 
-It used to compare the BFF workflow projection too. That comparison is gone because
-the thing it compared is gone: the projection was built twice, once in HCL and once in
-TypeScript, and is now one Python function (`orchestrator/bff/workflow.py`). Deleting a
-duplicate implementation is a better fix than testing that two copies agree — and it
-removed a hard ceiling at the same time, because the projection no longer has to fit
-in a 4 KB Lambda environment.
+It does **not** compare the BFF workflow projection, because there is only one: it was
+built twice, once in HCL and once in TypeScript, and is now a single Python function
+(`orchestrator/bff/workflow.py`). Deleting the duplicate beat testing that two copies
+agree, and it removed a hard ceiling at the same time — the projection no longer has to
+fit in Lambda's 4 KB environment, so a large workflow is no longer a deploy failure.
 
 Not covered by either: the IaC's own resource semantics. `terraform validate` /
 `cdk synth` plus the plan-time preconditions in both paths are the gate there.

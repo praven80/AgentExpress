@@ -1,80 +1,61 @@
 # Deployment Guide
 
-The minimum steps to deploy this orchestrator into an AWS account. There are **two
-infrastructure-as-code options** — pick one (don't run both against the same
-account/region; they use overlapping resource names):
+Two infrastructure-as-code options. Pick one — don't run both against the same
+account/region, the resource names overlap.
 
 | | **Terraform** (`orchestrator/terraform/`) | **CDK / TypeScript** (`orchestrator/cdk/`) |
 |---|---|---|
-| Footprint | **Full** | **Full** — the same resources |
-| AgentCore capabilities | **9 of 9** | **9 of 9** |
-| MCP / RAG / Cedar policy | Live with `enable_gateway = true` | Live with `-c enableGateway=true` |
+| Footprint | Full | Full — the same resources |
+| AgentCore capabilities | 9 of 9 | 9 of 9 |
+| Tool plane (MCP / RAG / Cedar) | `enable_gateway = true` (default) | `-c enableGateway=true` (default `false`) |
 | Container image | Per-stack ECR repository | CDK `DockerImageAsset` (bootstrap ECR repo) |
 | Remote state | S3 + native locking (`./bootstrap-state.sh`) | CloudFormation (managed by AWS) |
-| Guide | This document (below) | [`orchestrator/cdk/README.md`](orchestrator/cdk/README.md) + the quick steps at the end here |
+| Guide | [Terraform](#deploy-with-terraform) (below) | [CDK](#deploy-with-cdk), plus [`orchestrator/cdk/README.md`](orchestrator/cdk/README.md) |
 
-Both build the same ARM64 container image and provision the orchestrator plus one
-dedicated AgentCore runtime per `dedicated` agent (three of the five research
-agents), and both
-read `app/workflow.json` as the single source of truth for agents and topology.
-**Pick whichever you prefer — the deployed feature surface is the same.**
+Both build the same ARM64 image, provision the orchestrator plus one dedicated AgentCore
+runtime per `dedicated` agent (three of the five research agents), and read
+`app/workflow.json` as the single source of truth for agents and topology.
 
 ---
 
-# Deploy with Terraform (full — adds Gateway + Knowledge Base)
+# Deploy with Terraform
 
 All commands run from `orchestrator/terraform/`.
 
 ## 1. Prerequisites
 
-- **Terraform** ≥ 1.5
-- A container engine that builds `linux/arm64` images — **Finch** (default), Docker, or Podman
-- **AWS CLI**, configured with credentials for the target account
+- **Terraform ≥ 1.10** — `versions.tf` requires it for S3-native state locking
+  (`use_lockfile`), which replaces the old DynamoDB lock table
+- A container engine that builds `linux/arm64` — Finch, Docker or Podman
+- **AWS CLI** with credentials for the target account
 
-> **Login is configuration driven** — one variable, `idp`, picks the provider:
-> 1. **`"cognito"`** with `cognito = { create = true }` — Terraform creates the User
->    Pool, domain, and SPA client for you. Recommended for demos and sandboxes.
-> 2. **`"cognito"`** with `create = false` — bring an existing pool.
-> 3. **`"auth0"`** — an existing Auth0 tenant (`domain` + SPA `client_id`).
-> 4. **`"none"`** — the UI/API deploy **open** (no login). Do **not** use this mode
->    for anything shared.
->
-> See step 3 for each provider's setup.
+In the target account and region, enable **Amazon Bedrock model access** for:
 
-In the target AWS account/region, enable **Amazon Bedrock model access** for the
-model in `model_id` (default **Claude Haiku 4.5**) and **Titan Text Embeddings V2**
-(used by the Knowledge Base). Deploys and KB ingestion fail without this.
+- the model in `model_id` (default **Claude Haiku 4.5**), and
+- the Knowledge Base embedding model — **Titan Text Embeddings V2** by default,
+  overridable with `embeddingModel` on the `kb` tool.
+
+Deploys and KB ingestion fail without both.
 
 ## 2. IAM permissions to deploy
 
-Attach the ready-made policy to the IAM role/user you deploy with:
-
-```
-orchestrator/terraform/deploy-role-policy.json
-```
-
-It grants exactly what Terraform needs (ECR, AgentCore runtimes/memories/gateway
-**and policy engines**, Bedrock KB + S3 Vectors **and guardrails**, DynamoDB,
-Lambda, API Gateway, S3, CloudFront, IAM execution roles, logs, and the X-Ray calls
-that enable **Transaction Search**). Confirm you're in the right account:
+Attach `orchestrator/terraform/deploy-role-policy.json` to the role or user you deploy
+with. It grants exactly what Terraform needs: ECR, AgentCore runtimes/memories/gateway/
+policy engines, Bedrock KB + S3 Vectors + guardrails, DynamoDB, Lambda, API Gateway, S3,
+CloudFront, IAM execution roles, logs, and the X-Ray calls that enable Transaction Search.
 
 ```bash
-aws sts get-caller-identity
+aws sts get-caller-identity          # confirm the account
 ```
 
-## 3. Identity provider setup
+## 3. Identity provider
 
-Login is **configuration driven**. A single variable, `idp`, selects the provider
-for *both* auth boundaries at once:
-
-* end-user login on the UI + the API Gateway JWT authorizer on `/api/*`
-* the machine-to-machine (client-credentials) token agents use to call the
-  AgentCore Gateway
-
-Everything downstream — the authorizer's issuer/audience, the Gateway's
-`CUSTOM_JWT` config, the OAuth token endpoint, and the `auth-config.js` the SPA
-reads — is derived in **`terraform/identity.tf`**. That's the only file that knows
-how the providers differ, and the only file to touch to add another one.
+One variable, `idp`, selects the provider for **both** auth boundaries: end-user login on
+the UI plus the API Gateway JWT authorizer on `/api/*`, and the machine-to-machine token
+agents use to call the Gateway. Everything downstream — the authorizer's issuer and
+audience, the Gateway's `CUSTOM_JWT` config, the token endpoint, and the `auth-config.js`
+the SPA reads — is derived in **`terraform/identity.tf`**. That is the only file that knows
+how the providers differ, and the only one to touch to add another.
 
 | `idp` | End-user login | Terraform creates the IdP? |
 |---|---|---|
@@ -82,21 +63,20 @@ how the providers differ, and the only file to touch to add another one.
 | `"auth0"` | Auth0 Universal Login (`auth0-spa-js`) | No — existing tenant |
 | `"none"` | **No login at all** | n/a |
 
-If something required for your provider is missing, `terraform plan` fails with a
-message naming the exact variable — nothing half-configured reaches AWS.
+If something required for your provider is missing, `terraform plan` fails naming the exact
+variable. Nothing half-configured reaches AWS.
 
-### Option A — Cognito, created for you (recommended for demos)
+### Option A — Cognito, created for you (recommended)
 
 ```hcl
 idp     = "cognito"
 cognito = { create = true }
 ```
 
-Terraform creates the User Pool, Hosted UI domain (`<agent-name>-<account-id>`),
-the public SPA client, and — when `enable_gateway = true` — the Resource Server
-plus the confidential M2M client. The CloudFront callback/sign-out URLs are wired
-automatically, and the M2M secret is read straight from state, so there is
-nothing to configure by hand. Skip to step 4.
+Terraform creates the User Pool, Hosted UI domain (`<agent-name>-<account-id>`), the public
+SPA client and — when `enable_gateway = true` — the Resource Server plus the confidential
+M2M client. CloudFront callback and sign-out URLs are wired automatically and the M2M
+secret is read from state, so there is nothing to configure by hand. Skip to step 4.
 
 ### Option B — Cognito, bring your own pool
 
@@ -110,19 +90,16 @@ cognito = {
 }
 ```
 
-Create in Cognito first:
+Create first, in Cognito:
 
 1. **User Pool** → `cognito.user_pool_id`
 2. **Hosted UI domain** → `cognito.domain_prefix`
-3. **App Client (public, no secret)** for the SPA → `cognito.client_id`
-   - Allowed OAuth flows: Authorization code grant
-   - Allowed scopes: `openid`, `email`, `profile`
-   - After the first apply, add the `ui_url` output to its Allowed Callback and
-     Sign-out URLs
-4. Only if `enable_gateway = true`:
-   - **Resource Server** defining a custom scope (e.g. `gateway/invoke`)
-   - **App Client (confidential, with secret)** authorized for that scope →
-     `gateway_identity` below
+3. **App Client (public, no secret)** for the SPA → `cognito.client_id`. Authorization code
+   grant; scopes `openid`, `email`, `profile`. After the first apply, add the `ui_url`
+   output to its Allowed Callback and Sign-out URLs.
+4. Only with `enable_gateway = true`: a **Resource Server** defining a custom scope (e.g.
+   `gateway/invoke`) and a **confidential App Client** authorized for it → see
+   `gateway_identity` below.
 
 ### Option C — Auth0
 
@@ -136,12 +113,11 @@ auth0 = {
 
 Terraform creates nothing inside Auth0. In your tenant:
 
-1. **Application** of type *Single Page Application* → `auth0.client_id`.
-   Add the `ui_url` output to Allowed Callback URLs, Allowed Logout URLs **and**
-   Allowed Web Origins after the first apply.
-2. Only if `enable_gateway = true`: an **API** (its *Identifier* is the audience)
-   and a **Machine to Machine** application authorized for it →
-   `gateway_identity` below.
+1. An **Application** of type *Single Page Application* → `auth0.client_id`. Add the
+   `ui_url` output to Allowed Callback URLs, Allowed Logout URLs **and** Allowed Web
+   Origins after the first apply.
+2. Only with `enable_gateway = true`: an **API** (its Identifier is the audience) and a
+   **Machine to Machine** application authorized for it → `gateway_identity`.
 
 ### Option D — No login
 
@@ -150,21 +126,19 @@ idp            = "none"
 enable_gateway = false
 ```
 
-The UI and `/api/*` deploy **open to anyone with the URL**. Use it for a local
-trial or a throwaway sandbox, never for anything shared. `enable_gateway` must be
-`false`, because the Gateway's `CUSTOM_JWT` authorizer needs an OIDC provider —
-Any agent bound to a `tool` then fails fast rather than inventing evidence.
+The UI and `/api/*` deploy **open to anyone with the URL**. Use it for a throwaway sandbox,
+never for anything shared. `enable_gateway` must be `false`, because the Gateway's
+`CUSTOM_JWT` authorizer needs an OIDC provider — so every tool-bound agent (all five
+research agents in this sample) fails fast rather than inventing evidence.
 
-You must also **remove `authorization.actions`** from `workflow.json` (the sample ships
-it populated). With no authorizer there are no JWT claims, so every group check would
-evaluate against an empty group set and deny *everyone* — locking the UI out of the app
-it just deployed. Both IaC paths reject the combination at plan/synth time rather than
-letting you find out in the browser.
+You must also **remove `authorization.actions`** from `workflow.json`, which ships
+populated. With no authorizer there are no JWT claims, so every group check evaluates
+against an empty set and denies everyone, locking you out of the app you just deployed.
+Both IaC paths reject the combination at plan/synth time.
 
 ### Machine-to-machine identity (agent → Gateway)
 
-Required when `enable_gateway = true`, **except** for Option A. The same two
-variables serve both providers:
+Required when `enable_gateway = true`, except for Option A:
 
 ```hcl
 gateway_identity = {
@@ -177,87 +151,80 @@ gateway_identity = {
 | Value | Goes to |
 |---|---|
 | `idp`, `cognito`, `auth0`, `gateway_identity` | `terraform.tfvars` |
-| M2M **client secret** | env var `TF_VAR_gateway_client_secret` (never in a file) |
+| M2M **client secret** | `TF_VAR_gateway_client_secret` (never in a file) |
 
-The two providers issue different token shapes, which is why the Gateway
-authorizer and the runtime's token request are both provider-aware:
+The two providers issue different token shapes, which is why the Gateway authorizer and the
+runtime's token request are both provider-aware:
 
 | | Cognito M2M token | Auth0 M2M token |
 |---|---|---|
-| Claims present | `client_id` + `scope`, **no** `aud` | `aud` + `azp`, **no** `client_id` |
+| Claims present | `client_id` + `scope`, no `aud` | `aud` + `azp`, no `client_id` |
 | Gateway pins on | `allowed_clients` | `allowed_audience` + an `azp` custom claim |
 | Token request | HTTP Basic + `scope` | form body + `audience` |
 | Token endpoint | `/oauth2/token` | `/oauth/token` |
 
 ## 4. Remote state (once per account)
 
-State lives in **S3** with native locking, so anyone with deploy credentials
-plans/applies the same stack. Run the bootstrap once — it derives the account from
-your credentials, creates a versioned + encrypted + private bucket, writes
-`backend.hcl` (git-ignored), and wires the working directory:
+State lives in S3 with native locking, so anyone with deploy credentials plans and applies
+the same stack. Run the bootstrap once — it derives the account from your credentials,
+creates a versioned, encrypted, private bucket, writes `backend.hcl` (git-ignored), and
+runs `terraform init`:
 
 ```bash
 cd orchestrator/terraform
 ./bootstrap-state.sh
 ```
 
-It's safe to re-run, and safe on a workspace that already has state: if you'd
-previously applied with **local** state it **migrates** that state into S3 (taking a
-timestamped backup first) rather than orphaning your live resources.
-
 ```
 Bucket: agentcore-multiagent-orchestrator-tfstate-<account-id>
 Key:    orchestrator/terraform.tfstate
 ```
 
-Overrides: `AWS_REGION` for the bucket region, `STATE_NAME` for the bucket infix.
-Prefer local state for a solo trial? Comment out the `backend "s3"` block in
-`versions.tf` and run `terraform init -migrate-state`.
+Safe to re-run. If you had previously applied with **local** state it migrates that state
+into S3 (taking a timestamped backup first) rather than orphaning live resources.
 
-> Requires Terraform **≥ 1.10** (for S3-native `use_lockfile`, which replaces the
-> old DynamoDB lock table).
+Overrides: `AWS_REGION` for the bucket region, `STATE_NAME` for the bucket infix. For a
+solo trial, comment out the `backend "s3"` block in `versions.tf` and run
+`terraform init -migrate-state`.
 
 ## 5. Deploy
 
 ```bash
 cd orchestrator/terraform
-
 cp terraform.tfvars.example terraform.tfvars   # then edit
-
-# Simplest (Cognito created for you, no Gateway):
-#   region         = "us-west-2"
-#   idp            = "cognito"
-#   cognito        = { create = true }
-#   enable_gateway = false
-
-# Full (Cognito created for you + Gateway):
-#   region         = "us-west-2"
-#   idp            = "cognito"
-#   cognito        = { create = true }
-#   enable_gateway = true
-
-# Auth0 + Gateway:
-#   idp              = "auth0"
-#   auth0            = { domain = "your-tenant.us.auth0.com", client_id = "..." }
-#   gateway_identity = { client_id = "...", audience = "https://your-api-id" }
-
-# Only needed when you BRING YOUR OWN M2M client (any Auth0 setup, or Cognito with
-# create = false) AND enable_gateway = true. With cognito = { create = true },
-# Terraform creates the client and reads its secret from state — leave this unset.
-export TF_VAR_gateway_client_secret='<m2m client secret>'
-
 terraform apply                                # builds the image + provisions everything
 ```
 
-(`bootstrap-state.sh` in step 4 already ran `terraform init`.)
+Recommended starting point — everything created for you, full tool plane:
 
-The first apply builds/pushes the container image, provisions the **orchestrator
-runtime plus one dedicated AgentCore runtime per `dedicated` agent** (three of the
-five research agents), creates both **AgentCore Memory** resources (the checkpointer and
-the long-term semantic/summary store), the **Bedrock Guardrail**, the telemetry and
-Insights tables, enables **CloudWatch Transaction Search** (idempotent — a no-op if
-already on), and — when `enable_gateway = true` — the Gateway with its **Cedar
-policy engine** plus a KB ingestion job (a few minutes). Then read the outputs:
+```hcl
+region         = "us-west-2"
+idp            = "cognito"
+cognito        = { create = true }
+enable_gateway = true          # the default; all five research agents need it
+```
+
+Auth0 with the Gateway:
+
+```hcl
+idp              = "auth0"
+auth0            = { domain = "your-tenant.us.auth0.com", client_id = "..." }
+gateway_identity = { client_id = "...", audience = "https://your-api-id" }
+```
+
+Export the M2M secret only when you bring your own client (any Auth0 setup, or Cognito with
+`create = false`) and `enable_gateway = true`:
+
+```bash
+export TF_VAR_gateway_client_secret='<m2m client secret>'
+```
+
+The first apply builds and pushes the image; provisions the orchestrator runtime plus one
+dedicated runtime per `dedicated` agent; creates both AgentCore Memory resources (the
+checkpointer and the long-term semantic/summary store), the A2A stand-in Lambda, the Bedrock
+Guardrail, and the status/events/telemetry/insights tables; enables CloudWatch Transaction
+Search (idempotent); and with `enable_gateway = true` creates the Gateway, its Cedar policy
+engine, and a KB ingestion job. Allow several minutes.
 
 ```bash
 terraform output
@@ -265,19 +232,19 @@ terraform output
 # api_endpoint  -> HTTP API base
 ```
 
+`bootstrap-state.sh` already ran `terraform init`.
+
 ## 6. Create a login user
 
-*(Skip this step for `idp = "none"`. For `idp = "auth0"`, create the user in your
-Auth0 tenant instead, and make sure `terraform output ui_url` is listed in the
-application's Allowed Callback URLs, Allowed Logout URLs and Allowed Web Origins.)*
+Skip for `idp = "none"`. For `idp = "auth0"`, create the user in your tenant and make sure
+`terraform output ui_url` is in the application's Allowed Callback URLs, Allowed Logout URLs
+and Allowed Web Origins.
 
-With `cognito = { create = true }` the callback/sign-out URLs are wired to the
-CloudFront URL **by Terraform**, so there is no post-apply URL step — login works
-immediately.
+With `cognito = { create = true }` the callback and sign-out URLs are already wired to
+CloudFront, so login works immediately.
 
-The pool is **admin-create-only** on purpose: the UI sits on a public CloudFront
-URL, and self-signup would let anyone register and spend your Bedrock budget. Create
-yourself a user:
+The pool is **admin-create-only**: the UI sits on a public CloudFront URL, and self-signup
+would let anyone register and spend your Bedrock budget.
 
 ```bash
 POOL=$(terraform output -raw cognito_user_pool_id)
@@ -289,16 +256,12 @@ aws cognito-idp admin-set-user-password --user-pool-id "$POOL" \
   --username you@example.com --password '<a-strong-password>' --permanent
 ```
 
-### Put that user in a group (or you can log in but not approve)
+### Put that user in a group
 
-`workflow.json` ships an **`authorization`** block, so being logged in is not enough to
-approve a review gate. The groups it names are **created for you** — Terraform reads the
-block and provisions one Cognito group per group name — but *membership* is not managed
-in IaC, because it is per-person and changes far more often than a deploy. A brand-new
-user is therefore in no group and will see the Approve/Revise/Deny buttons greyed out
-with a "you don't have permission" note.
-
-Add yourself to every group the shipped config uses:
+`workflow.json` ships an `authorization` block, so being logged in is not enough to approve
+a gate. Terraform creates one Cognito group per group the block names, but **membership is
+not managed in IaC** — it is per-person and changes far more often than a deploy. A new user
+is in no group and sees the Approve/Revise/Deny buttons greyed out.
 
 ```bash
 for G in approvers operators; do
@@ -307,29 +270,13 @@ for G in approvers operators; do
 done
 ```
 
-Then **sign out and back in** — group membership is carried in the ID token, so an
-existing token will not pick it up.
-
-To *demonstrate* RBAC rather than just enable it, create a second user in no group:
-
-```bash
-aws cognito-idp admin-create-user --user-pool-id "$POOL" \
-  --username viewer@example.com \
-  --user-attributes Name=email,Value=viewer@example.com Name=email_verified,Value=true \
-  --message-action SUPPRESS
-aws cognito-idp admin-set-user-password --user-pool-id "$POOL" \
-  --username viewer@example.com --password '<a-strong-password>' --permanent
-```
-
-Signed in as that user, the approval controls render greyed out with the reason, and
-the API refuses each action with a 403 naming the group required and the groups you
-hold. Side by side with the grouped user, that is the whole feature in one screen.
+Then **sign out and back in** — group membership rides in the ID token.
 
 The shipped mapping (edit it in `orchestrator/app/workflow.json`):
 
 | Action | Meaning | Groups |
 |--------|---------|--------|
-| `start`    | start a run (the most expensive action in the app) | *unrestricted in the sample* |
+| `start`    | start a run | *unrestricted in the sample* |
 | `decision` | approve / revise / deny a review gate | `approvers` |
 | `rerun`    | re-run an agent and everything downstream | `approvers` |
 | `cancel`   | stop a running workflow | `approvers`, `operators` |
@@ -337,114 +284,128 @@ The shipped mapping (edit it in `orchestrator/app/workflow.json`):
 | `insights` | run the cross-run Insights batch analysis | `operators` |
 | `delete`   | permanently remove a run and its timeline | `operators` |
 
-An action **not listed** in `authorization.actions` is unrestricted, so deleting the
-block gives you the pre-RBAC behaviour where any logged-in user can do anything. An
-action listed with an **empty** group list is denied to everyone — that is how you
-switch a capability off entirely. See the `authorization` section of
-[`orchestrator/docs/WORKFLOW_REFERENCE.md`](orchestrator/docs/WORKFLOW_REFERENCE.md)
-for the full semantics, and check `GET /api/me` if you are unsure what the app thinks you can do:
+An action **not listed** is unrestricted, so deleting the block gives every logged-in user
+everything. An action listed with an **empty** group list is denied to everyone — that is
+how you switch a capability off. Full semantics in the `authorization` section of
+[`orchestrator/docs/WORKFLOW_REFERENCE.md`](orchestrator/docs/WORKFLOW_REFERENCE.md).
+
+Check what the app thinks you can do:
 
 ```bash
 curl -s -H "Authorization: Bearer $ID_TOKEN" "$(terraform output -raw api_endpoint)/api/me"
 # {"user":"you@example.com","groups":["approvers","operators"],
-#  "permittedActions":["decision","rerun","cancel","evaluate","insights","delete"], ...}
+#  "permittedActions":["start","decision","rerun","cancel","evaluate","insights","delete"]}
 ```
 
-**On Auth0**, set `authorization.groupsClaim` to a **namespaced** custom claim (e.g.
-`https://your-app/roles`) and add a post-login Action that emits it — Auth0 will not
-issue an unnamespaced custom claim, so the default `cognito:groups` finds nothing and
-every gated action is denied.
+To *demonstrate* RBAC, create a second user in no group. Signed in as them, the approval
+controls render greyed out with the reason, and the API refuses each action with a 403
+naming the group required and the groups you hold.
 
-> **Bringing your own pool** (`cognito = { create = false }`)? Then you *do* have to
-> add `terraform output ui_url` to your App Client's Allowed Callback and Sign-out
-> URLs yourself, or login fails with a redirect-mismatch error. The `authorization`
-> groups are still created in your pool.
+**On Auth0**, set `authorization.groupsClaim` to a **namespaced** custom claim (e.g.
+`https://your-app/roles`) and add a post-login Action that emits it. Auth0 will not issue an
+unnamespaced custom claim, so the default `cognito:groups` finds nothing and every gated
+action is denied.
+
+> **Bringing your own pool** (`cognito = { create = false }`)? Add
+> `terraform output ui_url` to your App Client's Allowed Callback and Sign-out URLs
+> yourself, or login fails with a redirect mismatch. The `authorization` groups are still
+> created in your pool.
 
 ## 7. Use it
 
-Open `ui_url`, log in (unless `idp = "none"`), type a request in the topic box, and
-start a session. Approve, revise, or deny at each human-review gate.
+Open `ui_url`, log in, type a request and start a session. Approve, revise or deny at each
+gate.
 
-Optionally fill the **Subject** box before starting: it scopes long-term memory, so
-agents recall insights from earlier runs on that same subject (a customer, product,
-project — whatever your domain groups knowledge by).
+Optionally fill the **Subject** box before starting: it scopes long-term memory, so agents
+recall insights from earlier runs on the same subject (a customer, product, project —
+whatever your domain groups knowledge by).
 
 Once a run finishes:
-- **Observability tab → Run detail** — per-agent cost/latency/tokens; click
-  **⤢ Prompts & I/O** on an agent for its exact prompts, tool queries, memory ops,
-  guardrail/policy decisions and **evaluation scores**, per run version.
-- **Evaluate** — agents with `evaluations.auto: true` are scored automatically at
-  completion; use the button for the rest. Scores take ~30–60s to appear.
-- **Observability tab → Insights** — pick a window and **Run insights** for the
-  cross-run failure/intent/summary analysis (a few minutes; needs at least one
-  completed run and Transaction Search, which step 4 enabled).
-- **Re-run** — open an agent's output and use *Rerun from here*, or pick several
-  agents of one parallel stage in the **Re-run agents** panel. Downstream stages
-  regenerate and their gates re-pause.
-- **💬 assistant** (bottom right) — ask about status/cost/evals, or tell it to
-  approve a gate, re-run an agent, or run an evaluation.
+
+- **Observability → Run detail** — per-agent cost, latency and tokens. Click
+  **⤢ Prompts & I/O** on an agent for its exact prompts, tool queries, memory operations,
+  guardrail and policy decisions, and evaluation scores, per run version.
+- **Evaluate** — agents with `evaluations.auto: true` are scored at completion; use the
+  button for the rest. Scores take 30–60s.
+- **Observability → Insights** — pick a window and **Run insights** for the cross-run
+  failure/intent/summary analysis. Takes a few minutes; needs Transaction Search (step 5
+  enabled it) and at least one completed run.
+- **Re-run** — open an agent's output and use *Rerun from here*, or pick several agents of
+  one parallel stage in the **Re-run agents** panel. Downstream stages regenerate and their
+  gates re-pause.
+- **Assistant** (bottom right) — ask about status, cost or evals, or tell it to approve a
+  gate, re-run an agent, or run an evaluation.
+- **Timeline** — carries the branch rule that matched, any guardrail block, and any
+  ungrounded figure the framework flagged for your attention at the next gate.
 
 ## 8. Point it at your own data sources
 
 Every tool your agents can call is declared in the **`tools`** block of
-`orchestrator/app/workflow.json`. Each key is both the Gateway target name and the
-label an agent references via its `tool` field. Terraform and CDK generate the
-Gateway target **and** the Cedar permit from these entries, so adding a data source
-is a JSON edit — no HCL, no TypeScript, no policy to write.
+`orchestrator/app/workflow.json`. Each key is both the Gateway target name and the label an
+agent references via its `tool` field, and must be **letters and digits starting with a
+letter** (the Gateway target forbids underscores, the generated Cedar permit forbids
+hyphens). Both IaC paths generate the Gateway target **and** the Cedar permit from these
+entries, so adding a data source is a JSON edit.
 
 ```json
 "tools": {
-  "kb":         { "type": "kb", "corpora": ["reference"],
-                  "policy": { "tool": "retrieve",
-                              "restrictTo": { "filter": ["reference"] } } },
-  "websearch":  { "type": "websearch", "maxResults": 10 },
-  "docs":       { "type": "mcp", "endpoint": "https://knowledge-mcp.global.api.aws",
-                  "call": "aws___search_documentation", "arg": "search_phrase",
-                  "listingMode": "DYNAMIC" },
-  "billing":    { "type": "openapi", "schemaS3Uri": "s3://your-bucket/billing.yaml" }
+  "kb":        { "type": "kb", "corpora": ["reference"],
+                 "policy": { "tool": "retrieve",
+                             "restrictTo": { "filter": ["reference"] } } },
+  "websearch": { "type": "websearch", "maxResults": 10 },
+  "docs":      { "type": "mcp", "endpoint": "https://knowledge-mcp.global.api.aws",
+                 "call": "aws___search_documentation", "arg": "search_phrase",
+                 "listingMode": "DYNAMIC" },
+  "pricing":   { "type": "lambda", "source": "pricing",
+                 "call": "aws_prices", "arg": "services" },
+  "lifecycle": { "type": "openapi", "source": "lifecycle",
+                 "call": "getProductLifecycle", "arg": "product" }
 }
 ```
 
 | `type` | Backend | Key fields |
 |---|---|---|
-| `kb` | Bedrock Knowledge Base on S3 Vectors, via a Lambda target | `corpora` — the top-level folders under `kb_docs/` |
+| `kb` | Bedrock Knowledge Base on S3 Vectors, via a Lambda target | `corpora` — the top-level folders under `kb_docs/`. Plus `embeddingModel`/`dimensions`, `corpusKey`, `corpusOperator`, `rerank` and a target-level `filter` |
 | `websearch` | The AWS-managed AgentCore Web Search connector | `maxResults`, `domains` (`{include, exclude}` — set on the target, enforced, agent-invisible), `publishedFrom`/`publishedTo`, `connectorVersion` (Terraform only) |
-| `mcp` | **Any** remote MCP server over Streamable HTTP | `endpoint`, `call`, `arg`, `args`, `listingMode`, `auth` |
-| `openapi` | Any REST API described by an OpenAPI schema | `schemaS3Uri` (an s3:// object you host) *or* `source: "lifecycle"` (a folder under `orchestrator/app/tools/` holding `openapi.json`, which the framework uploads). Tool names come from the schema's `operationId`s |
-| `lambda` | A function — a warehouse, an RDBMS, an internal service, anything inside a VPC | `lambdaArn` (one you deployed) *or* `source: "pricing"` (the shipped demo, packaged from the folder of that name under `orchestrator/app/tools/`), plus `toolSchema` — there is no `tools/list` for the Gateway to call, so the tools are declared |
+| `mcp` | Any remote MCP server over Streamable HTTP | `endpoint`, `call`, `arg`, `args`, `listingMode`, `auth` |
+| `openapi` | Any REST API described by an OpenAPI schema | exactly one of `schemaS3Uri` (an s3:// object you host) or `source` (a folder under `app/tools/` holding `openapi.json`, which the framework uploads). Tool names come from the schema's `operationId`s |
+| `lambda` | A function — a warehouse, an RDBMS, an internal service, anything in a VPC | exactly one of `lambdaArn` (one you deployed) or `source` (packaged from `app/tools/<source>/`), plus `toolSchema` — there is no `tools/list` for the Gateway to call, so the tools are declared |
 
-At most one `kb` and one `websearch` entry; as many `mcp`, `openapi` and `lambda` as
-you like. Every field of every type:
+At most one `kb` and one `websearch`; as many `mcp`, `openapi` and `lambda` as you like.
+Every field of every type:
 [`orchestrator/docs/WORKFLOW_REFERENCE.md`](orchestrator/docs/WORKFLOW_REFERENCE.md).
+
+`arg` names the parameter the agent's query is passed as, and **defaults to `query`** — set
+it to whatever your operation or tool actually calls that parameter.
 
 **Your own MCP server** is just the endpoint:
 
 ```json
-"internal_tools": { "type": "mcp", "endpoint": "https://mcp.your-company.com/mcp" }
+"internalTools": { "type": "mcp", "endpoint": "https://mcp.your-company.com/mcp" }
 ```
 
-**Secrets never go in `workflow.json`.** For a tool whose endpoint needs a key, pass
-it at apply time keyed by the tool name:
+**Secrets never go in `workflow.json`.** For a tool whose endpoint needs a key, pass it at
+apply time keyed by the tool name:
 
 ```bash
-export TF_VAR_tool_api_keys='{"internal_tools":"your-key"}'   # CDK: TOOL_API_KEYS
+export TF_VAR_tool_api_keys='{"internalTools":"your-key"}'   # CDK: TOOL_API_KEYS
 ```
 
 The key is vaulted in an AgentCore credential provider and sent by the Gateway as an
 `X-API-Key` header, so the agent never sees it.
 
-**Your own documents:** replace the contents of `orchestrator/kb_docs/`. Each
-top-level folder becomes a corpus (a filterable `doc_type`), listed in the `kb`
-tool's `corpora` and selected per agent with that agent's `corpus` field. The next
-apply uploads, re-ingests, and updates the authorization policy.
+**Your own documents:** replace the contents of `orchestrator/kb_docs/`. Each top-level
+folder becomes a corpus (a filterable `doc_type`), listed in the `kb` tool's `corpora` and
+selected per agent with that agent's `corpus` field. The next apply uploads, re-ingests and
+updates the authorization policy.
 
-> **Check the ingestion job after you add documents.** S3 Vectors caps *filterable*
-> metadata at 2048 bytes per vector, so a single large document can fail on its own
-> while the rest of the corpus succeeds — the job ends `FAILED` with
-> `numberOfDocumentsFailed: 1`, the deploy still reports success, and the KB simply
-> never returns that content. Both IaC paths declare the two keys that grow with the
-> document (`AMAZON_BEDROCK_TEXT`, `AMAZON_BEDROCK_METADATA`) as non-filterable, which
-> is what keeps you under the cap.
+> **Check the ingestion job after adding documents.** S3 Vectors caps *filterable* metadata
+> at 2048 bytes per vector, so one large document can fail on its own while the rest of the
+> corpus succeeds: the job ends `FAILED` with `numberOfDocumentsFailed: 1`, the deploy
+> reports success, and the KB never returns that content. Both IaC paths declare the two
+> keys that grow with the document (`AMAZON_BEDROCK_TEXT`, `AMAZON_BEDROCK_METADATA`) as
+> non-filterable, which is what keeps you under the cap.
+>
 > ```bash
 > KB=$(terraform output -raw knowledge_base_id)   # CDK: the knowledgeBaseId output
 > DS=$(aws bedrock-agent list-data-sources --knowledge-base-id $KB \
@@ -452,165 +413,144 @@ apply uploads, re-ingests, and updates the authorization policy.
 > aws bedrock-agent list-ingestion-jobs --knowledge-base-id $KB --data-source-id $DS \
 >   --query 'sort_by(ingestionJobSummaries,&startedAt)[-1]'
 > ```
-> Expect `"status": "COMPLETE"` and `numberOfDocumentsFailed: 0`.
 >
-> **The index and KB names carry a digest** (`kb-index-<sha8>`,
-> `<agent>-kb-<sha8>`) taken over their immutable properties. Neither dimension nor
-> the non-filterable key list can change in place, so changing one must *replace* the
-> resource — and CloudFormation refuses to replace a resource with a fixed custom
-> name. Deriving the name makes that replacement routine, at the cost of a **new
-> empty KB id** and a fresh ingest on such a change: expect `knowledgeBaseId` in the
-> outputs to change, and re-check the ingestion job above.
+> Expect `"status": "COMPLETE"` and `numberOfDocumentsFailed: 0`.
 
-> **Always verify what a new MCP target actually publishes — and PAGINATE.**
-> `tools/list` returns pages: read only the first and a target looks empty when its
-> tools are simply on page two. This deployment has four targets and the remote MCP
-> server alone publishes five tools, so the catalogue does not fit on one
-> page 2. Follow `nextCursor` until it is absent. The recipe is in
+> **The index and KB names carry a digest** (`kb-index-<sha8>`, `<agent>-kb-<sha8>`) taken
+> over their immutable properties. Neither the dimension nor the non-filterable key list can
+> change in place, so changing one must *replace* the resource — and CloudFormation refuses
+> to replace a resource with a fixed custom name. Deriving the name makes that replacement
+> routine, at the cost of a new empty KB id and a fresh ingest: expect `knowledgeBaseId` to
+> change, and re-check the ingestion job.
+
+> **Verify what a new MCP target publishes, and paginate.** `tools/list` returns pages, so a
+> target looks empty when its tools are on page two. This deployment has five targets and
+> the remote MCP server alone publishes five tools, so the catalogue does not fit on one
+> page — follow `nextCursor` until it is absent. The recipe is in
 > [`GETTING_STARTED.md`](GETTING_STARTED.md).
 >
-> Set `"call"` to whatever name appears, minus the `<targetName>___` prefix. Note the
-> Gateway composes every name as `<targetName>___<toolName>`, and AWS *also* uses
-> `___` to namespace tools on its managed servers — so the sample's `docs` target
-> publishes `docs___aws___search_documentation`, which is why `workflow.json` sets
-> `"call": "aws___search_documentation"`. That works; it just looks surprising.
+> Set `call` to whatever name appears, minus the `<targetName>___` prefix. The Gateway
+> composes every name as `<targetName>___<toolName>`, and AWS *also* uses `___` to namespace
+> tools on its managed servers — so the sample's `docs` target publishes
+> `docs___aws___search_documentation`, which is why `workflow.json` sets
+> `"call": "aws___search_documentation"`.
 >
-> If a target genuinely lists nothing, the agent raises `ToolUnavailable` and the run
-> fails with that reason — nothing is ever substituted.
->
-> The sample's `docs` target needs no deployment at all: it points at
-> `https://knowledge-mcp.global.api.aws`, the AWS-managed Knowledge MCP Server (five
-> tools over live AWS content, no credentials).
+> If a target genuinely lists nothing, the agent raises `ToolUnavailable` and the run fails
+> with that reason. Nothing is substituted.
 
 > **Web search: citations are contractual.** The connector returns `title`, `url` and
 > `publishedDate` per result, and its acceptable-use terms require you to retain and
-> *display* them. The framework preserves them into the model's evidence, verifies
-> every citation URL against that evidence (dropping invented links and downgrading
-> any `sourced-fact` that rested on one), and renders each source as a link in the UI.
-> Configure `domains` for a filter an agent cannot influence — it is set on the Gateway
-> target, so the Gateway applies it to every request. `publishedFrom` / `publishedTo`
-> are request-level and caller-supplied.
+> *display* them. The framework preserves them into the model's evidence, verifies every
+> citation URL against that evidence (dropping invented links and downgrading any
+> `sourced-fact` that rested on one), and renders each source as a link. Use `domains` for a
+> filter an agent cannot influence — it is set on the target, so the Gateway applies it to
+> every request. `publishedFrom` / `publishedTo` are request-level and caller-supplied.
 
-An OpenAPI operation an agent calls should accept a parameter named `query`.
+## 9. Tune the feature set
 
-## 9. (Optional) Tune the feature set
-
-Everything below is a `orchestrator/app/workflow.json` edit followed by
-`terraform apply` (Terraform reads that file too):
+Each of these is a `orchestrator/app/workflow.json` edit followed by `terraform apply`:
 
 | Want to… | Change |
 |---|---|
 | Turn a capability on/off for one agent | that agent's `agentcore` block (`memory.longTerm`, `guardrails.input/output`, `evaluations.enabled/auto`, `policy.enabled`) |
-| Stop paying for automatic evaluation | set `evaluations.auto: false` (the UI button still works on demand) |
-| Test Cedar rules without blocking | `orchestrator.policy` → add `"mode": "LOG_ONLY"` |
+| Stop paying for automatic evaluation | `evaluations.auto: false` (the UI button still works) |
+| Test Cedar rules without blocking | `orchestrator.policy.mode: "LOG_ONLY"` |
 | Turn policy off entirely | `orchestrator.policy.enabled: false` (no engine is created) |
-| Hide or restrict the assistant | `orchestrator.chatbot.enabled: false`, or set individual `chatbot.tools.*` to `false` (e.g. the action tools `rerun`, `review`, `runEval`) |
-| Move an agent to its own runtime | `"runtime": "dedicated"` — Terraform provisions it |
-| Add / swap a data source | a `tools` entry (see step 8) — plus a folder under `app/tools/<source>/` only when you use `source`, i.e. `type: "lambda"` (a `handler.py` to deploy) or `type: "openapi"` (an `openapi.json` to upload). `kb`, `websearch`, `mcp`, and the `lambdaArn` / `schemaS3Uri` forms are config alone |
+| Hide or restrict the assistant | `orchestrator.chatbot.enabled: false`, or set individual `chatbot.tools.*` to `false` (the action tools are `rerun`, `review`, `runEval`) |
+| Move an agent to its own runtime | `"runtime": "dedicated"` |
+| Add or swap a data source | a `tools` entry (step 8), plus a folder under `app/tools/<source>/` only when you use `source` |
 | Add an agent | a folder under `app/subagents/<id>/` + an `agents` entry + a place in `steps` (see [`GETTING_STARTED.md`](GETTING_STARTED.md)) |
 | Reduce span-indexing cost | `transaction_search_indexing_percentage` in `terraform.tfvars` (1% is free) |
 
-The shipped **guardrail** is a sample, and like the Cedar policy it is *generated* —
-`terraform/guardrail.tf` carries no domain content. Replace its filters and denied
-topics in the `guardrail` block of `app/workflow.json` before real use.
+The shipped **guardrail** and **Cedar policy** are both samples and both *generated* —
+`terraform/guardrail.tf` and `policy.tf` carry no domain content. Replace the guardrail's
+filters and denied topics in the `guardrail` block, and adjust tool authorization by editing
+the `tools` block: the policy permits exactly what is declared there, and the `kb` entry's
+`restrictTo` pins retrieval to the declared corpora.
 
-The **Cedar policy is generated**, so there is nothing to hand-edit: it permits
-exactly the tools declared in the `tools` block, and the `kb` entry's `restrictTo`
-pins retrieval to the declared corpora. Widen or narrow it by editing that config.
-
-**Tear down:** `terraform destroy` (removes all resources and data). A destroy +
-re-apply creates a new `ui_url`; Terraform re-wires the Cognito callback URLs for you, but you'll need to re-create your login user (step 6).
-
-> `terraform destroy` leaves **Transaction Search** enabled — it is an account-wide
-> setting that other workloads may rely on, so it is deliberately not torn down.
-> Disable it manually if you want to (`aws xray update-trace-segment-destination
-> --destination XRay`).
-
-**Or `./teardown.sh`, which finishes the job.** `terraform destroy` cannot remove two
-things: Transaction Search (above) and the remote-state S3 bucket, because
-`bootstrap-state.sh` creates it *outside* Terraform. The script does the destroy, then
-both of those, then the local `.terraform` artifacts. Every step is best-effort and
-idempotent, so it is safe to re-run, and the account id and bucket name come from your
-active credentials rather than being hardcoded.
+## 10. Tear down
 
 ```bash
-cd orchestrator/terraform
+terraform destroy
+```
+
+Removes all resources and data. A destroy plus re-apply creates a new `ui_url`; Terraform
+re-wires the Cognito callback URLs, but you need to re-create your login user (step 6).
+
+`terraform destroy` cannot remove two things: **Transaction Search**, which is account-wide
+and other workloads may rely on, and the **remote-state S3 bucket**, because
+`bootstrap-state.sh` creates it outside Terraform. `./teardown.sh` does the destroy and then
+both, plus the local `.terraform` artifacts. Every step is best-effort and idempotent, and
+the account id and bucket name come from your active credentials.
+
+```bash
 ./teardown.sh                            # prompts before destroying anything
 FORCE=1 ./teardown.sh                    # no prompt
 KEEP_TRANSACTION_SEARCH=1 ./teardown.sh  # leave the account-wide setting alone
 ```
 
-Use `KEEP_TRANSACTION_SEARCH=1` if anything else in the account relies on it.
+### What a teardown leaves behind
 
-> **What a teardown leaves behind.** Verified by running a full destroy of this stack:
-> every resource that holds your data — DynamoDB tables, both S3 buckets, the S3
-> Vectors bucket and index, the Knowledge Base, the Gateway and its targets, all four
-> AgentCore runtimes, the Memory stores, the Cognito pool — is removed. What survives
-> is CloudWatch **log groups** that this stack does not create:
->
-> * `/aws/bedrock-agentcore/runtimes/<runtime>-DEFAULT` (one per runtime) — created by
->   the AgentCore service under a generated id, so the stack cannot pre-declare them.
-> * three CDK/Terraform framework helper Lambdas' groups (the custom-resource provider,
->   the S3 auto-delete handler, the Transaction Search provider).
->
-> The log groups for the Lambdas this project *does* create are declared explicitly
-> (retention `var.log_retention_days` / `LOG_RETENTION`, default 30 days) and go with
-> the stack. Left implicit they would persist with NEVER-EXPIRE retention — a real
-> cost leak, which is why they are declared. To clear the residue:
->
-> ```bash
-> aws logs describe-log-groups \
->   --query "logGroups[?contains(logGroupName,'<agent_name>')].logGroupName" --output text \
->   | xargs -n1 aws logs delete-log-group --log-group-name
-> ```
+Every resource holding your data is removed — DynamoDB tables, both S3 buckets, the S3
+Vectors bucket and index, the Knowledge Base, the Gateway and its targets, all four
+AgentCore runtimes, the Memory stores, the Cognito pool. What survives is CloudWatch **log
+groups this stack does not create**:
 
+- `/aws/bedrock-agentcore/runtimes/<runtime>-DEFAULT`, one per runtime — created by the
+  AgentCore service under a generated id, so the stack cannot pre-declare them.
+- The framework helper Lambdas' groups (the custom-resource provider, the S3 auto-delete
+  handler, the Transaction Search provider).
+
+Log groups for the Lambdas this project *does* create are declared explicitly (retention
+`var.log_retention_days` / `LOG_RETENTION`, default 30 days) and go with the stack. Left
+implicit they would persist with never-expire retention, which is a real cost leak. To clear
+the residue:
+
+```bash
+aws logs describe-log-groups \
+  --query "logGroups[?contains(logGroupName,'<agent_name>')].logGroupName" --output text \
+  | xargs -n1 aws logs delete-log-group --log-group-name
+```
 
 ---
 
-# Deploy with CDK (full — same surface as Terraform)
+# Deploy with CDK
 
-The CDK path provisions the same resources as Terraform: the orchestrator + three
-dedicated runtimes, AgentCore Memory ×2, the Guardrail, DynamoDB stores, the
-BFF/API, the S3 + CloudFront UI, Transaction Search, and — with
-`-c enableGateway=true` — the AgentCore Gateway, the Bedrock Knowledge Base on S3
-Vectors, and the Cedar policy engine. Full details in
+Same resources as Terraform. Full details in
 [`orchestrator/cdk/README.md`](orchestrator/cdk/README.md).
 
 `enableGateway` is the only switch that changes the feature surface, exactly as
-`enable_gateway` does in Terraform: left `false`, no Gateway/KB/policy engine is
-created and any agent bound to a `tool` fails fast, while LLM inference, guardrails,
-memory, evaluations and full telemetry stay real.
+`enable_gateway` does — but it defaults to **`false`** here. Left off, no Gateway, KB or
+policy engine is created and every tool-bound agent fails fast, while inference, guardrails,
+memory, evaluations and telemetry stay real.
 
 ## Prerequisites
-- Node.js ≥ 20 and the AWS CDK CLI (`npm i -g aws-cdk`, or use the local dev dep)
-- A container engine that builds `linux/arm64` — Finch, Docker, or Podman
-- AWS credentials; **Bedrock model access** for `modelId` (default Claude Haiku 4.5)
-  **and Titan Text Embeddings V2** when deploying with `enableGateway=true` (the
-  Knowledge Base embeds with it)
-- The IAM permissions to deploy are covered by CDK's bootstrap execution role
-  (`AdministratorAccess` by default) — no separate policy file needed
+
+- Node.js ≥ 20 and the AWS CDK CLI (`npm i -g aws-cdk`, or the local dev dependency)
+- A container engine that builds `linux/arm64` — Finch, Docker or Podman
+- AWS credentials, with **Bedrock model access** for `modelId` (default Claude Haiku 4.5)
+  and for the embedding model (default Titan Text Embeddings V2) when deploying with
+  `enableGateway=true`
+- Deploy permissions come from CDK's bootstrap execution role, so there is no separate
+  policy file
 
 ## Deploy
+
 ```bash
 cd orchestrator/cdk
 npm install
 export CDK_DOCKER=finch        # only if you don't have Docker
 cdk bootstrap                  # first time per account/region
-# Core footprint (no Gateway; agents bound to a tool will fail fast):
-cdk deploy -c idp=cognito -c createCognito=true
-
-# Full surface — adds Gateway + Knowledge Base + Cedar policy (live MCP/RAG):
 cdk deploy -c idp=cognito -c createCognito=true -c enableGateway=true
 ```
 
-Outputs include `uiUrl` (CloudFront), `apiEndpoint`, `cognitoUserPoolId`, and
-`cognitoClientId`.
+A bare `cdk deploy` fails at synth: `idp` defaults to `cognito`, which needs either
+`-c createCognito=true` or the three `cognito*` ids.
+
+Outputs include `uiUrl`, `apiEndpoint`, `cognitoUserPoolId`, `cognitoClientId`, `gatewayUrl`
+and `knowledgeBaseId`.
 
 ### Identity provider options
-
-`-c idp=...` is the CDK equivalent of Terraform's `idp` variable, with the same
-three providers. A missing or inconsistent value fails at **synth**, before
-anything is deployed.
 
 | Mode | Command |
 |------|---------|
@@ -619,24 +559,20 @@ anything is deployed.
 | **Auth0** | `cdk deploy -c idp=auth0 -c auth0Domain=your-tenant.us.auth0.com -c auth0ClientId=YOUR_SPA_CLIENT_ID` |
 | **No auth** (sandbox only) | `cdk deploy -c idp=none` |
 
-> With `-c enableGateway=true` you also need the machine-to-machine identity, just
-> as in Terraform. For `idp=cognito -c createCognito=true` CDK creates it for you;
-> otherwise pass `-c gatewayClientId=... -c gatewayAudience=...` and export
-> `GATEWAY_CLIENT_SECRET`. `idp=none` cannot be combined with `enableGateway=true`.
-
-For Auth0, add the `uiUrl` output to the application's Allowed Callback URLs,
-Allowed Logout URLs and Allowed Web Origins.
+With `-c enableGateway=true` you also need the M2M identity. For
+`idp=cognito -c createCognito=true` CDK creates it; otherwise pass `-c gatewayClientId=…
+-c gatewayAudience=…` and export `GATEWAY_CLIENT_SECRET`. `idp=none` cannot be combined with
+`enableGateway=true`.
 
 With `-c createCognito=true` the Hosted UI callback and sign-out URLs are wired to the
-CloudFront domain **by the stack itself**, so there is no post-deploy URL step. (Doing it
-by CLI afterwards used to be the instruction here and was a trap: the next `cdk deploy`
-reverted it and login broke again.)
+CloudFront domain by the stack. For Auth0, or a bring-your-own Cognito client, add the
+`uiUrl` output to the Allowed Callback URLs, Allowed Logout URLs and Allowed Web Origins
+yourself.
 
 ### Create a login user, and put them in a group
 
-Same as the Terraform path — the pool is **admin-create-only** (self-signup is off, since
-the UI sits on a public CloudFront URL), and the groups named by
-`workflow.json`'s `authorization` block are created for you while *membership* is not:
+Same as the Terraform path: the pool is admin-create-only, and the groups
+`authorization` names are created for you while membership is not.
 
 ```bash
 POOL=<cognitoUserPoolId output>
@@ -652,33 +588,35 @@ for G in approvers operators; do
 done
 ```
 
-Without the group step you can log in but the approval controls stay disabled. See
-[step 6 of the Terraform path](#6-create-a-login-user) for the full action → group table
-and the Auth0 `groupsClaim` caveat.
+See [step 6 of the Terraform path](#6-create-a-login-user) for the action → group table and
+the Auth0 `groupsClaim` caveat.
 
-**Tear down:** `cdk destroy`. A destroy + re-deploy mints a new CloudFront URL, API
-endpoint and Cognito pool, so re-create your login user afterwards. The same residue
-note as the Terraform path applies — see
-[what a teardown leaves behind](#what-a-teardown-leaves-behind) above.
+## Tear down
+
+```bash
+cdk destroy
+```
+
+A destroy plus re-deploy mints a new CloudFront URL, API endpoint and Cognito pool, so
+re-create your login user. Transaction Search is deliberately left enabled. The same residue
+applies — see [what a teardown leaves behind](#what-a-teardown-leaves-behind).
 
 ---
 
 # Deploying both (different accounts or regions)
 
-CDK and Terraform can coexist when targeting **different** AWS accounts or regions.
-Resource names incorporate the account ID, so there are no global naming collisions.
-
-Example: CDK → us-east-1 (Account A), Terraform → us-west-2 (Account B):
+CDK and Terraform coexist when targeting **different** accounts or regions; resource names
+incorporate the account id, so there are no global collisions.
 
 ```bash
-# Terminal 1 — CDK
+# Terminal 1 — CDK into Account A / us-east-1
 export AWS_REGION=us-east-1 CDK_DEFAULT_REGION=us-east-1 CDK_DOCKER=finch
-cd orchestrator/cdk && cdk deploy -c idp=cognito -c createCognito=true
+cd orchestrator/cdk && cdk deploy -c idp=cognito -c createCognito=true -c enableGateway=true
 
-# Terminal 2 — Terraform (with Account B credentials)
+# Terminal 2 — Terraform into Account B / us-west-2
 export AWS_REGION=us-west-2
 cd orchestrator/terraform && terraform apply
 ```
 
-Both produce independent CloudFront URLs, each with its own Cognito User Pool.
-Update the callback URLs for each after deployment (step 5 above).
+Each produces an independent CloudFront URL with its own Cognito User Pool. Create a login
+user in each (step 6).
