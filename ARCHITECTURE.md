@@ -677,10 +677,14 @@ Not covered by either: the IaC's own resource semantics. `terraform validate` /
   the runtimes automatically.
 - **Two IaC options, one source of truth.** Terraform and CDK/TypeScript both derive
   agents + topology from `workflow.json`, build the same image, and provision the same
-  resources. The AgentCore resources come from the same CloudFormation types
-  (`AWS::BedrockAgentCore::*`) — Terraform through its Cloud Control provider, CDK
-  through the generated L1 constructs (`aws-bedrockagentcore`) plus `CfnResource`
-  escape hatches for Memory/Runtime, which have no L1 or stable L2 yet.
+  resources. No AgentCore resource has a stable L2 yet, so both paths work one level
+  down. Terraform uses the native `aws_bedrockagentcore_*` resources for the Gateway,
+  gateway targets, policy engine, policy and credential provider, and the Cloud Control
+  provider (`awscc_bedrockagentcore_*`) for Runtime and Memory. CDK mirrors that split:
+  the generated L1s from `aws-cdk-lib/aws-bedrockagentcore` for the first group, raw
+  `CfnResource` on `AWS::BedrockAgentCore::{Runtime,Memory}` for the second. Typed
+  equivalents now exist for both halves on both paths; moving the last two would
+  rewrite their addresses and replace live runtimes and memory stores, so they stay.
 - **Configuration-driven identity.** A single `idp` variable (`cognito` / `auth0` /
   `none`) drives login, the API authorizer and the Gateway M2M token. Provider
   differences are confined to `terraform/identity.tf`, one branch in the Gateway

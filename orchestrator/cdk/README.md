@@ -258,11 +258,14 @@ may depend on it.
 - **One CDK-only limit, surfaced as a synth error.** `connectorVersion` cannot be expressed
   — CloudFormation's connector source accepts only `connectorId`, so use Terraform for a
   version pin.
-- **No stable L2 for AgentCore Memory/Runtime yet.** Both are created via the underlying
-  CloudFormation resource types (`AWS::BedrockAgentCore::Memory`,
+- **No stable L2 for any AgentCore resource yet**, so everything here is L1. The Gateway,
+  gateway targets, policy engine, policy and credential provider use the generated L1s from
+  `aws-cdk-lib/aws-bedrockagentcore` (`CfnGateway`, `CfnGatewayTarget`, …). Memory and
+  Runtime are still declared as raw `CfnResource` (`AWS::BedrockAgentCore::Memory`,
   `AWS::BedrockAgentCore::Runtime`) — the same types Terraform's Cloud Control provider
-  uses. The Gateway, gateway targets, policy engine and credential providers do have
-  generated L1s (`aws-bedrockagentcore`), which is what `tool-plane.ts` uses.
+  uses. `CfnMemory` and `CfnRuntime` **do** exist in the pinned `aws-cdk-lib`, so those two
+  could move to the typed constructs; they have not, because the swap would rewrite the
+  logical ids and replace live runtimes and memory stores for no functional gain.
 - **KB ingestion** runs through a custom resource calling `StartIngestionJob`, keyed on a
   hash of `../kb_docs` — editing the corpus re-ingests on the next deploy, and nothing else
   triggers it.
