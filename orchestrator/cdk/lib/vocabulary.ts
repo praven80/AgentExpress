@@ -54,14 +54,12 @@ export const TOOL_LISTING_MODES = values("toolListingModes");
 export const A2A_AUTH_MODES = values("a2aAuthModes");
 export const A2A_SOURCES = values("a2aSources");
 export const A2A_LAMBDA_SKILLS = values("a2aLambdaSkills");
-export const MEMORY_STRATEGIES = values("memoryStrategies");
 export const AUTHORIZATION_ACTIONS = values("authorizationActions");
 export const WEB_SEARCH_REGIONS = values("webSearchRegions");
 export const GUARDRAIL_FILTER_STRENGTHS = values("guardrailFilterStrengths");
 export const GUARDRAIL_PII_ACTIONS = values("guardrailPiiActions");
 export const BUILTIN_LAMBDA_SOURCE = values("builtinLambdaSource")[0];
 export const EMBEDDING_MODELS = values("embeddingModels");
-export const KB_CORPUS_OPERATORS = values("kbCorpusOperators");
 
 /**
  * The embedding dimensions a model supports, FIRST being its default.

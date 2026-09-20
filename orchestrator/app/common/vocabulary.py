@@ -58,10 +58,7 @@ def values(name: str) -> tuple[str, ...]:
 # string lookup, and so a typo is an ImportError instead of a KeyError at runtime.
 RUNTIMES = values("runtimes")
 TOOL_TYPES = values("toolTypes")
-TOOL_SCHEMA_PROPERTY_TYPES = values("toolSchemaPropertyTypes")
 TOOL_AUTH_MODES = values("toolAuthModes")
-API_KEY_TOOL_TYPES = values("apiKeyToolTypes")
-TOOL_LISTING_MODES = values("toolListingModes")
 A2A_AUTH_MODES = values("a2aAuthModes")
 A2A_SOURCES = values("a2aSources")
 A2A_LAMBDA_SKILLS = values("a2aLambdaSkills")
@@ -69,5 +66,4 @@ MEMORY_STRATEGIES = values("memoryStrategies")
 AUTHORIZATION_ACTIONS = values("authorizationActions")
 WEB_SEARCH_REGIONS = values("webSearchRegions")
 GUARDRAIL_FILTER_STRENGTHS = values("guardrailFilterStrengths")
-GUARDRAIL_PII_ACTIONS = values("guardrailPiiActions")
 BUILTIN_LAMBDA_SOURCE = values("builtinLambdaSource")[0]

@@ -187,6 +187,39 @@ describe("validateTools", () => {
     ).toThrow(/CloudFormation cannot express/);
   });
 
+  it("refuses an API key on a tool type that gets no credential provider", () => {
+    // A SILENT SECURITY DOWNGRADE if accepted: only mcp and openapi targets get a
+    // credential provider, so on any other type the key is stored nowhere and the
+    // endpoint is then called unauthenticated. Terraform has refused this since the
+    // provider existed (`keyed_tools` in tools.tf); this path did not, so the same config
+    // synthesized cleanly under CDK and was rejected under Terraform.
+    //
+    // Found while removing dead code: `API_KEY_TOOL_TYPES` was imported into
+    // cdk/lib/vocabulary.ts and never read. An unused vocabulary binding turns out to be
+    // a good signal that one plane is missing a check the others have.
+    expect(() =>
+      validateTools({ kb: { type: "kb", corpora: ["r"], auth: "apikey" } }, {}, "us-east-1")
+    ).toThrow(/targets get a credential provider/);
+    expect(() =>
+      validateTools({ ws: { type: "websearch", auth: "apikey" } }, {}, "us-east-1")
+    ).toThrow(/vaulted\s+nowhere/);
+    // The two kinds that DO get a credential provider are unaffected.
+    expect(() =>
+      validateTools(
+        { m: { type: "mcp", endpoint: "https://x.test", auth: "apikey" } },
+        {},
+        "us-east-1"
+      )
+    ).not.toThrow();
+    expect(() =>
+      validateTools(
+        { a: { type: "openapi", schemaS3Uri: "s3://my-schemas/x.json", auth: "apikey" } },
+        {},
+        "us-east-1"
+      )
+    ).not.toThrow();
+  });
+
   it("rejects an invalid listingMode or auth", () => {
     expect(() =>
       validateTools(

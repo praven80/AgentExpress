@@ -80,16 +80,3 @@ def for_type(block: str, key: str, variant: str) -> Any:
         raise KeyError(
             f"{block}.{key} declares no default for {variant!r} in app/keys.json "
             f"(`defaultFor`). Declared variants: {known or '(none)'}") from None
-
-
-def block(name: str) -> dict[str, Any]:
-    """A whole block's defaults, for merging under a customer's sub-object.
-
-    The shape `orchestrator.runtimeInvoke` and friends want:
-
-        RUNTIME_INVOKE = {**defaults.get("orchestrator", "runtimeInvoke"), **supplied}
-
-    Returned as a copy, so a caller merging into it cannot mutate the loaded defaults for
-    everything else in the process.
-    """
-    return dict(_DEFAULTS.get(name) or {})

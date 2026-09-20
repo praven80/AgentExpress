@@ -71,8 +71,3 @@ export function keyDefaultFor<T = any>(block: string, key: string, variant: stri
   }
   return value as T;
 }
-
-/** A whole block's defaults, for spreading under a customer's sub-object. */
-export function defaultsBlock(name: string): Record<string, any> {
-  return { ...(RAW[name] ?? {}) };
-}

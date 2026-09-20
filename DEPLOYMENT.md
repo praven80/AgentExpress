@@ -526,6 +526,22 @@ re-apply creates a new `ui_url`; Terraform re-wires the Cognito callback URLs fo
 > Disable it manually if you want to (`aws xray update-trace-segment-destination
 > --destination XRay`).
 
+**Or `./teardown.sh`, which finishes the job.** `terraform destroy` cannot remove two
+things: Transaction Search (above) and the remote-state S3 bucket, because
+`bootstrap-state.sh` creates it *outside* Terraform. The script does the destroy, then
+both of those, then the local `.terraform` artifacts. Every step is best-effort and
+idempotent, so it is safe to re-run, and the account id and bucket name come from your
+active credentials rather than being hardcoded.
+
+```bash
+cd orchestrator/terraform
+./teardown.sh                            # prompts before destroying anything
+FORCE=1 ./teardown.sh                    # no prompt
+KEEP_TRANSACTION_SEARCH=1 ./teardown.sh  # leave the account-wide setting alone
+```
+
+Use `KEEP_TRANSACTION_SEARCH=1` if anything else in the account relies on it.
+
 > **What a teardown leaves behind.** Verified by running a full destroy of this stack:
 > every resource that holds your data — DynamoDB tables, both S3 buckets, the S3
 > Vectors bucket and index, the Knowledge Base, the Gateway and its targets, all four

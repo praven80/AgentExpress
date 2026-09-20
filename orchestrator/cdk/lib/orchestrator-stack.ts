@@ -247,6 +247,25 @@ export function validateTools(
         `workflow.json tools.${name} has an invalid "auth" (${t.auth}); use "none", "apikey" or "sigv4".`
       );
     }
+    // An API key is only vaulted for the target kinds that GET a credential provider.
+    // On any other type the key was accepted, stored nowhere, and the endpoint then
+    // called unauthenticated — a silent security downgrade rather than an error.
+    //
+    // Terraform has refused this since the credential provider existed
+    // (terraform/tools.tf, the `keyed_tools` precondition). This path did not, so the
+    // same config synthesized cleanly under CDK and was rejected under Terraform. Found
+    // by noticing that `API_KEY_TOOL_TYPES` was imported into cdk/lib/vocabulary.ts and
+    // never read — an unused vocabulary binding is a good signal that one plane is
+    // missing a check the others have.
+    if (t.auth === "apikey" && !vocab.API_KEY_TOOL_TYPES.includes(t.type)) {
+      throw new Error(
+        `workflow.json tools.${name} has type="${t.type}" with auth="apikey", but only ` +
+          `${vocab.API_KEY_TOOL_TYPES.map((x) => `"${x}"`).join(" and ")} targets get a ` +
+          `credential provider. On any other type the key would be accepted, vaulted ` +
+          `nowhere, and the endpoint called unauthenticated — so this is refused rather ` +
+          `than silently downgraded.`
+      );
+    }
     tools[name] = t as ToolSpec;
   }
 
