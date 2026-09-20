@@ -283,3 +283,128 @@ def test_the_assistant_does_not_claim_to_have_started_a_disabled_evaluation(bff)
     assert ok["status"] == "started"
     assert ok_line and "a" in ok_line
     assert len(sent) == 1
+
+
+# ---------------------------------------------------------------------------
+# A per-agent decision map reaches a gate that can consume one
+# ---------------------------------------------------------------------------
+# Found on a LIVE RUN, and it is the worst shape of bug this repo keeps hunting:
+# silent, and in the direction that looks like success.
+#
+# Only a `parallel` gate has one decision per agent — its agents are independent, so a
+# reviewer can accept three and send one back. A single-agent gate and a `sequence` gate
+# each take ONE decision (`nodes.py:_decision_of` reads only the top-level `decision`).
+# But `/decision` accepted a `decisions` map for ANY gate and then resumed with
+# `decision or "approve"` — so asking a sequence gate to revise one agent returned
+# HTTP 200, revised nothing, and APPROVED the step. The report was then written from the
+# un-revised analysis, with nothing anywhere saying the revise had been dropped.
+
+GATED_WORKFLOW = {
+    "agents": {a: {"name": a.upper()} for a in ("intake", "r1", "r2", "x", "y", "report")},
+    "steps": [
+        {"agent": "intake", "hitl": True},
+        {"parallel": ["r1", "r2"], "hitl": True, "gateId": "research"},
+        {"sequence": ["x", "y"], "hitl": True, "gateId": "x_and_y"},
+        {"agent": "report"},
+    ],
+    "authorization": RULES,
+}
+
+
+@pytest.fixture()
+def gated(monkeypatch):
+    """The BFF over a workflow with all three gate shapes, so the discriminator is real."""
+    monkeypatch.setenv("WORKFLOW_JSON", json.dumps(GATED_WORKFLOW))
+    monkeypatch.setenv("STATUS_TABLE", "t-status")
+    monkeypatch.setenv("EVENTS_TABLE", "t-events")
+    monkeypatch.setenv("RUNTIME_ARN", "arn:aws:bedrock-agentcore:us-east-1:1:runtime/x")
+    for mod in ("workflow", "authz", "chatbot", "handler"):
+        sys.modules.pop(mod, None)
+    handler = importlib.import_module("handler")
+    invoked: list[dict] = []
+    monkeypatch.setattr(handler, "events_tbl", FakeTable())
+    monkeypatch.setattr(handler, "_self_invoke", lambda fn, payload: invoked.append(payload))
+    handler._test_invoked = invoked
+
+    def waiting_at(node: str):
+        """Point the session's pending gate at `node`."""
+        monkeypatch.setattr(handler, "status_tbl", FakeTable(
+            {"session_id": "s1", "overall": "waiting_human", "user": "u@example.com",
+             "hitl": {"node": node, "question": "Review …"}}))
+
+    handler._test_waiting_at = waiting_at
+    yield handler
+    for mod in ("workflow", "authz", "chatbot", "handler"):
+        sys.modules.pop(mod, None)
+
+
+def decide(bff, body):
+    return call(bff, "POST", "/api/sessions/s1/decision", groups=["approvers"],
+                body=body, params={"id": "s1"})
+
+
+PER_AGENT = {"decisions": {"x": {"decision": "revise", "comment": "look again"}}}
+
+
+def test_the_parallel_gate_ids_come_from_the_topology():
+    """Derived, not stored, so the set cannot drift from the graph. The `group<i>`
+    fallback mirrors graph_builder._gate_id."""
+    import importlib as il
+    import os
+
+    os.environ["WORKFLOW_JSON"] = json.dumps(GATED_WORKFLOW)
+    sys.modules.pop("workflow", None)
+    wf = il.import_module("workflow")
+    try:
+        assert wf.parallel_gate_ids() == {"research"}      # not intake, not x_and_y
+    finally:
+        os.environ.pop("WORKFLOW_JSON", None)
+        sys.modules.pop("workflow", None)
+
+
+def test_a_per_agent_map_is_accepted_at_a_parallel_gate(gated):
+    gated._test_waiting_at("research")
+    status, resp = decide(gated, {"decisions": {
+        "r1": {"decision": "approve", "comment": ""},
+        "r2": {"decision": "revise", "comment": "thin evidence"}}})
+    assert status == 200, resp
+    assert gated._test_invoked[-1]["decisions"]["r2"]["decision"] == "revise"
+
+
+@pytest.mark.parametrize("node,why", [
+    ("x_and_y", "a sequence gate takes one decision for the whole chain"),
+    ("intake", "a single-agent gate takes one decision"),
+])
+def test_a_per_agent_map_is_refused_where_it_cannot_be_applied(gated, node, why):
+    gated._test_waiting_at(node)
+    status, resp = decide(gated, PER_AGENT)
+    assert status == 400, f"{why}, but the map was ACCEPTED: {resp}"
+    # The message has to say what to send instead, or the caller's only option is to
+    # read the framework.
+    assert node in resp["error"]
+    assert "ONE decision" in resp["error"]
+    assert '"decision"' in resp["error"]
+    assert "research" in resp["error"]        # names the gate that DOES take a map
+    # And nothing was resumed: the run is still waiting, not approved.
+    assert gated._test_invoked == []
+
+
+def test_the_single_decision_form_still_works_at_every_gate(gated):
+    """The fix must not close the ordinary path. This is what the UI sends."""
+    for node in ("intake", "research", "x_and_y"):
+        gated._test_invoked.clear()
+        gated._test_waiting_at(node)
+        status, _ = decide(gated, {"decision": "revise", "comment": "again please"})
+        assert status == 200
+        assert gated._test_invoked[-1]["decision"] == "revise"
+        assert gated._test_invoked[-1]["comment"] == "again please"
+
+
+def test_a_revise_is_never_downgraded_to_approve(gated):
+    """The invariant behind all of the above, stated once. `decision or "approve"` on the
+    resume path is what turned a dropped revise into a silent approval, so no request
+    that names `revise` anywhere may resume as an approve."""
+    gated._test_waiting_at("x_and_y")
+    status, _ = decide(gated, PER_AGENT)
+    assert status == 400
+    assert not any(p.get("decision") == "approve" for p in gated._test_invoked)

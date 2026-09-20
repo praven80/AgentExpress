@@ -229,6 +229,29 @@ VIEW: dict = project(RAW)
 #: Agent ids in declaration order — the per-node skeleton a new run starts from.
 NODE_IDS: list[str] = list(RAW.get("agents") or {})
 
+
+def parallel_gate_ids() -> set[str]:
+    """The gate ids that can accept a PER-AGENT decision map.
+
+    Only a `parallel` group has one decision per agent — its agents are independent, so
+    a reviewer can accept three and send one back. A single-agent gate and a `sequence`
+    gate each take ONE decision (a sequence re-runs its whole chain on revise, by
+    design), and `nodes.py:_decision_of` reads only the top-level `decision` for them.
+
+    This exists because that asymmetry was silently exploitable. `POST /decision`
+    accepted a `decisions` map for ANY gate, and where the gate could not consume one it
+    fell through to `decision or "approve"` — so a reviewer sending "revise this agent"
+    to a sequence gate got HTTP 200, no per-agent revise, and an APPROVED deliverable
+    that moved to the next step. Found on a live run of exactly that request: the
+    analysis was asked to revise and the report was written from the un-revised version.
+
+    Derived from `steps` rather than stored, so it cannot drift from the graph. The
+    `group<i>` fallback mirrors `graph_builder._gate_id`.
+    """
+    return {str(step.get("gateId") or f"group{i}")
+            for i, step in enumerate(RAW.get("steps") or [])
+            if isinstance(step, dict) and step.get("parallel")}
+
 #: The topic a run starts with when the caller sends none. From workflow.json, never
 #: a literal: this sample's topic has nothing to do with a customer's use case.
 DEFAULT_TOPIC: str = str((RAW.get("ui") or {}).get("defaultTopic") or "")

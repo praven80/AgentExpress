@@ -465,6 +465,27 @@ def _api(event: dict, context) -> dict:
         if not decisions and decision not in ("approve", "deny", "revise"):
             return _resp(400, {"error": "decision must be 'approve', 'deny' or 'revise', "
                                         "or provide a per-agent 'decisions' map"})
+        if decisions:
+            # ONLY a parallel gate can consume one. Sent to a single-agent or `sequence`
+            # gate, the map is ignored and the resume below falls through to
+            # `decision or "approve"` — so "revise this agent" returned 200 and APPROVED
+            # the step. Observed on a live run: the analysis was asked to revise, the
+            # gate approved, and the report was written from the un-revised version.
+            # Rejected rather than coerced, because guessing which of the three the
+            # caller meant is how the original bug reads to a reviewer.
+            pending = str(((status_tbl.get_item(
+                Key={"session_id": sid},
+                ProjectionExpression="hitl").get("Item") or {}).get("hitl")
+                or {}).get("node") or "")
+            allowed = workflow.parallel_gate_ids()
+            if pending and pending not in allowed:
+                return _resp(400, {"error": (
+                    f"the gate this run is waiting at ({pending!r}) takes ONE decision, so a "
+                    f"per-agent 'decisions' map cannot be applied to it — send "
+                    f"{{\"decision\": \"approve|revise|deny\", \"comment\": \"...\"}} instead. "
+                    f"A `sequence` gate re-runs its whole chain on revise, by design. "
+                    f"Per-agent decisions are only for a parallel group"
+                    + (f" ({', '.join(sorted(allowed))})" if allowed else ""))})
         _self_invoke(context.function_name,
                      {"action": "resume", "session_id": sid, "decision": decision or "approve",
                       "comment": body.get("comment", ""), "decisions": decisions,
