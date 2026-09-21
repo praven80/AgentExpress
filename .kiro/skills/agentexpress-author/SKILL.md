@@ -46,6 +46,11 @@ work, names the script for each step, and validates before advancing.
 [SAMPLE-PROMPTS.md](SAMPLE-PROMPTS.md) holds ready-to-paste prompts a customer can start
 from, including one that rebuilds this project's own workflow.
 
+Load [references/checklist.md](references/checklist.md) first — the ten things the
+framework needs from a customer, how to tell an answer from a gesture at one, and which two
+items get a stated default rather than a question. A vague brief does not fail; it produces
+something confidently wrong, which is worse.
+
 Load [references/contract.md](references/contract.md) for the exact legal shapes — tool
 types and their required keys, the step forms, the agent entry keys, and the `ctx` API an
 agent may call.
