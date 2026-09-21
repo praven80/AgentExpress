@@ -21,6 +21,7 @@ import Link from "@cloudscape-design/components/link";
 import SpaceBetween from "@cloudscape-design/components/space-between";
 import { useMemo } from "react";
 
+import { REPO, WORKFLOW_JSON, WORKFLOW_REFERENCE } from "../lib/links";
 import type { Workflow } from "../types";
 
 /** The capabilities a reader would otherwise have to discover by clicking. */
@@ -162,13 +163,17 @@ export function AboutPanel({ workflow, heading }: { workflow: Workflow; heading:
 
         <div>
           <Box variant="h3">Learn more</Box>
-          <Link
-            external
-            href="https://github.com/awslabs/agentcore-samples"
-            externalIconAriaLabel="Opens in a new tab"
-          >
-            Amazon Bedrock AgentCore samples
-          </Link>
+          <SpaceBetween size="xxs">
+            <Link external href={REPO} externalIconAriaLabel="Opens in a new tab">
+              This project on GitHub
+            </Link>
+            <Link external href={WORKFLOW_JSON} externalIconAriaLabel="Opens in a new tab">
+              workflow.json — the file everything above is read from
+            </Link>
+            <Link external href={WORKFLOW_REFERENCE} externalIconAriaLabel="Opens in a new tab">
+              workflow.json reference — every key, and what reads it
+            </Link>
+          </SpaceBetween>
         </div>
       </SpaceBetween>
     </HelpPanel>

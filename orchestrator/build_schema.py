@@ -278,7 +278,11 @@ def build() -> dict:
 
     return {
         "$schema": DRAFT,
-        "$id": "https://github.com/awslabs/agentcore-samples/multi-agent-orchestrator/workflow.schema.json",
+        # This project's own repository. It used to name the AWS samples repo, which
+        # does not host this schema — a `$id` is the schema's identity, so pointing it at
+        # somewhere the file is not makes `$ref` resolution and any registry lookup wrong.
+        "$id": ("https://github.com/praven80/sample-multi-agent-orchestrator"
+                "/blob/main/orchestrator/app/workflow.schema.json"),
         "title": "Multi-Agent Orchestrator workflow",
         "description": (
             "GENERATED — do not edit. Run `python3 build_schema.py` after changing "

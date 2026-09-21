@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/awslabs/agentcore-samples/multi-agent-orchestrator/workflow.schema.json",
+  "$id": "https://github.com/praven80/sample-multi-agent-orchestrator/blob/main/orchestrator/app/workflow.schema.json",
   "title": "Multi-Agent Orchestrator workflow",
   "description": "GENERATED — do not edit. Run `python3 build_schema.py` after changing app/keys.json or app/vocabulary.json. This exists so your editor can tell you which keys are legal, which are required and what values they take, before you deploy rather than after.",
   "type": "object",

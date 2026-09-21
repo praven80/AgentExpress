@@ -22,6 +22,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ApiError, api } from "./api";
 import { authEnabled, initAuth, logout } from "./auth";
+import { WORKFLOW_JSON, WORKFLOW_REFERENCE } from "./lib/links";
 import { isSettled } from "./lib/status";
 import type {
   Action, Me, SessionSnapshot, SessionSummary, Workflow,
@@ -366,8 +367,19 @@ export default function App() {
               { type: "link", text: "About this application", href: "#about" },
               {
                 type: "link",
+                // The FILE, not the project page. Everything the side navigation lists
+                // above — the stages, their order, their gates — is read from this one
+                // file, so a reader who wants to know where any of it came from should
+                // land on it directly.
+                text: "workflow.json",
+                href: WORKFLOW_JSON,
+                external: true,
+                externalIconAriaLabel: "Opens in a new tab",
+              },
+              {
+                type: "link",
                 text: "workflow.json reference",
-                href: "https://github.com/awslabs/agentcore-samples",
+                href: WORKFLOW_REFERENCE,
                 external: true,
                 externalIconAriaLabel: "Opens in a new tab",
               },
