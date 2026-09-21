@@ -193,6 +193,15 @@ reaches the report.
 ## `scaffold.py` CLI
 
 ```
+python3 scaffold.py reset
+    [--keep-kb]                      leave kb_docs/ alone
+    [--dry-run]
+
+Clears the shipped sample — agents, steps, tools, their folders and the KB corpora —
+and leaves ONE working agent (`first_agent`) in one gated step, because an empty
+`agents`/`steps` is not a valid workflow and would fail 221 tests. Run it first;
+`pytest` passes straight after, and that green suite is your safety net.
+
 python3 scaffold.py agent <agent_id>
     [--produces PRODUCES]            deliverable name, default <id>-output
     [--runtime {main,dedicated}]

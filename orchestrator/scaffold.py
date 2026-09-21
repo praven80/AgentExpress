@@ -1,10 +1,21 @@
 #!/usr/bin/env python3
-"""Create a new agent: its `workflow.json` entry AND its folder, in one command.
+"""Start your own workflow, and create agents for it.
+
+    python3 scaffold.py reset --dry-run          # what clearing the sample would remove
+    python3 scaffold.py reset                    # clear it: the first thing you do
 
     python3 scaffold.py agent triage
-    python3 scaffold.py agent triage --produces claim-triage --tool claims_db
+    python3 scaffold.py agent triage --produces claim-triage --tool claimsDb
     python3 scaffold.py agent fraud_check --remote            # runtime "a2a", no folder
     python3 scaffold.py agent triage --dry-run                # show, write nothing
+
+WHY `reset` EXISTS
+A clone arrives carrying a nine-agent AWS-architecture sample, and replacing it is step
+one for every customer. Done by hand it is easy to leave something behind, and the thing
+that notices is the test suite — `app/subagents/` and `workflow.json` must agree in both
+directions, and so must `app/tools/`. A leftover folder then fails a test whose message is
+about the framework rather than about the leftover, which reads as "the framework is
+broken" in a customer's first hour.
 
 WHY THIS EXISTS
 The framework's promise is that a customer touches two things: `workflow.json` and a
@@ -32,6 +43,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import subprocess
 import sys
 from collections import OrderedDict
@@ -208,10 +220,123 @@ def files(agent_id: str) -> dict[str, str]:
     }
 
 
+#: What `reset` keeps under app/subagents/. `_shared/` holds code the agents import and
+#: the worked example of a well-formed asset contract; __init__.py makes it a package.
+KEEP_IN_SUBAGENTS = {"_shared", "__init__.py"}
+
+#: The id of the one agent `reset` leaves behind. Deliberately not domain-shaped: it
+#: should read as scaffolding to rename, not as a suggestion about your topology.
+STARTER_ID = "first_agent"
+
+
+def _sample_inventory():
+    """Everything `reset` would remove: the config entries, the agent folders, the tool
+    folders and the Knowledge Base corpora."""
+    workflow = json.loads(WORKFLOW.read_text(), object_pairs_hook=OrderedDict)
+    agent_dirs = sorted(
+        d for d in SUBAGENTS.iterdir()
+        if d.is_dir() and d.name not in KEEP_IN_SUBAGENTS and not d.name.startswith("__"))
+    tools_root = ROOT / "app" / "tools"
+    tool_dirs = sorted(d for d in tools_root.iterdir() if d.is_dir()) if tools_root.is_dir() else []
+    kb_root = ROOT / "kb_docs"
+    corpora = sorted(d for d in kb_root.iterdir() if d.is_dir()) if kb_root.is_dir() else []
+    return workflow, agent_dirs, tool_dirs, corpora
+
+
+def reset(dry_run: bool, keep_kb: bool) -> int:
+    """Strip the shipped sample so a customer's own workflow can be built on top.
+
+    IT LEAVES ONE WORKING AGENT, NOT AN EMPTY FILE. An empty `agents`/`steps` is not a
+    valid workflow, and the first version of this command produced one: 221 tests across
+    18 files failed immediately, because most of them quite reasonably assume a workflow
+    has at least one agent and one step. That switches the customer's safety net off at
+    the exact moment they start editing, and makes "my config is wrong" indistinguishable
+    from "I have not finished yet". So this lands on the smallest workflow that is
+    genuinely valid — one agent, one gated step, no tools — and they build outward.
+    """
+    workflow, agent_dirs, tool_dirs, corpora = _sample_inventory()
+    agents = list(workflow["agents"])
+    tools = list(workflow.get("tools") or {})
+
+    print("workflow.json")
+    print(f"  agents  — removing {len(agents)}: {', '.join(agents) or 'none'}")
+    print(f"  steps   — removing {len(workflow.get('steps') or [])}")
+    print(f"  tools   — removing {len(tools)}: {', '.join(tools) or 'none'}")
+    for d in agent_dirs:
+        print(f"app/subagents/{d.name}/")
+    for d in tool_dirs:
+        print(f"app/tools/{d.name}/")
+    if keep_kb:
+        print(f"kb_docs/ — keeping {len(corpora)} corpus folder(s) (--keep-kb)")
+    else:
+        for d in corpora:
+            print(f"kb_docs/{d.name}/")
+    print(f"\nthen writing one starter agent, {STARTER_ID!r}, in one gated step.")
+    print("keeping app/subagents/_shared/ — the agents' shared code and the worked "
+          "example of an asset contract. Delete it once your own agents stop importing it.")
+
+    if dry_run:
+        print("\n--dry-run: nothing written.")
+        return 0
+
+    for d in agent_dirs:
+        shutil.rmtree(d)
+    for d in tool_dirs:
+        shutil.rmtree(d)
+    if not keep_kb:
+        for d in corpora:
+            shutil.rmtree(d)
+
+    starter = argparse.Namespace(
+        agent_id=STARTER_ID, produces="your-deliverable", runtime="main",
+        max_tokens=4000, tool="", remote=False, skill="", workflow=workflow)
+    spec = entry(starter)
+    # Evaluations on, because tests/test_evaluations_gate.py requires at least one
+    # evaluable agent — and because a customer who never sees the block will not learn
+    # the capability exists.
+    spec["agentcore"] = OrderedDict([
+        ("evaluations", OrderedDict([
+            ("enabled", True), ("auto", False),
+            ("evaluators", ["Builtin.Faithfulness", "Builtin.ResponseRelevance"]),
+        ])),
+    ])
+    workflow["agents"] = OrderedDict([(STARTER_ID, spec)])
+    workflow["steps"] = [OrderedDict([("agent", STARTER_ID), ("hitl", True)])]
+    workflow["tools"] = OrderedDict()
+    WORKFLOW.write_text(json.dumps(workflow, indent=2, ensure_ascii=False) + "\n")
+
+    folder = SUBAGENTS / STARTER_ID
+    folder.mkdir(parents=True, exist_ok=True)
+    for name, body in files(STARTER_ID).items():
+        (folder / name).write_text(body)
+
+    subprocess.run([sys.executable, str(ROOT / "format_workflow.py")],  # noqa: S603
+                   cwd=ROOT, check=True)
+    # The schema enumerates some values from what the repo contains, so regenerate it
+    # rather than leaving an editor validating against a sample that is now gone.
+    subprocess.run([sys.executable, str(ROOT / "build_schema.py")],  # noqa: S603
+                   cwd=ROOT, check=True)
+
+    print(f"\nDone. The sample is gone and you have the smallest workflow that still "
+          f"works: one agent, {STARTER_ID!r}, in one gated step, and no tools.")
+    print("Run `pytest` now — it should pass. That is your safety net while you build.")
+    print("\nNext:")
+    print("  1. declare your data sources in `tools`")
+    print(f"  2. rename {STARTER_ID!r}, and add the rest with `scaffold.py agent <id>`")
+    print("  3. write `steps` for your topology, with a gate where a human signs off")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Create a new agent's workflow.json entry and its folder.")
     sub = parser.add_subparsers(dest="what", required=True)
+
+    r = sub.add_parser("reset", help="remove the shipped sample workflow, agents and tools")
+    r.add_argument("--keep-kb", action="store_true",
+                   help="leave kb_docs/ alone (you are reusing the sample corpora)")
+    r.add_argument("--dry-run", action="store_true", help="print, write nothing")
+
     p = sub.add_parser("agent", help="a new agent")
     p.add_argument("agent_id", help="the agent id; also the folder name under app/subagents/")
     p.add_argument("--produces", default="", help="the deliverable name (default: <id>-output)")
@@ -224,6 +349,9 @@ def main() -> int:
     p.add_argument("--skill", default="", help="with --remote: which stand-in skill")
     p.add_argument("--dry-run", action="store_true", help="print, write nothing")
     args = parser.parse_args()
+
+    if args.what == "reset":
+        return reset(args.dry_run, args.keep_kb)
 
     agent_id = args.agent_id
     if not ID_RE.match(agent_id):

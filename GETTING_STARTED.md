@@ -310,7 +310,17 @@ reads it there unless `source` names it.
 
 ## 3. Add your own agent
 
-Two steps, and one command does both:
+Replacing this sample entirely rather than extending it? Clear it first — one command
+removes the nine agents, their folders, the five tools and the sample KB corpora, and
+leaves one working agent in one gated step so the test suite still passes:
+
+```bash
+cd orchestrator
+python3 scaffold.py reset --dry-run     # see exactly what it removes
+python3 scaffold.py reset
+```
+
+To add an agent, two steps, and one command does both:
 
 ```bash
 cd orchestrator

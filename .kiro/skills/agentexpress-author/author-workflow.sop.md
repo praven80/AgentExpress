@@ -70,14 +70,15 @@ The repository ships a nine-agent AWS-architecture workflow. A new use case repl
 and nothing later in this SOP works until it is gone.
 
 **Constraints:**
-- You MUST empty `agents` and `steps` in `workflow.json` and delete the corresponding folders under `app/subagents/`, keeping `_shared/` and `__init__.py`, because `scaffold.py` refuses to write an agent whose id already exists and will report "Nothing to do" instead of failing loudly
-- You MUST delete any folder under `app/tools/` that the new `tools` block will not declare, because `tests/test_subagents.py::test_no_tool_source_folder_is_orphaned` asserts that `app/tools/` and `workflow.json` agree in BOTH directions
-- You MUST delete the sample corpora under `kb_docs/` that the new workflow does not use, because every top-level folder there is ingested into the Knowledge Base and the customer would be paying to index this sample's AWS notes
+- You MUST run `python3 scaffold.py reset --dry-run` and show the user what it will remove, then `python3 scaffold.py reset`, because it clears `agents`, `steps`, `tools`, the agent folders, the tool folders and the sample KB corpora in one operation and leaves a workflow that still passes the suite
+- You MUST NOT clear those by hand, because `app/subagents/`, `app/tools/` and `workflow.json` must agree in BOTH directions and a single leftover folder fails a test whose message is about the framework rather than about the leftover
+- You MUST pass `--keep-kb` only when the customer is genuinely reusing this sample's AWS reference documents, because every top-level folder in `kb_docs/` is ingested and they would otherwise pay to index notes they will never query
+- You MUST treat the `first_agent` it leaves behind as scaffolding: rename it to the customer's first real agent or delete it once their own agents exist
 - You MUST create a Python environment before relying on any gate, because the suite needs `langgraph`, `pydantic` and `boto3` and a bare `python3 -m pytest` fails at collection with `ModuleNotFoundError`:
   `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt -r requirements-dev.txt`
 - You SHOULD keep `app/subagents/_shared/contracts/` initially and replace its asset shapes as you write the new agents, because they are the worked example of a well-formed asset
-- Validation: `app/subagents/` contains only `_shared`, `__init__.py` and the folders you are about to create, and `.venv/bin/python -c "import langgraph"` succeeds
-- On failure: hard stop
+- Validation: `.venv/bin/python -m pytest` passes immediately after the reset. It is meant to — that green suite is the customer's safety net for every step that follows
+- On failure: hard stop, because a reset that leaves the suite red means the repository was already inconsistent and nothing later can be trusted
 
 ### 4. Declare the tools
 

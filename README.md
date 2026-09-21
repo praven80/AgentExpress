@@ -483,7 +483,9 @@ orchestrator/
 │                               #   protocol path is exercised end to end out of the box
 ├── format_workflow.py          # canonical key order + formatting (--check for CI)
 ├── build_schema.py             # regenerate workflow.schema.json + defaults.json (--check)
-├── scaffold.py                 # `scaffold.py agent <id>` — writes the config entry AND
+├── scaffold.py                 # `scaffold.py reset` — clear the sample, keep a working
+│                               #   one-agent workflow; then
+│                               # `scaffold.py agent <id>` — writes the config entry AND
 │                               #   the app/subagents/<id>/ folder
 ├── docs/WORKFLOW_REFERENCE.md  # every workflow.json key, what reads it, what it does
 ├── kb_docs/reference/          # sample Knowledge Base corpus (replace with your own)
@@ -523,10 +525,20 @@ An agent's `workflow.json` key IS its package name under `app/subagents/<id>/`; 
 decides where it runs. All three placements use the same `Agent` interface, so the graph
 wiring is identical.
 
-**The short way** — writes the config entry and the folder together:
+**Starting your own workflow** — clear this sample out of the way first. It removes the
+nine agents, their folders, the five tools and the sample KB corpora in one operation, and
+leaves one working agent in one gated step, so `pytest` still passes and you build outward
+from something valid rather than from an empty file:
 
 ```bash
 cd orchestrator
+python3 scaffold.py reset --dry-run     # see exactly what it removes
+python3 scaffold.py reset
+```
+
+**Adding an agent** — writes the config entry and the folder together:
+
+```bash
 python3 scaffold.py agent triage --tool kb        # --dry-run to preview
 ```
 
