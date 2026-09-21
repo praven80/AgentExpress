@@ -9,7 +9,7 @@
  *  keeping in mind: initAuth() REDIRECTS for the code flow, so anything after it in
  *  the boot sequence may not run. The caller must stop when it returns false. */
 
-import { setToken } from "./api";
+import { setRefresher, setToken } from "./api";
 
 export interface AuthConfig {
   enabled: boolean;
@@ -65,6 +65,8 @@ interface Strategy {
   init(cfg: AuthConfig): Promise<string | null>;
   login(cfg: AuthConfig): void;
   logout(cfg: AuthConfig): void;
+  /** A fresh ID token without user interaction, or null when that is impossible. */
+  refresh?(cfg: AuthConfig): Promise<string | null>;
 }
 
 const NONE: Strategy = {
@@ -107,6 +109,7 @@ const COGNITO: Strategy = {
     }
     return token || null;
   },
+  refresh: refreshCognito,
   login(cfg) {
     const params = new URLSearchParams({
       client_id: cfg.clientId ?? "",
@@ -121,6 +124,7 @@ const COGNITO: Strategy = {
   logout(cfg) {
     localStorage.removeItem("cognito_id_token");
     localStorage.removeItem("cognito_access_token");
+    localStorage.removeItem("cognito_refresh_token");
     const params = new URLSearchParams({
       client_id: cfg.clientId ?? "",
       logout_uri: location.origin,
@@ -147,6 +151,36 @@ async function exchangeCode(
     }),
   });
   if (!res.ok) return null;   // a stale or replayed code: fall through to login()
+  const tokens = (await res.json()) as {
+    id_token?: string; access_token?: string; refresh_token?: string;
+  };
+  if (tokens.id_token) localStorage.setItem("cognito_id_token", tokens.id_token);
+  if (tokens.access_token) localStorage.setItem("cognito_access_token", tokens.access_token);
+  // THE REFRESH TOKEN IS THE POINT. Cognito returns one for the code grant, it lasts
+  // 30 days by default, and without keeping it the app is dead an hour after login.
+  if (tokens.refresh_token) localStorage.setItem("cognito_refresh_token", tokens.refresh_token);
+  return tokens.id_token ?? null;
+}
+
+/** Trade the stored refresh token for a new ID token. Returns null when there is none
+ *  or Cognito refuses it, which means the session is over. */
+async function refreshCognito(cfg: AuthConfig): Promise<string | null> {
+  const refresh = localStorage.getItem("cognito_refresh_token");
+  if (!refresh) return null;
+  const res = await fetch(`${cognitoBase(cfg)}/oauth2/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      client_id: cfg.clientId ?? "",
+      refresh_token: refresh,
+    }),
+  });
+  if (!res.ok) {
+    // A revoked or expired refresh token: clear it so we do not retry forever.
+    localStorage.removeItem("cognito_refresh_token");
+    return null;
+  }
   const tokens = (await res.json()) as { id_token?: string; access_token?: string };
   if (tokens.id_token) localStorage.setItem("cognito_id_token", tokens.id_token);
   if (tokens.access_token) localStorage.setItem("cognito_access_token", tokens.access_token);
@@ -157,6 +191,7 @@ async function exchangeCode(
 interface Auth0Client {
   handleRedirectCallback(): Promise<unknown>;
   getIdTokenClaims(): Promise<{ __raw?: string } | undefined>;
+  getTokenSilently(o?: unknown): Promise<string>;
   loginWithRedirect(): Promise<void>;
   logout(o: unknown): void;
 }
@@ -182,6 +217,22 @@ const AUTH0: Strategy = {
     }
     const claims = await auth0.getIdTokenClaims();
     return claims?.__raw ?? null;
+  },
+  async refresh() {
+    if (!auth0) return null;
+    try {
+      // `cacheMode: "off"` is load-bearing. getIdTokenClaims() alone reads the CACHE,
+      // so at the moment this is called it hands back the very token that just returned
+      // 401 — the replay fails, the session is declared lost, and the user is bounced to
+      // the login page for no reason. getTokenSilently with the cache off performs the
+      // actual renewal (refresh token, or a hidden iframe); only then are the claims new.
+      await auth0.getTokenSilently({ cacheMode: "off" });
+      const claims = await auth0.getIdTokenClaims();
+      return claims?.__raw ?? null;
+    } catch {
+      // login_required / consent_required: the session really is over.
+      return null;
+    }
   },
   login() {
     void auth0?.loginWithRedirect();
@@ -237,6 +288,16 @@ export async function initAuth(): Promise<AuthState | null> {
   }
   setToken(token);
   window.__idToken = token;
+  // From here on, api.ts recovers from a 401 by asking for a new token rather than
+  // surfacing "Unauthorized" and leaving the page stuck.
+  setRefresher(
+    async () => {
+      const fresh = s.refresh ? await s.refresh(cfg) : null;
+      if (fresh) window.__idToken = fresh;
+      return fresh;
+    },
+    () => { s.login(cfg); },
+  );
   const c = parseJwt(token);
   return {
     ready: true,

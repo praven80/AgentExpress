@@ -22,9 +22,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ApiError, api } from "./api";
 import { authEnabled, initAuth, logout } from "./auth";
+import { isSettled } from "./lib/status";
 import type {
   Action, Me, SessionSnapshot, SessionSummary, Workflow,
 } from "./types";
+import { AboutPanel } from "./views/AboutPanel";
 import { Assistant } from "./views/Assistant";
 import { HitlGate, type Decision, type GroupDecision } from "./views/HitlGate";
 import { Observability } from "./views/Observability";
@@ -54,6 +56,10 @@ export default function App() {
   const [selectedStep, setSelectedStep] = useState<string | null>(null);
   const [tab, setTab] = useState("graph");
   const [startOpen, setStartOpen] = useState(false);
+  /** The tools drawer. Open on the FIRST visit only: a first-time reader needs to be
+   *  told what the application is, and a returning one does not need it in the way. */
+  const [toolsOpen, setToolsOpen] = useState(
+    () => localStorage.getItem("seen_about") !== "1");
   const [flash, setFlash] = useState<FlashbarProps.MessageDefinition[]>([]);
 
   const flashId = useRef(0);
@@ -143,6 +149,12 @@ export default function App() {
     if (ui.title) document.title = ui.title;
   }, [ui.title]);
 
+  useEffect(() => {
+    if (toolsOpen) localStorage.setItem("seen_about", "1");
+  }, [toolsOpen]);
+
+  const settled = isSettled(String(snap?.overall ?? ""));
+
   // --- actions ------------------------------------------------------------
   async function startRun(topic: string, subject: string) {
     try {
@@ -187,9 +199,14 @@ export default function App() {
   async function rerun(agents: string[], comment: string) {
     if (!openRun || agents.length === 0) return;
     try {
+      // Two shapes, and they are not interchangeable (bff/handler.py):
+      //   one agent      -> {"agentId": "x", "comment": "..."}
+      //   a subset       -> {"agents": [{"agentId": "x", "comment": "..."}, ...]}
+      // The subset form takes a list of OBJECTS; sending a list of ids silently matched
+      // nothing.
       const body = agents.length === 1
         ? { agentId: agents[0], comment }
-        : { agents, comment };
+        : { agents: agents.map((agentId) => ({ agentId, comment })) };
       await api.post(`/api/sessions/${openRun}/rerun`, body);
       setSelectedStep(null);
       notify("success", agents.length === 1
@@ -273,6 +290,14 @@ export default function App() {
             e.preventDefault(); setView("runs"); setOpenRun(null);
           } }}
           utilities={[
+            {
+              type: "button",
+              iconName: "status-info",
+              text: "Info",
+              ariaLabel: "About this application",
+              disableUtilityCollapse: true,
+              onClick: () => setToolsOpen(true),
+            },
             { type: "button", text: `${REGION}`, iconName: "map", disableUtilityCollapse: true },
             ...(authEnabled()
               ? [{
@@ -310,9 +335,16 @@ export default function App() {
             header={{ href: "#runs", text: heading }}
             activeHref={view === "observability" ? "#obs" : "#runs"}
             onFollow={(e) => {
+              // ONLY swallow the internal hash links. This handler used to call
+              // preventDefault() unconditionally, which meant the external
+              // "workflow.json reference" link did nothing at all when clicked — the
+              // navigation was cancelled and nothing replaced it.
+              const href = e.detail.href;
+              if (!href.startsWith("#")) return;
               e.preventDefault();
-              if (e.detail.href === "#runs") { setView("runs"); setOpenRun(null); }
-              if (e.detail.href === "#obs") setView("observability");
+              if (href === "#runs") { setView("runs"); setOpenRun(null); }
+              if (href === "#obs") setView("observability");
+              if (href === "#about") setToolsOpen(true);
             }}
             items={[
               { type: "link", text: "Runs", href: "#runs" },
@@ -331,15 +363,32 @@ export default function App() {
                 })),
               },
               { type: "divider" },
+              { type: "link", text: "About this application", href: "#about" },
               {
                 type: "link",
                 text: "workflow.json reference",
                 href: "https://github.com/awslabs/agentcore-samples",
                 external: true,
+                externalIconAriaLabel: "Opens in a new tab",
               },
             ]}
           />
         }
+        tools={<AboutPanel workflow={workflow} heading={heading} />}
+        toolsOpen={toolsOpen}
+        onToolsChange={({ detail }) => setToolsOpen(detail.open)}
+        /* Without these, AppLayout's own open/close controls ship with no accessible
+           name — the info panel could be opened and then not closed by anyone using a
+           screen reader, and a test could not find the button either. */
+        ariaLabels={{
+          navigation: "Navigation",
+          navigationToggle: "Open the navigation",
+          navigationClose: "Close the navigation",
+          tools: "About this application",
+          toolsToggle: "Open the information panel",
+          toolsClose: "Close the information panel",
+          notifications: "Notifications",
+        }}
         notifications={<Flashbar items={flash} stackItems />}
         splitPanelOpen={Boolean(selectedStep && snap)}
         onSplitPanelToggle={({ detail }) => { if (!detail.open) setSelectedStep(null); }}
@@ -363,7 +412,10 @@ export default function App() {
                   resizeHandleAriaLabel: "Resize panel",
                 }}
               >
-                <StepPanel agentId={selectedStep} snap={snap} workflow={workflow} />
+                <StepPanel
+                  agentId={selectedStep} snap={snap} workflow={workflow}
+                  canRerun={can("rerun")} settled={settled} onRerun={rerun}
+                />
               </SplitPanel>
             )
             : undefined

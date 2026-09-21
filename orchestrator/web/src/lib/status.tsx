@@ -50,3 +50,15 @@ export function statusLabel(status?: string): string {
 export function statusIndicator(status?: string) {
   return <StatusIndicator type={statusType(status)}>{statusLabel(status)}</StatusIndicator>;
 }
+
+/** The run has stopped moving, so a re-run has a defined starting point. `waiting_human`
+ *  counts: the run is parked at a gate and will not advance until someone acts, which is
+ *  exactly when a reviewer wants to send a step back.
+ *
+ *  Lives beside the vocabulary it is drawn from because three screens ask the question —
+ *  the graph, the step panel and the run page — and three copies of this list would
+ *  disagree the first time a status was added. */
+export function isSettled(overall?: string): boolean {
+  return ["done", "denied", "failed", "waiting_human", "cancelled"]
+    .includes(String(overall ?? ""));
+}

@@ -52,6 +52,11 @@ resource "null_resource" "ui_build" {
       cp legacy/observability.js dist/observability.js
     EOT
     interpreter = ["/bin/bash", "-c"]
+    # NODE_ENV=production, stated rather than inherited. Vite passes the ambient
+    # NODE_ENV through to React's `process.env.NODE_ENV`, so an apply from a shell where
+    # it is set to anything else ships React's DEVELOPMENT build — 260 kB larger, with
+    # its warning machinery intact — and the page still works, so nothing would flag it.
+    environment = { NODE_ENV = "production" }
   }
 }
 

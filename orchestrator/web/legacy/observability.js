@@ -334,6 +334,30 @@
      so the tab reads as an AWS console page.
      ====================================================================== */
 
+  /* THE TYPEFACE, stated once for the whole tab.
+     Cloudscape ships Open Sans as an @font-face and each component sets font-family on
+     itself — it does NOT set one on <body>. This tab is plain markup, not components, so
+     it inherited the browser's default serif and read as a different application sitting
+     inside the same shell. Declaring it here is the fix; the value is Cloudscape's own
+     fallback stack (@cloudscape-design/components, --font-family-base), copied rather
+     than referenced because the custom property's name carries a build hash that changes
+     between releases.
+     Form controls are listed explicitly: a browser does not inherit font-family into
+     input, select, button or textarea. */
+  #obsView,
+  #obsView input, #obsView select, #obsView button, #obsView textarea {
+    font-family: "Open Sans", "Helvetica Neue", Roboto, Arial, sans-serif;
+  }
+  /* And one monospace stack, Cloudscape's --font-family-monospace, for every place this
+     tab shows code, ids or a raw prompt. There were three different ones. */
+  #obsView code, #obsView pre, #obsView .cmodel, #obsView .oid,
+  #obsView .obs-mchip code, #obsView .obs-sesslink {
+    font-family: Monaco, Menlo, Consolas, "Courier Prime", Courier, "Courier New", monospace;
+  }
+  /* The banner's check glyph was Georgia, then "Amazon Ember" — neither is the app's
+     font. It is a letter in a circle; it should be the same letter as everywhere else. */
+  #obsView .obs-banner .ck { font-family: inherit; }
+
   #obsView { background: #f2f3f3; }
   .obs-inner { padding: 24px 24px 60px; max-width: 1360px; }
 
@@ -362,7 +386,6 @@
   .obs-banner .ck {
     width: 20px; height: 20px;
     background: #0972d3;
-    font-family: "Amazon Ember", Arial, sans-serif;
     font-style: normal; font-size: 12px;
     box-shadow: none;
   }

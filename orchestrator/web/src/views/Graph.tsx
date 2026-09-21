@@ -13,10 +13,9 @@ import Box from "@cloudscape-design/components/box";
 import Button from "@cloudscape-design/components/button";
 import Popover from "@cloudscape-design/components/popover";
 import SpaceBetween from "@cloudscape-design/components/space-between";
-import { useState } from "react";
+import { type CSSProperties, useState } from "react";
 
 import type { AgentMeta, NodeState, NodeStatus, Step, Workflow } from "../types";
-import { statusIndicator } from "../lib/status";
 import "./graph.css";
 
 const BRANCH_OPS = ["equals", "notEquals", "in", "contains", "exists", "gt", "gte", "lt", "lte"];
@@ -42,11 +41,6 @@ function monogram(name: string): string {
   return (words[0][0] + words[1][0]).toUpperCase();
 }
 
-function shortModel(model?: string): string | null {
-  if (!model) return null;
-  return model.split(".").pop()!.replace(/-\d+-v\d+:\d+$/, "");
-}
-
 /** What an agent reads, when it is not bound to a declared tool. */
 function sourceLabel(meta: AgentMeta): string | null {
   if (meta.tool) return null;
@@ -55,18 +49,30 @@ function sourceLabel(meta: AgentMeta): string | null {
   return null;
 }
 
+/** One STATE. Compact on purpose: a Step Functions state shows an icon, a name and its
+ *  status, and nothing else — its configuration is in the panel. The first version put
+ *  every badge (placement, tool, corpus, model) in the box, which made each one a tall
+ *  card; five of those in a two-column frame read as a stack of cards rather than a
+ *  diagram, and at the frame's width they collided. The badges now live in the split
+ *  panel's Details tab, which is where the console puts them. */
 function StateBox({
-  agentId, meta, state, selected, onSelect,
+  agentId, meta, state, selected, onSelect, onRerunFrom,
 }: {
   agentId: string;
   meta: AgentMeta;
   state: NodeState;
   selected: boolean;
   onSelect: (id: string) => void;
+  /** Provided only when this state can actually be re-run, so the control is absent
+   *  rather than present-and-disabled on a running graph. */
+  onRerunFrom?: (id: string) => void;
 }) {
   const status: NodeStatus = state.status ?? "pending";
-  const model = shortModel(meta.model);
-  const src = sourceLabel(meta);
+  // ONE line of sub-text, the thing that distinguishes this step from its siblings:
+  // what it reads. Not six badges.
+  const subtitle = meta.tool
+    ? (meta.corpus ? `${meta.tool} · ${meta.corpus}` : meta.tool)
+    : (sourceLabel(meta) ?? meta.produces ?? "");
   return (
     <div
       className={`sfn-state sfn-${status}${selected ? " sfn-selected" : ""}`}
@@ -74,27 +80,41 @@ function StateBox({
       role="button"
       tabIndex={0}
       aria-label={`${meta.name ?? agentId} — ${status}`}
+      title={`${meta.name ?? agentId}${subtitle ? ` — ${subtitle}` : ""}`}
       onClick={(e) => { e.stopPropagation(); onSelect(agentId); }}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(agentId); }
       }}
     >
-      <div className="sfn-state-head">
-        <span className="sfn-mono" aria-hidden="true">{monogram(meta.name ?? agentId)}</span>
+      <span className={`sfn-icon sfn-icon-${status}`} aria-hidden="true">
+        {monogram(meta.name ?? agentId)}
+      </span>
+      {/* The name gets the FULL width of the text column and the placement badge sits on
+          the second line beside the subtitle. With the badge on the name's line, a
+          260px state truncated "Knowledge Base Research" to "Knowled…" — the badge was
+          winning space from the one string a reader needs. */}
+      <span className="sfn-state-text">
         <span className="sfn-state-name">{meta.name ?? agentId}</span>
-      </div>
-      <div className="sfn-state-tags">
-        {meta.runtime === "dedicated" ? <Badge color="blue">dedicated</Badge> : null}
-        {meta.runtime === "a2a" ? <Badge color="grey">a2a</Badge> : null}
-        {meta.tool ? <Badge color="green">{`tool: ${meta.tool}`}</Badge> : null}
-        {meta.corpus ? <Badge color="severity-low">{`corpus: ${meta.corpus}`}</Badge> : null}
-        {src ? <Badge color="grey">{src}</Badge> : null}
-        {model ? <Badge color="grey">{model}</Badge> : null}
-      </div>
+        <span className="sfn-state-meta">
+          {subtitle ? <span className="sfn-state-sub">{subtitle}</span> : null}
+          {meta.runtime && meta.runtime !== "main"
+            ? <Badge color={meta.runtime === "a2a" ? "grey" : "blue"}>{meta.runtime}</Badge>
+            : null}
+        </span>
+      </span>
+      {onRerunFrom ? (
+        <span className="sfn-state-act" onClick={(e) => e.stopPropagation()}>
+          <Button
+            variant="inline-icon"
+            iconName="redo"
+            ariaLabel={`Re-run from ${meta.name ?? agentId}`}
+            onClick={() => onRerunFrom(agentId)}
+          />
+        </span>
+      ) : null}
       {status === "running" ? (
         <div className="sfn-bar"><i style={{ width: `${state.pct || 6}%` }} /></div>
       ) : null}
-      <div className="sfn-state-status">{statusIndicator(status)}</div>
     </div>
   );
 }
@@ -141,7 +161,7 @@ function StageAnnotations({ step }: { step: Step }) {
 }
 
 function Stage({
-  step, index, workflow, nodes, selected, onSelect,
+  step, index, workflow, nodes, selected, onSelect, rerunnable, onRerunFrom,
 }: {
   step: Step;
   index: number;
@@ -149,6 +169,8 @@ function Stage({
   nodes: Record<string, NodeState>;
   selected: string | null;
   onSelect: (id: string) => void;
+  rerunnable: (id: string) => boolean;
+  onRerunFrom?: (id: string) => void;
 }) {
   const box = (id: string) => (
     <StateBox
@@ -158,6 +180,7 @@ function Stage({
       state={nodes[id] ?? { status: "pending" }}
       selected={selected === id}
       onSelect={onSelect}
+      onRerunFrom={onRerunFrom && rerunnable(id) ? onRerunFrom : undefined}
     />
   );
 
@@ -169,7 +192,9 @@ function Stage({
         <span className="sfn-frame-label">
           {`${step.gateName ?? "Parallel"} · ${step.parallel.length} branches in parallel`}
         </span>
-        <div className="sfn-frame-grid" style={{ gridTemplateColumns: `repeat(${cols}, 240px)` }}>
+        {/* The column COUNT is the component's business; the column WIDTH is the
+            stylesheet's, and it is the same variable the box sizes itself from. */}
+        <div className="sfn-frame-grid" style={{ "--sfn-cols": cols } as CSSProperties}>
           {step.parallel.map(box)}
         </div>
       </div>
@@ -206,20 +231,35 @@ function Stage({
 const ZOOMS = [0.6, 0.75, 0.9, 1, 1.15, 1.3];
 
 export function Graph({
-  workflow, nodes, selected, onSelect,
+  workflow, nodes, selected, onSelect, rerunnable, onRerunFrom, onRestart,
 }: {
   workflow: Workflow;
   nodes: Record<string, NodeState>;
   selected: string | null;
   onSelect: (id: string | null) => void;
+  /** Can this state be used as a re-run origin? */
+  rerunnable?: (id: string) => boolean;
+  onRerunFrom?: (id: string) => void;
+  /** Re-run the whole workflow from its first step. */
+  onRestart?: () => void;
 }) {
   const [zoomIdx, setZoomIdx] = useState(3);
   const zoom = ZOOMS[zoomIdx];
   const steps = workflow.steps ?? [];
+  const can = rerunnable ?? (() => false);
 
   return (
     <div className="sfn-canvas" onClick={() => onSelect(null)}>
       <div className="sfn-toolbar" onClick={(e) => e.stopPropagation()}>
+        {/* Restart lives ON THE GRAPH, next to the zoom controls, because that is where
+            a reader is looking when they decide the run went wrong. It used to be a tab
+            called "Re-run" three tabs away, which meant nobody found it. */}
+        {onRestart ? (
+          <>
+            <Button iconName="redo" onClick={onRestart}>Restart workflow</Button>
+            <span className="sfn-toolbar-sep" aria-hidden="true" />
+          </>
+        ) : null}
         <Button
           variant="icon" iconName="zoom-out" ariaLabel="Zoom out"
           disabled={zoomIdx === 0} onClick={() => setZoomIdx((i) => Math.max(0, i - 1))}
@@ -243,6 +283,7 @@ export function Graph({
             <Stage
               step={step} index={i} workflow={workflow} nodes={nodes}
               selected={selected} onSelect={onSelect}
+              rerunnable={can} onRerunFrom={onRerunFrom}
             />
           </div>
         ))}

@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@cloudscape-design/collection-hooks": "1.0.109",
     "@cloudscape-design/components": "3.0.1382",
     "@cloudscape-design/global-styles": "1.0.51",
     "react": "18.3.1",

@@ -3,8 +3,14 @@
  *  This is the change that makes the app read as a service screen: a collection lives
  *  in a Table in the content area with a header count, a filter and row actions — it
  *  does not live in the side navigation, which a console reserves for navigating.
+ *
+ *  Filtering, sorting and pagination all come from `useCollection`, Cloudscape's own
+ *  collection hook, rather than from three pieces of hand-rolled state. Sorting matters
+ *  most on Started: the BFF returns runs in whatever order it stored them, so without a
+ *  sort the newest run is not reliably at the top.
  */
 
+import { useCollection } from "@cloudscape-design/collection-hooks";
 import Box from "@cloudscape-design/components/box";
 import Button from "@cloudscape-design/components/button";
 import Header from "@cloudscape-design/components/header";
@@ -13,7 +19,6 @@ import Pagination from "@cloudscape-design/components/pagination";
 import SpaceBetween from "@cloudscape-design/components/space-between";
 import Table from "@cloudscape-design/components/table";
 import TextFilter from "@cloudscape-design/components/text-filter";
-import { useMemo, useState } from "react";
 
 import { fmtET } from "../lib/clock";
 import { statusIndicator } from "../lib/status";
@@ -31,33 +36,56 @@ export function RunsTable({
   onDelete: (id: string) => void;
   onStartNew: () => void;
 }) {
-  const [filter, setFilter] = useState("");
-  const [page, setPage] = useState(1);
+  const empty = (
+    <Box textAlign="center" color="inherit" padding={{ vertical: "l" }}>
+      <SpaceBetween size="s">
+        <b>No runs</b>
+        <Box variant="p" color="inherit">Start a run to see it here.</Box>
+        <Button disabled={!can("start")} onClick={onStartNew}>Start run</Button>
+      </SpaceBetween>
+    </Box>
+  );
 
-  const matched = useMemo(() => {
-    const q = filter.trim().toLowerCase();
-    if (!q) return runs;
-    return runs.filter((r) =>
-      r.topic.toLowerCase().includes(q)
-      || r.session_id.toLowerCase().includes(q)
-      || String(r.overall).toLowerCase().includes(q));
-  }, [runs, filter]);
-
-  const pages = Math.max(1, Math.ceil(matched.length / PAGE_SIZE));
-  const current = Math.min(page, pages);
-  const visible = matched.slice((current - 1) * PAGE_SIZE, current * PAGE_SIZE);
+  const { items, collectionProps, filterProps, paginationProps, filteredItemsCount } =
+    useCollection(runs, {
+      filtering: {
+        empty,
+        noMatch: (
+          <Box textAlign="center" color="inherit" padding={{ vertical: "l" }}>
+            <b>No matches</b>
+          </Box>
+        ),
+        // The default matcher stringifies the whole row, which would let a search hit a
+        // field the table does not show. Restrict it to the three the reader can see.
+        filteringFunction: (r, text) => {
+          const q = text.trim().toLowerCase();
+          if (!q) return true;
+          return r.topic.toLowerCase().includes(q)
+            || r.session_id.toLowerCase().includes(q)
+            || String(r.overall).toLowerCase().includes(q);
+        },
+      },
+      sorting: {
+        defaultState: {
+          sortingColumn: { sortingField: "created" },
+          isDescending: true,
+        },
+      },
+      pagination: { pageSize: PAGE_SIZE },
+    });
 
   return (
     <Table
+      {...collectionProps}
       variant="container"
       loading={loading}
       loadingText="Loading runs"
-      items={visible}
+      items={items}
       trackBy="session_id"
       onRowClick={({ detail }) => onOpen(detail.item.session_id)}
       header={
         <Header
-          counter={`(${matched.length})`}
+          counter={`(${filteredItemsCount ?? runs.length})`}
           description="Each run is one execution of the workflow defined in workflow.json."
           actions={
             <SpaceBetween direction="horizontal" size="xs">
@@ -73,34 +101,19 @@ export function RunsTable({
       }
       filter={
         <TextFilter
-          filteringText={filter}
+          {...filterProps}
           filteringPlaceholder="Find runs"
           filteringAriaLabel="Filter runs"
-          countText={filter ? `${matched.length} matches` : ""}
-          onChange={({ detail }) => { setFilter(detail.filteringText); setPage(1); }}
+          countText={filterProps.filteringText ? `${filteredItemsCount} matches` : ""}
         />
       }
-      pagination={
-        pages > 1
-          ? <Pagination currentPageIndex={current} pagesCount={pages}
-                        onChange={({ detail }) => setPage(detail.currentPageIndex)} />
-          : undefined
-      }
-      empty={
-        <Box textAlign="center" color="inherit" padding={{ vertical: "l" }}>
-          <SpaceBetween size="s">
-            <b>No runs</b>
-            <Box variant="p" color="inherit">
-              Start a run to see it here.
-            </Box>
-            <Button disabled={!can("start")} onClick={onStartNew}>Start run</Button>
-          </SpaceBetween>
-        </Box>
-      }
+      pagination={<Pagination {...paginationProps} />}
+      empty={empty}
       columnDefinitions={[
         {
           id: "topic",
           header: "Request",
+          sortingField: "topic",
           cell: (r) => (
             <Link
               href="#"
@@ -115,18 +128,23 @@ export function RunsTable({
         {
           id: "status",
           header: "Status",
+          sortingField: "overall",
           cell: (r) => statusIndicator(String(r.overall)),
           width: 170,
         },
         {
           id: "id",
           header: "Run ID",
+          sortingField: "session_id",
           cell: (r) => <Box fontSize="body-s" variant="code">{r.session_id}</Box>,
           width: 180,
         },
         {
           id: "created",
           header: "Started (ET)",
+          // Sorted on the raw ISO timestamp, not on the formatted Eastern-Time string,
+          // which sorts alphabetically and would interleave months.
+          sortingField: "created",
           cell: (r) => fmtET(r.created) || "—",
           width: 190,
         },

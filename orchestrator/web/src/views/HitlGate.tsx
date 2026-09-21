@@ -55,6 +55,15 @@ export function HitlGate({
   }
 
   const perOf = (id: string): GroupDecision => per[id] ?? { decision: "approve", comment: "" };
+
+  /* EVERY agent in the group, not just the ones the reviewer changed. The control
+     defaults each row to Approve on screen, so a reviewer who accepts all five and
+     presses Submit has touched nothing — and sending only what changed meant sending an
+     empty map, which the BFF refuses (an empty `decisions` is falsy, and no single
+     `decision` was supplied either). The screen said Approve five times and the request
+     said nothing at all. */
+  const fullDecisions = (): Record<string, GroupDecision> =>
+    Object.fromEntries(ids.map((id) => [id, perOf(id)]));
   const setPerFor = (id: string, patch: Partial<GroupDecision>) =>
     setPer((p) => ({ ...p, [id]: { ...perOf(id), ...patch } }));
 
@@ -134,7 +143,7 @@ export function HitlGate({
                   Deny run
                 </Button>
                 <Button variant="primary" loading={busy} disabled={!canDecide}
-                        onClick={() => void run(() => onGroupDecide(per, comment))}>
+                        onClick={() => void run(() => onGroupDecide(fullDecisions(), comment))}>
                   Submit decisions
                 </Button>
               </SpaceBetween>

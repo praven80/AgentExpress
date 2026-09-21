@@ -2,25 +2,58 @@
  *  resource's actions, a KeyValuePairs summary, then Tabs.
  *
  *  The tab set mirrors a Step Functions execution: the graph, the same information as
- *  a table, the event timeline, and the final output. */
+ *  a table, the event timeline, and the final output. There is no "Re-run" tab — a
+ *  re-run is an action on a STEP, so it lives in that step's panel, and the
+ *  whole-workflow restart lives on the graph's own toolbar.
+ *
+ *  Every table here is sorted and filtered through `useCollection`, Cloudscape's own
+ *  collection hook, rather than through hand-rolled state. Sorting a column is not a
+ *  nice-to-have on these two: Steps is the only place to see which step is slowest or
+ *  which produced nothing, and Events is append-only, so without sort and filter a long
+ *  run buries the one guardrail line a reader came for. */
 
+import { useCollection } from "@cloudscape-design/collection-hooks";
 import Box from "@cloudscape-design/components/box";
 import Button from "@cloudscape-design/components/button";
 import Container from "@cloudscape-design/components/container";
 import ExpandableSection from "@cloudscape-design/components/expandable-section";
 import Header from "@cloudscape-design/components/header";
 import KeyValuePairs from "@cloudscape-design/components/key-value-pairs";
+import Pagination from "@cloudscape-design/components/pagination";
 import SpaceBetween from "@cloudscape-design/components/space-between";
 import Table from "@cloudscape-design/components/table";
 import Tabs from "@cloudscape-design/components/tabs";
+import TextFilter from "@cloudscape-design/components/text-filter";
 import { useMemo } from "react";
 
 import { AssetView } from "../assets/AssetView";
 import { duration, fmtET } from "../lib/clock";
-import { statusIndicator } from "../lib/status";
-import type { Action, SessionSnapshot, Workflow } from "../types";
+import { isSettled, statusIndicator } from "../lib/status";
+import type { Action, NodeStatus, SessionSnapshot, Workflow } from "../types";
 import { Graph } from "./Graph";
-import { RerunPanel } from "./RerunPanel";
+
+/** One row of the Steps table. FLATTENED on purpose: a sortable column needs a scalar
+ *  `sortingField`, so anything the table sorts by is computed once here rather than
+ *  inside a cell renderer. */
+interface StepRow {
+  id: string;
+  stage: number;
+  name: string;
+  status: NodeStatus;
+  placement: string;
+  source: string;
+  produces: string;
+  bytes: number;
+}
+
+interface EventRow {
+  key: number;
+  ts: string;
+  step: string;
+  msg: string;
+}
+
+const EVENT_PAGE = 20;
 
 export function RunDetail({
   snap, workflow, selected, onSelect, can, onCancel, activeTab, onTabChange, onRerun,
@@ -38,16 +71,71 @@ export function RunDetail({
   const nodes = snap.nodes ?? {};
   const overall = String(snap.overall ?? "");
   const running = ["running", "waiting_human", "cancelling"].includes(overall);
+  const settled = isSettled(overall);
   const ids = useMemo(
     () => (workflow.steps ?? []).flatMap((s) => s.parallel ?? s.sequence ?? [s.agent!]),
     [workflow]);
   const doneCount = ids.filter((i) => nodes[i]?.status === "done").length;
 
-  const stageOf = (id: string): string => {
+  const stageOf = (id: string): number => {
     const i = (workflow.steps ?? []).findIndex(
       (s) => (s.parallel ?? s.sequence ?? [s.agent]).includes(id));
-    return i < 0 ? "—" : String(i + 1);
+    return i + 1;
   };
+
+  const ran = (id: string) =>
+    Boolean(nodes[id]?.output) || nodes[id]?.status === "done";
+
+  /** What the run is waiting for. `hitl.node` is a GATE id on a parallel or sequence
+   *  stage and an AGENT id on a single-agent stage — the two namespaces are separate, so
+   *  looking only in `agents` printed a raw id like "research" for every group gate. */
+  const awaiting = useMemo(() => {
+    const node = snap.hitl?.node;
+    if (!node) return "—";
+    const gate = (workflow.steps ?? []).find((s) => s.gateId === node);
+    return gate?.gateName ?? workflow.agents[node]?.name ?? node;
+  }, [snap.hitl?.node, workflow]);
+
+  const stepRows = useMemo<StepRow[]>(() => ids.map((id) => {
+    const meta = workflow.agents[id] ?? {};
+    const st = nodes[id];
+    return {
+      id,
+      stage: stageOf(id),
+      name: meta.name ?? id,
+      status: st?.status ?? "pending",
+      placement: meta.runtime ?? "main",
+      source: meta.tool ?? (meta.runtime === "a2a" ? "remote agent" : (meta.access ?? "—")),
+      produces: meta.produces ?? "—",
+      bytes: st?.output?.length ?? 0,
+    };
+  }), [ids, nodes, workflow]);
+
+  const eventRows = useMemo<EventRow[]>(
+    () => (snap.logs ?? []).slice().reverse().map((l, i) => ({
+      key: i,
+      ts: l.ts,
+      step: l.node ? (workflow.agents[l.node]?.name ?? l.node) : "—",
+      msg: l.msg,
+    })),
+    [snap.logs, workflow.agents]);
+
+  const steps = useCollection(stepRows, {
+    filtering: {
+      empty: <Box textAlign="center" padding={{ vertical: "l" }}>No steps.</Box>,
+      noMatch: <Box textAlign="center" padding={{ vertical: "l" }}>No step matches.</Box>,
+    },
+    sorting: { defaultState: { sortingColumn: { sortingField: "stage" } } },
+  });
+
+  const events = useCollection(eventRows, {
+    filtering: {
+      empty: <Box textAlign="center" padding={{ vertical: "l" }}>No events yet.</Box>,
+      noMatch: <Box textAlign="center" padding={{ vertical: "l" }}>No event matches.</Box>,
+    },
+    sorting: {},
+    pagination: { pageSize: EVENT_PAGE },
+  });
 
   return (
     <SpaceBetween size="l">
@@ -78,12 +166,7 @@ export function RunDetail({
             { label: "Run ID", value: <Box variant="code" fontSize="body-s">{snap.session_id}</Box> },
             { label: "Started by", value: snap.user || "—" },
             { label: "Subject", value: snap.subject_id || "—" },
-            {
-              label: "Awaiting",
-              value: snap.hitl?.node
-                ? (workflow.agents[snap.hitl.node]?.name ?? snap.hitl.node)
-                : "—",
-            },
+            { label: "Awaiting", value: awaiting },
           ]}
         />
       </Container>
@@ -100,14 +183,25 @@ export function RunDetail({
                 header={
                   <Header
                     variant="h2"
-                    description="Select a step to see its configuration and output in the panel."
+                    description={settled
+                      ? "Select a step to see its configuration, output and re-run controls. Restart the whole workflow from the toolbar."
+                      : "Select a step to see its configuration and output in the panel."}
                   >
                     Workflow
                   </Header>
                 }
                 disableContentPaddings
               >
-                <Graph workflow={workflow} nodes={nodes} selected={selected} onSelect={onSelect} />
+                <Graph
+                  workflow={workflow} nodes={nodes} selected={selected} onSelect={onSelect}
+                  rerunnable={(id) => settled && can("rerun") && ran(id)}
+                  onRerunFrom={settled && can("rerun") ? (id) => onSelect(id) : undefined}
+                  onRestart={
+                    settled && can("rerun") && ids.length > 0 && ran(ids[0])
+                      ? () => void onRerun([ids[0]], "")
+                      : undefined
+                  }
+                />
               </Container>
             ),
           },
@@ -116,42 +210,64 @@ export function RunDetail({
             label: "Table view",
             content: (
               <Table
+                {...steps.collectionProps}
+                items={steps.items}
                 variant="container"
-                items={ids.map((id) => ({ id, ...(nodes[id] ?? { status: "pending" }) }))}
                 trackBy="id"
                 onRowClick={({ detail }) => onSelect(detail.item.id)}
-                selectedItems={selected ? ids.filter((i) => i === selected).map((id) => ({
-                  id, ...(nodes[id] ?? { status: "pending" as const }),
-                })) : []}
-                header={<Header variant="h2" counter={`(${ids.length})`}>Steps</Header>}
+                selectedItems={stepRows.filter((r) => r.id === selected)}
+                header={
+                  <Header variant="h2" counter={`(${steps.filteredItemsCount ?? ids.length})`}>
+                    Steps
+                  </Header>
+                }
+                filter={
+                  <TextFilter
+                    {...steps.filterProps}
+                    filteringPlaceholder="Find steps"
+                    filteringAriaLabel="Filter steps"
+                    countText={steps.filterProps.filteringText
+                      ? `${steps.filteredItemsCount} matches`
+                      : ""}
+                  />
+                }
                 columnDefinitions={[
                   {
-                    id: "stage", header: "Stage", width: 90,
-                    cell: (r) => stageOf(r.id),
+                    id: "stage", header: "Stage", width: 100,
+                    sortingField: "stage",
+                    cell: (r) => r.stage,
                   },
                   {
                     id: "name", header: "Step", isRowHeader: true, minWidth: 220,
-                    cell: (r) => workflow.agents[r.id]?.name ?? r.id,
+                    sortingField: "name",
+                    cell: (r) => r.name,
                   },
                   {
                     id: "status", header: "Status", width: 170,
+                    sortingField: "status",
                     cell: (r) => statusIndicator(r.status),
                   },
                   {
-                    id: "placement", header: "Placement", width: 130,
-                    cell: (r) => workflow.agents[r.id]?.runtime ?? "main",
+                    id: "placement", header: "Placement", width: 140,
+                    sortingField: "placement",
+                    cell: (r) => r.placement,
                   },
                   {
-                    id: "tool", header: "Data source", width: 180,
-                    cell: (r) => workflow.agents[r.id]?.tool ?? "—",
+                    id: "source", header: "Data source", width: 180,
+                    sortingField: "source",
+                    cell: (r) => r.source,
                   },
                   {
                     id: "produces", header: "Produces", width: 170,
-                    cell: (r) => workflow.agents[r.id]?.produces ?? "—",
+                    sortingField: "produces",
+                    cell: (r) => r.produces,
                   },
                   {
-                    id: "size", header: "Output", width: 120,
-                    cell: (r) => (r.output ? `${(r.output.length / 1024).toFixed(1)} KB` : "—"),
+                    id: "bytes", header: "Output", width: 120,
+                    // Sorted on the NUMBER, displayed as KB. Sorting the formatted
+                    // string would have put 9.9 KB above 10.1 KB.
+                    sortingField: "bytes",
+                    cell: (r) => (r.bytes ? `${(r.bytes / 1024).toFixed(1)} KB` : "—"),
                   },
                 ]}
               />
@@ -162,26 +278,46 @@ export function RunDetail({
             label: "Timeline",
             content: (
               <Table
+                {...events.collectionProps}
+                items={events.items}
                 variant="container"
-                items={(snap.logs ?? []).slice().reverse().map((l, i) => ({ ...l, key: i }))}
                 trackBy="key"
                 header={
-                  <Header variant="h2" counter={`(${(snap.logs ?? []).length})`}
-                          description="Newest first. Branch decisions, guardrail blocks and ungrounded-figure warnings appear here.">
+                  <Header
+                    variant="h2"
+                    counter={`(${events.filteredItemsCount ?? eventRows.length})`}
+                    description="Newest first. Branch decisions, guardrail blocks and ungrounded-figure warnings appear here."
+                  >
                     Events
                   </Header>
                 }
-                empty={<Box textAlign="center" padding={{ vertical: "l" }}>No events yet.</Box>}
+                filter={
+                  <TextFilter
+                    {...events.filterProps}
+                    filteringPlaceholder="Find events"
+                    filteringAriaLabel="Filter events"
+                    countText={events.filterProps.filteringText
+                      ? `${events.filteredItemsCount} matches`
+                      : ""}
+                  />
+                }
+                pagination={<Pagination {...events.paginationProps} />}
                 columnDefinitions={[
                   {
                     id: "ts", header: "Time (ET)", width: 190,
+                    sortingField: "ts",
                     cell: (l) => <Box fontSize="body-s" variant="code">{fmtET(l.ts)}</Box>,
                   },
                   {
-                    id: "node", header: "Step", width: 190,
-                    cell: (l) => (l.node ? (workflow.agents[l.node]?.name ?? l.node) : "—"),
+                    id: "step", header: "Step", width: 190,
+                    sortingField: "step",
+                    cell: (l) => l.step,
                   },
-                  { id: "msg", header: "Message", cell: (l) => l.msg, minWidth: 320 },
+                  {
+                    id: "msg", header: "Message", minWidth: 320,
+                    sortingField: "msg",
+                    cell: (l) => l.msg,
+                  },
                 ]}
               />
             ),
@@ -212,15 +348,6 @@ export function RunDetail({
                   ) : null}
                 </SpaceBetween>
               </Container>
-            ),
-          },
-          {
-            id: "rerun",
-            label: "Re-run",
-            content: (
-              <RerunPanel
-                snap={snap} workflow={workflow} can={can} onRerun={onRerun}
-              />
             ),
           },
         ]}
