@@ -53,7 +53,7 @@ between the two IaC paths deploys cleanly on both and behaves differently.
 **Portability is checked, not claimed.** Two checks run against this repo: swapping in a
 four-agent workflow from another domain (renamed agents, different topology, its own tool,
 guardrail and branding), and renaming a shipped agent by touching only `workflow.json` and
-its own folder. Both compile the graph and pass the full suite (815 Python +
+its own folder. Both compile the graph and pass the full suite (822 Python +
 168 IaC + 23 UI), `terraform validate` and `cdk synth` with no other change.
 
 **Two couplings remain**, neither of which blocks a typical use case: the five tool
@@ -379,7 +379,7 @@ Browser ─▶ CloudFront ─┬─▶ S3 (static UI)
 - **UI** is a **Vite + React + TypeScript** console built on the **AWS Cloudscape Design
   System**, served as static files from S3/CloudFront. It logs in via the configured IdP,
   renders the DAG and every table from `/api/workflow`, drives the gates, and polls for
-  progress. Both IaC paths build it from source, so a deploy needs Node 22 (or a
+  progress. Both IaC paths build it from source, so a deploy needs Node.js ≥ 20 (or a
   container engine) and a TypeScript error fails the deploy.
 
 ## Repository layout
@@ -457,7 +457,7 @@ orchestrator/
 ├── web/                        # the console UI: Vite + React + TypeScript on the AWS
 │   │                           #   Cloudscape Design System. BUILT at deploy time by
 │   │                           #   both IaC paths (`npm ci && npm run build`), so a
-│   │                           #   deploy needs Node 22 or a container engine
+│   │                           #   deploy needs Node.js >= 20 or a container engine
 │   ├── src/App.tsx             #   the console shell: AppLayout, TopNavigation,
 │   │                           #     SideNavigation, breadcrumbs, SplitPanel, Flashbar
 │   ├── src/views/              #   Graph (a Step Functions-style canvas), RunsTable,
@@ -468,6 +468,8 @@ orchestrator/
 │   │                           #     change, chosen by shape not by field name
 │   ├── src/api.ts, src/auth.ts #   one exit point for requests (with 401 -> refresh ->
 │   │                           #     replay), and the IdP strategies
+│   ├── src/lib/                #   clock.ts (Eastern Time), status.tsx (the one status
+│   │                           #     vocabulary), links.ts (the repository URL, once)
 │   ├── legacy/observability.js #   the Observability tab, mounted as an ISLAND rather
 │   │                           #     than ported: charts, drilldown, I/O inspector,
 │   │                           #     evaluation scores, Insights, export

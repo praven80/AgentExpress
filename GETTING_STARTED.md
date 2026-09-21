@@ -729,7 +729,7 @@ the runtimes; editing `kb_docs/` re-ingests the corpus and nothing else.
 ### Check your config before you deploy it
 
 ```bash
-cd orchestrator     && pytest      # runtime side — 815 tests, ~11s
+cd orchestrator     && pytest      # runtime side — 822 tests, ~10s
 cd orchestrator/cdk && npm test    # IaC side + Terraform↔CDK parity — 168 tests
 cd orchestrator/web && npm test    # the UI — 23 tests
 ```

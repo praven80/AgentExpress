@@ -1826,8 +1826,10 @@ export class OrchestratorStack extends cdk.Stack {
           // the asset hash, or every local build would invalidate the deployment.
           exclude: ["node_modules", "dist", "*.tftpl", ".vite"],
           bundling: {
-            // A Node image, because the build is npm. The version tracks the one the
-            // package.json engines field expects.
+            // A Node image, because the build is npm. Pinned to 22 while web/package.json
+            // requires only >=20: the floor is what the app needs, this is what CI builds
+            // it with, and pinning means a new Node major cannot change the bundle without
+            // someone choosing it.
             image: cdk.DockerImage.fromRegistry("public.ecr.aws/docker/library/node:22-alpine"),
             command: [
               "sh", "-c",

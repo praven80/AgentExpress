@@ -4,6 +4,9 @@
   "version": "1.0.0",
   "type": "module",
   "description": "The orchestrator's console UI, built with the AWS Cloudscape Design System.",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
