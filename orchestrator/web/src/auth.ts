@@ -14,11 +14,12 @@ import { setToken } from "./api";
 export interface AuthConfig {
   enabled: boolean;
   provider?: "cognito" | "auth0" | "none";
-  /** Cognito */
-  domain?: string;
-  clientId?: string;
+  /** Cognito: the Hosted UI domain is COMPOSED from these two, not supplied. */
+  domainPrefix?: string;
   region?: string;
-  /** Auth0 */
+  clientId?: string;
+  /** Auth0. The IaC also writes `domain` here for the Auth0 tenant. */
+  domain?: string;
   auth0Domain?: string;
   auth0ClientId?: string;
 }
@@ -73,36 +74,84 @@ const NONE: Strategy = {
   logout: () => {},
 };
 
-/** Cognito Hosted UI, authorization-code flow with the token in the URL fragment. */
+/** Cognito Hosted UI, AUTHORIZATION-CODE flow done by hand.
+ *
+ *  Two things here are load-bearing and were both got wrong on the first attempt:
+ *
+ *  1. THE DOMAIN IS COMPOSED, not supplied. `auth-config.js` gives `domainPrefix` and
+ *     `region` for Cognito and leaves `domain` empty (that field is Auth0's), so
+ *     reading `cfg.domain` produces `https:///oauth2/authorize`.
+ *  2. THE FLOW IS `code`, NOT `token`. Both IaC paths configure the app client for the
+ *     authorization-code grant only, so an implicit-flow request is rejected by
+ *     Cognito. A public client can exchange a code without PKCE, which is why no SDK
+ *     is needed.
+ *
+ *  Tokens live in localStorage and are re-validated for expiry on load, so a reload
+ *  does not bounce through the IdP. */
 const COGNITO: Strategy = {
-  async init() {
-    const hash = new URLSearchParams(location.hash.replace(/^#/, ""));
-    const fromHash = hash.get("id_token");
-    if (fromHash) {
-      sessionStorage.setItem("idToken", fromHash);
-      history.replaceState({}, "", location.pathname);
-      return fromHash;
+  async init(cfg) {
+    const base = cognitoBase(cfg);
+    const params = new URLSearchParams(location.search);
+    let token: string | null;
+    if (params.has("code")) {
+      token = await exchangeCode(base, cfg, params.get("code")!);
+      history.replaceState({}, document.title, location.pathname);
+    } else {
+      token = localStorage.getItem("cognito_id_token");
     }
-    const stored = sessionStorage.getItem("idToken");
-    if (stored && !expired(stored)) return stored;
-    return null;
+    // Drop an expired token rather than sending a dead one and getting a 401.
+    if (token && expired(token)) {
+      localStorage.removeItem("cognito_id_token");
+      localStorage.removeItem("cognito_access_token");
+      token = null;
+    }
+    return token || null;
   },
   login(cfg) {
-    const url = new URL(`https://${cfg.domain}/oauth2/authorize`);
-    url.searchParams.set("client_id", cfg.clientId || "");
-    url.searchParams.set("response_type", "token");
-    url.searchParams.set("scope", "openid email profile");
-    url.searchParams.set("redirect_uri", location.origin + "/");
-    location.assign(url.toString());
+    const params = new URLSearchParams({
+      client_id: cfg.clientId ?? "",
+      response_type: "code",
+      scope: "openid email profile",
+      // No trailing slash: this must match the callback URL the IaC registered on the
+      // app client exactly, or Cognito refuses with redirect_mismatch.
+      redirect_uri: location.origin,
+    });
+    location.assign(`${cognitoBase(cfg)}/login?${params.toString()}`);
   },
   logout(cfg) {
-    sessionStorage.removeItem("idToken");
-    const url = new URL(`https://${cfg.domain}/logout`);
-    url.searchParams.set("client_id", cfg.clientId || "");
-    url.searchParams.set("logout_uri", location.origin + "/");
-    location.assign(url.toString());
+    localStorage.removeItem("cognito_id_token");
+    localStorage.removeItem("cognito_access_token");
+    const params = new URLSearchParams({
+      client_id: cfg.clientId ?? "",
+      logout_uri: location.origin,
+    });
+    location.assign(`${cognitoBase(cfg)}/logout?${params.toString()}`);
   },
 };
+
+function cognitoBase(cfg: AuthConfig): string {
+  return `https://${cfg.domainPrefix}.auth.${cfg.region}.amazoncognito.com`;
+}
+
+async function exchangeCode(
+  base: string, cfg: AuthConfig, code: string,
+): Promise<string | null> {
+  const res = await fetch(`${base}/oauth2/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "authorization_code",
+      client_id: cfg.clientId ?? "",
+      code,
+      redirect_uri: location.origin,
+    }),
+  });
+  if (!res.ok) return null;   // a stale or replayed code: fall through to login()
+  const tokens = (await res.json()) as { id_token?: string; access_token?: string };
+  if (tokens.id_token) localStorage.setItem("cognito_id_token", tokens.id_token);
+  if (tokens.access_token) localStorage.setItem("cognito_access_token", tokens.access_token);
+  return tokens.id_token ?? null;
+}
 
 /** Auth0 via auth0-spa-js, loaded on demand so a Cognito deployment never fetches it. */
 interface Auth0Client {
@@ -120,8 +169,10 @@ const AUTH0: Strategy = {
       auth0: { createAuth0Client(o: unknown): Promise<Auth0Client> };
     }).auth0;
     auth0 = await factory.createAuth0Client({
-      domain: cfg.auth0Domain,
-      clientId: cfg.auth0ClientId,
+      // The CDK template writes the tenant into `domain`; Terraform writes
+      // `auth0Domain`. Accept either rather than depending on which plane deployed.
+      domain: cfg.auth0Domain || cfg.domain,
+      clientId: cfg.auth0ClientId || cfg.clientId,
       authorizationParams: { redirect_uri: location.origin + "/" },
       cacheLocation: "localstorage",
     });
