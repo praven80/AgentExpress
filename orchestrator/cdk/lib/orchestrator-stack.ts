@@ -1835,15 +1835,15 @@ export class OrchestratorStack extends cdk.Stack {
                 "cd /asset-input",
                 // A writable HOME for npm's cache inside the container.
                 "export HOME=/tmp npm_config_cache=/tmp/.npm",
-                // NODE_ENV=production, stated rather than assumed. Vite passes the
-                // ambient NODE_ENV through to React's `process.env.NODE_ENV`, so a build
-                // run from a shell where it is anything else — `test` is the one that
-                // happens, because that is what jest sets — silently ships React's
-                // DEVELOPMENT build: 260 kB larger and carrying its warning machinery.
-                // It is a difference no test would notice, because the page works.
-                "export NODE_ENV=production",
-                "if [ -f package-lock.json ]; then npm ci --no-fund --no-audit; " +
-                  "else npm install --no-fund --no-audit; fi",
+                // `--include=dev` is NOT redundant. npm skips devDependencies when
+                // NODE_ENV=production, and typescript and vite are devDependencies — so
+                // an install inherited from a shell with NODE_ENV=production removes the
+                // very tools the next line needs, and the build dies with
+                // "sh: tsc: not found". The flag makes the install independent of the
+                // caller's environment, which is the only way this is reliable.
+                // (Which React gets bundled is settled in web/vite.config.ts, not here.)
+                "if [ -f package-lock.json ]; then npm ci --include=dev --no-fund --no-audit; " +
+                  "else npm install --include=dev --no-fund --no-audit; fi",
                 "npm run build",
                 // The Observability tab is still the legacy island; it is copied in
                 // beside the bundle rather than imported, so it is served as its own
@@ -1859,20 +1859,14 @@ export class OrchestratorStack extends cdk.Stack {
                 const { spawnSync } = require("node:child_process") as typeof import("node:child_process");
                 const web = path.join(ORCH_ROOT, "web");
                 const run = (cmd: string, args: string[]) =>
-                  spawnSync(cmd, args, {
-                    cwd: web,
-                    stdio: "inherit",
-                    shell: false,
-                    // See the container command above: the ambient NODE_ENV decides
-                    // whether React's development or production build is bundled, and
-                    // this path inherits the caller's shell. Under `npx jest` it is
-                    // `test`, which produced a 1,376 kB bundle instead of 1,113 kB.
-                    env: { ...process.env, NODE_ENV: "production" },
-                  });
+                  spawnSync(cmd, args, { cwd: web, stdio: "inherit", shell: false });
                 if (spawnSync("npm", ["--version"], { stdio: "ignore" }).status !== 0) return false;
+                // `--include=dev`, for the reason given in the container command above:
+                // typescript and vite are devDependencies, and npm drops those when the
+                // caller's NODE_ENV is "production".
                 const install = fs.existsSync(path.join(web, "package-lock.json"))
-                  ? ["ci", "--no-fund", "--no-audit"]
-                  : ["install", "--no-fund", "--no-audit"];
+                  ? ["ci", "--include=dev", "--no-fund", "--no-audit"]
+                  : ["install", "--include=dev", "--no-fund", "--no-audit"];
                 if (run("npm", install).status !== 0) return false;
                 if (run("npm", ["run", "build"]).status !== 0) return false;
                 fs.cpSync(path.join(web, "dist"), outputDir, { recursive: true });

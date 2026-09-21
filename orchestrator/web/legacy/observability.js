@@ -344,14 +344,22 @@
      between releases.
      Form controls are listed explicitly: a browser does not inherit font-family into
      input, select, button or textarea. */
-  #obsView,
-  #obsView input, #obsView select, #obsView button, #obsView textarea {
+  /* TWO ROOTS, not one. The Prompts & I/O inspector is a modal, and openAgentIO()
+     appends it to document.body under #obsModalHost so it can sit above everything —
+     which also puts it OUTSIDE #obsView. A rule scoped to #obsView alone therefore fixed
+     the tab and left the modal on the browser's default serif, which is the one place a
+     reader spends the most time. Both roots are named here and everywhere below. */
+  #obsView, #obsModalHost,
+  #obsView input, #obsView select, #obsView button, #obsView textarea,
+  #obsModalHost input, #obsModalHost select, #obsModalHost button, #obsModalHost textarea {
     font-family: "Open Sans", "Helvetica Neue", Roboto, Arial, sans-serif;
   }
   /* And one monospace stack, Cloudscape's --font-family-monospace, for every place this
      tab shows code, ids or a raw prompt. There were three different ones. */
   #obsView code, #obsView pre, #obsView .cmodel, #obsView .oid,
-  #obsView .obs-mchip code, #obsView .obs-sesslink {
+  #obsView .obs-mchip code, #obsView .obs-sesslink,
+  #obsModalHost code, #obsModalHost pre, #obsModalHost .cmodel, #obsModalHost .oid,
+  #obsModalHost .obs-mchip code {
     font-family: Monaco, Menlo, Consolas, "Courier Prime", Courier, "Courier New", monospace;
   }
   /* The banner's check glyph was Georgia, then "Amazon Ember" — neither is the app's
@@ -512,14 +520,26 @@
     background: #fff; border-color: #e9ebed;
   }
   .obs-callttl { font-size: 13px; line-height: 18px; font-weight: 700; color: #0f141a; }
-  .obs-io pre, .obs-callblk pre {
+  /* EVERY code surface, including the .obs-seg pre one — the system prompt, the input
+     and the output inside the inspector modal.
+     It was missed, and the result was the worst of both rules: the original
+     .obs-seg pre rule painted it near-black (#0f172a) as a terminal-style block, and this
+     restyle set a DARK text colour for a LIGHT surface it never actually applied. The
+     segments are not wrapped in .obs-io or .obs-callblk, so they kept the dark background
+     and got grey text on it. A console renders code on a light surface; there is one
+     surface here now. */
+  .obs-io pre, .obs-callblk pre, .obs-seg pre, .obs-seg.sys pre {
     background: #f4f4f4;
     border: 1px solid #e9ebed;
     border-radius: 4px;
     font-family: Monaco, Menlo, monospace;
     font-size: 12px; line-height: 18px;
-    color: #424650;
+    color: #0f141a;
   }
+  /* The system prompt reads differently from a response, so it keeps a tint — a lighter
+     one, not an inverted one. */
+  .obs-seg.sys pre { background: #fbfbfb; }
+  .obs-seg pre { margin: 0 14px 14px; }
   .obs-metagrid .k, .obs-kv .k { font-size: 12px; color: #656871; }
   .obs-metagrid .v, .obs-kv .v { font-size: 14px; color: #0f141a; }
 

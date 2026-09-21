@@ -45,18 +45,18 @@ resource "null_resource" "ui_build" {
     # `npm ci` when the lockfile is present, so a deploy installs exactly what was
     # tested. The build runs `tsc --noEmit` first, so a type error fails the apply
     # instead of shipping a broken bundle.
+    # `--include=dev` is not redundant: npm skips devDependencies when NODE_ENV is
+    # "production", and typescript and vite ARE devDependencies — so an apply from a
+    # shell with NODE_ENV=production would remove the tools the next line needs and fail
+    # with "tsc: not found". The flag makes the install independent of the caller's
+    # environment. Which React ends up in the bundle is settled in web/vite.config.ts.
     command     = <<-EOT
       set -e
-      if [ -f package-lock.json ]; then npm ci --no-fund --no-audit; else npm install --no-fund --no-audit; fi
+      if [ -f package-lock.json ]; then npm ci --include=dev --no-fund --no-audit; else npm install --include=dev --no-fund --no-audit; fi
       npm run build
       cp legacy/observability.js dist/observability.js
     EOT
     interpreter = ["/bin/bash", "-c"]
-    # NODE_ENV=production, stated rather than inherited. Vite passes the ambient
-    # NODE_ENV through to React's `process.env.NODE_ENV`, so an apply from a shell where
-    # it is set to anything else ships React's DEVELOPMENT build — 260 kB larger, with
-    # its warning machinery intact — and the page still works, so nothing would flag it.
-    environment = { NODE_ENV = "production" }
   }
 }
 
