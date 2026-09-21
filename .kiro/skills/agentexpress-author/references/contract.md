@@ -20,10 +20,86 @@ the rest.
 | `websearch` | `maxResults` | Web search |
 | `mcp` | `endpoint`, `call`, `arg`, `args`, `listingMode` | An existing MCP server |
 | `openapi` | `source`, `call`, `arg`, `rowFields`, `rowPath` | A REST API. Spec at `app/tools/<source>/openapi.json` |
-| `lambda` | `source`, `call`, `arg`, `toolSchema`, `rowFields` | Anything else. Handler at `app/tools/<source>/handler.py` |
+| `lambda` | `lambdaArn` **or** `source`, `call`, `arg`, `toolSchema`, `rowFields` | Anything else. See the warning below — for your own function you want `lambdaArn` |
 
 `rowFields` maps the source's own field names onto the ROLES an agent reads, so pointing a
 tool at a different backend is a config edit rather than a code change.
+
+### `lambda`: `lambdaArn` for your function, `source` only for the shipped demo
+
+**`source` is CLOSED for `type: "lambda"`.** It is enumerated by `builtinLambdaSource` in
+`app/vocabulary.json` and permits only the one folder the repo ships, because a
+framework-deployed function needs an execution role that config cannot express — the role
+that exists grants logs plus read-only on the public AWS price list, which is right for
+that function and wrong for a connector needing VPC config or a secret.
+
+So for a customer's own Lambda tool:
+
+```json
+"partsPricing": {
+  "type": "lambda",
+  "description": "Unit prices for repair parts and labour rates.",
+  "lambdaArn": "arn:aws:lambda:us-east-1:111122223333:function:claims-parts-pricing",
+  "call": "price_parts",
+  "arg": "items",
+  "toolSchema": [ … ],
+  "rowFields": { … }
+}
+```
+
+The customer deploys and owns the function; the framework registers it as a Gateway target
+and grants the Gateway permission to invoke it. It does not manage the code or the role.
+
+**`source` for `type: "openapi"` is deliberately OPEN** — the framework only uploads a
+file, which needs no permissions — so `app/tools/<source>/openapi.json` is the right home
+for a customer's own spec.
+
+### `toolSchema` is an ARRAY of tool descriptors
+
+Not a JSON Schema object. One entry per tool the function publishes, and `required` sits on
+each property rather than in a sibling list:
+
+```json
+"toolSchema": [
+  {
+    "name": "price_parts",
+    "description": "Unit rates for the named parts or trades. Rates only, never a total.",
+    "properties": {
+      "items": {
+        "type": "string",
+        "required": true,
+        "description": "Comma-separated part or trade names."
+      }
+    }
+  }
+]
+```
+
+### The Lambda handler contract
+
+A function reached by `lambdaArn` is the customer's to write, but the Gateway calls it the
+same way the shipped one is called:
+
+```python
+def price_parts(event: dict) -> dict:
+    return {"results": [ … ], "unmatchedItems": [ … ], "note": "…"}
+
+def _tool_name(context) -> str:
+    """The Gateway passes the invoked tool's name on the client context; it arrives
+    prefixed as <target>___<tool>, so split on the delimiter and take the last part."""
+
+_TOOLS = {"price_parts": price_parts}
+
+def lambda_handler(event, context):     # the entry point, not `handler`
+    fn = _TOOLS.get(_tool_name(context) or next(iter(_TOOLS)))
+    if fn is None:
+        return {"error": "unknown tool", "availableTools": sorted(_TOOLS)}
+    return fn(event or {})
+```
+
+Rows go under `results`, and `rowFields` maps their field names onto agent roles. Name every
+shortfall — unmatched inputs, truncation — in its own field rather than dropping it, so the
+calling agent can state what was *not* answered.
 
 **Tool keys must match `^[A-Za-z][A-Za-z0-9]*$`** — the key builds both the Gateway target
 name (no underscores allowed) and the Cedar policy name `permit_<key>` (no hyphens

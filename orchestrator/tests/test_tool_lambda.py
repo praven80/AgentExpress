@@ -144,7 +144,18 @@ class FakePricing:
 def tl(monkeypatch):
     monkeypatch.setenv("AWS_REGION", "us-east-1")
     monkeypatch.setenv("PRICING_API_REGION", "us-east-1")
-    sys.path.insert(0, str(__import__("conftest").ORCH_ROOT / "app" / "tools" / "pricing"))
+    # SKIP, not error, when this sample's own demo tool is gone. Everything in this
+    # file is about `app/tools/pricing/handler.py`, which a customer replacing the
+    # shipped workflow deletes — and every other sample-specific test in this suite
+    # skips in that case and says so. This one imported the module inside the fixture,
+    # so it raised ModuleNotFoundError 51 times instead, which reads as "the customer
+    # broke the framework" rather than "this test covers a tool you removed". Found by
+    # actually replacing the workflow with another domain.
+    pricing = __import__("conftest").ORCH_ROOT / "app" / "tools" / "pricing"
+    if not (pricing / "handler.py").is_file():
+        pytest.skip("app/tools/pricing/ is absent: this sample's demo `lambda` tool "
+                    "has been removed, and these tests only cover that tool")
+    sys.path.insert(0, str(pricing))
     import handler
 
     importlib.reload(handler)

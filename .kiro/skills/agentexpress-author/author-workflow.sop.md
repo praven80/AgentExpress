@@ -64,7 +64,22 @@ writing any files.
 - Validation: the design is confirmed by the user
 - On failure: revise and re-present. You MUST NOT proceed on an unconfirmed design, because every later step derives from it and the agent folders would have to be rewritten
 
-### 3. Declare the tools
+### 3. Clear the sample out of the way, and prepare a Python environment
+
+The repository ships a nine-agent AWS-architecture workflow. A new use case replaces it,
+and nothing later in this SOP works until it is gone.
+
+**Constraints:**
+- You MUST empty `agents` and `steps` in `workflow.json` and delete the corresponding folders under `app/subagents/`, keeping `_shared/` and `__init__.py`, because `scaffold.py` refuses to write an agent whose id already exists and will report "Nothing to do" instead of failing loudly
+- You MUST delete any folder under `app/tools/` that the new `tools` block will not declare, because `tests/test_subagents.py::test_no_tool_source_folder_is_orphaned` asserts that `app/tools/` and `workflow.json` agree in BOTH directions
+- You MUST delete the sample corpora under `kb_docs/` that the new workflow does not use, because every top-level folder there is ingested into the Knowledge Base and the customer would be paying to index this sample's AWS notes
+- You MUST create a Python environment before relying on any gate, because the suite needs `langgraph`, `pydantic` and `boto3` and a bare `python3 -m pytest` fails at collection with `ModuleNotFoundError`:
+  `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt -r requirements-dev.txt`
+- You SHOULD keep `app/subagents/_shared/contracts/` initially and replace its asset shapes as you write the new agents, because they are the worked example of a well-formed asset
+- Validation: `app/subagents/` contains only `_shared`, `__init__.py` and the folders you are about to create, and `.venv/bin/python -c "import langgraph"` succeeds
+- On failure: hard stop
+
+### 4. Declare the tools
 
 Write the `tools` block for every entry in **data_sources**. This is configuration only —
 no IaC, no IAM, no Cedar policy.
@@ -74,13 +89,16 @@ no IaC, no IAM, no Cedar policy.
 - You MUST choose the `type` by how the source is reached: `kb` for Bedrock Knowledge Base corpora, `mcp` for an existing MCP endpoint, `openapi` for a REST API you have a spec for, `lambda` for anything else — a warehouse, an RDBMS, a VPC resource, a control-plane API
 - You MUST treat `lambda` as the escape hatch and say so to the user when a source fits no other type, because the five types are framework code and adding a sixth would mean editing seven files across both IaC paths
 - You MUST supply `rowFields` for any `lambda` or `openapi` tool whose result is tabular, so agents read rows by ROLE rather than by the source's field names
-- You MUST write the handler to `orchestrator/app/tools/<source>/handler.py` for a `lambda` tool, and the spec to `orchestrator/app/tools/<source>/openapi.json` for an `openapi` tool
+- You MUST declare a customer's own Lambda tool with `lambdaArn`, NOT with `source`, because `source` is closed by `builtinLambdaSource` in `app/vocabulary.json` to the single folder the repo ships — a framework-deployed function needs an execution role config cannot express, and the shipped role grants only logs plus read-only on the public AWS price list. With `lambdaArn` the customer deploys and owns the function and the framework registers it as a Gateway target
+- You MUST NOT widen `builtinLambdaSource` to make a customer's `source` validate, because that is a framework-owned file and the deploy would then create a function with a role that cannot reach their data
+- You MUST write an `openapi` tool's spec to `orchestrator/app/tools/<source>/openapi.json`, because `source` for `type: "openapi"` is deliberately open — the framework only uploads a file, which needs no permissions
+- You MUST write `toolSchema` as an ARRAY of tool descriptors, each `{name, description, properties}` with `type`, `required` and `description` on every property, because it is not a JSON Schema object and a `{"type": "object", "properties": …}` value fails schema validation with "is not of type 'array'"
 - You MUST copy the customer's documents to `orchestrator/kb_docs/<corpus>/` for a `kb` tool, where each top-level folder becomes one corpus
 - You MUST NOT write a Lambda ARN, IAM policy, Gateway target or Cedar policy anywhere, because all four are generated from this block and a hand-written one will be overwritten or will conflict
 - Validation: You MUST run `python3 build_schema.py --check` and `python3 format_workflow.py --check` from `orchestrator/`
 - On failure: retry with the error. A schema error names the offending key
 
-### 4. Scaffold the agent packages
+### 5. Scaffold the agent packages
 
 Create each agent's folder and its `workflow.json` entry together, using the shipped
 script rather than writing files by hand.
@@ -91,10 +109,11 @@ script rather than writing files by hand.
 - You MUST run it once with `--dry-run` first and show the user what it will write
 - You MUST NOT hand-write `app/subagents/<id>/__init__.py`, `agent.py` or `prompts.py` skeletons, because scaffold.py already emits the `from .agent import agent` wiring the loader requires and a hand-written package that omits it fails at import
 - You MUST use the agent id as the folder name, since the framework derives one from the other
+- You MUST add an `agentcore.evaluations` block to at least one agent yourself, because `scaffold.py` does not write one and `tests/test_evaluations_gate.py::test_the_shipped_workflow_still_has_evaluable_agents` fails when no agent is evaluable. Use `{"enabled": true, "auto": false, "evaluators": ["Builtin.Faithfulness", "Builtin.ResponseRelevance"]}` on the agents whose output quality matters, and `auto: true` on the final deliverable so it is scored at run completion
 - Validation: You MUST confirm `orchestrator/app/subagents/<id>/` exists with all three files for every non-remote agent, and that `python3 -c "import app.subagents.<id>"` succeeds
 - On failure: hard stop and report which agent failed to import
 
-### 5. Write the prompts and the agent logic
+### 6. Write the prompts and the agent logic
 
 Fill in each agent's `prompts.py` and `agent.py` so it produces the customer's asset type.
 
@@ -108,7 +127,7 @@ Fill in each agent's `prompts.py` and `agent.py` so it produces the customer's a
 - Validation: You MUST run `ruff check .` and `python3 -m pytest` from `orchestrator/`
 - On failure: retry with the error
 
-### 6. Wire the stages, gates and access rules
+### 7. Wire the stages, gates and access rules
 
 Complete the remaining `workflow.json` blocks so the run, the review gates and the UI
 reflect the confirmed design.
@@ -122,7 +141,7 @@ reflect the confirmed design.
 - Validation: You MUST run `python3 format_workflow.py` then `python3 format_workflow.py --check` and `python3 build_schema.py --check`
 - On failure: retry with the error
 
-### 7. Run every gate and report
+### 8. Run every gate and report
 
 Prove the deployment is buildable before telling the user it is ready.
 

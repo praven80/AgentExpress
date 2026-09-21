@@ -43,6 +43,9 @@ one breaks it for the next customer.
 You **MUST** follow [author-workflow.sop.md](author-workflow.sop.md). It sequences the
 work, names the script for each step, and validates before advancing.
 
+[SAMPLE-PROMPTS.md](SAMPLE-PROMPTS.md) holds ready-to-paste prompts a customer can start
+from, including one that rebuilds this project's own workflow.
+
 Load [references/contract.md](references/contract.md) for the exact legal shapes — tool
 types and their required keys, the step forms, the agent entry keys, and the `ctx` API an
 agent may call.
