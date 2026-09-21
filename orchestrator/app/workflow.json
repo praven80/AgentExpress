@@ -27,8 +27,8 @@
     }
   },
   "ui": {
-    "title": "Multi-Agent Orchestrator",
-    "heading": "🧭 Multi-Agent Orchestrator",
+    "title": "AgentExpress",
+    "heading": "🧭 AgentExpress",
     "defaultTopic": "Design a serverless data pipeline on AWS",
     "topicPlaceholder": "What should the workflow work on?",
     "subjectPlaceholder": "Subject (optional, for memory)",

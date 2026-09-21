@@ -144,7 +144,7 @@ export default function App() {
   }, [booted, openRun]);
 
   const ui = useMemo(() => workflow.ui ?? {}, [workflow.ui]);
-  const heading = ui.heading || ui.title || "Multi-Agent Orchestrator";
+  const heading = ui.heading || ui.title || "AgentExpress";
 
   useEffect(() => {
     if (ui.title) document.title = ui.title;

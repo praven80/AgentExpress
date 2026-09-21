@@ -99,11 +99,15 @@ export function AboutPanel({ workflow, heading }: { workflow: Workflow; heading:
   return (
     <HelpPanel header={<h2>{`About ${heading}`}</h2>}>
       <SpaceBetween size="l">
+        {/* The header above already names the product from workflow.json, so this opens
+            with what it DOES rather than repeating the name — which also means renaming
+            the deployment needs no edit here. */}
         <Box variant="p">
-          This is a multi-agent orchestrator. You give it one request; it runs a sequence
-          of AI agents over that request, pauses where a human has to sign off, and keeps
-          every output, cost and decision along the way. What the agents are and how they
-          are wired together is configuration, not code.
+          You give it one request; it runs a sequence of AI agents over that request,
+          pauses where a human has to sign off, and keeps every output, cost and decision
+          along the way. What the agents are and how they are wired together is
+          configuration, not code — which is the whole point: a working multi-agent
+          workflow is a file you edit, not a system you build.
         </Box>
 
         <div>
