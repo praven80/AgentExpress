@@ -6,8 +6,27 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-827 tests in about 12 seconds. No AWS credentials, no model calls, no network — so this
+815 tests in about 11 seconds. No AWS credentials, no model calls, no network — so this
 belongs in a pre-commit hook or a CI step, not a nightly job.
+
+**The UI has its own suite**, because it is a TypeScript application and `pytest` is the
+wrong tool for it:
+
+```bash
+cd orchestrator/web
+npm ci
+npm test          # vitest
+npx tsc --noEmit  # also run by `npm run build`, so a type error fails a deploy
+```
+
+What it covers, and why each one is there rather than being taken on trust:
+
+| File | Covers |
+|---|---|
+| `src/assets/shape.test.ts` | The SHAPE-driven renderer, asserted against a contract the framework has never seen. The fixture is a claims-settlement asset, not this sample's research finding, because a test written against the shipped contract would pass even if the renderer hardcoded its field names |
+| `src/api.test.ts` | Recovery from an expired token, which is the difference between a one-hour session and a working application. A 401 must refresh once, replay the ORIGINAL request with its original method, not stampede when several polls expire in the same tick, and give up exactly once when the session is genuinely over |
+| `src/views/HitlGate.test.tsx` | A parallel gate submits a decision for EVERY agent in the stage. The screen defaults each row to Approve, so a reviewer who agrees with all of them has changed nothing — and sending only what changed meant sending an empty map, which the BFF refuses |
+| `src/build-config.test.ts` | `vite build` pins `NODE_ENV=production`. Worth a test because the failure is invisible: the page renders identically while shipping React's development build, 260 kB larger |
 
 ## What "config plane" means here
 
@@ -44,7 +63,6 @@ a tool that asks the framework to deploy a function — `app/tools/`, and nothin
 | `test_authz.py` | `bff/authz.py` semantics and claim shapes; the assistant's action-tool filtering |
 | `test_bff_routes.py` | Every gated mutating BFF route returns 403 for a caller without the group |
 | `test_bff_projection.py` | What the browser may see — an allow-list, so deploy-time detail (tool endpoints, schemas, Cedar policy, denied words) cannot leak by omission. Plus that a large workflow is no longer a deploy failure: the projection used to ship in a `WORKFLOW_JSON` env var against Lambda's unraisable 4 KB environment cap, and now travels in the deployment package |
-| `test_asset_rendering.py` | `web/index.html`'s own functions under node: a contract the renderer has never seen gets first-class layout, chosen by shape rather than by this sample's field names |
 | `test_frameworks.py` | An agent authored with an agentic framework cannot dodge governance — every model call arrives at `ctx.llm`, named, with the agent's prompt intact; the truncation flag survives; a model failure is not turned into placeholder text; offering the framework its own tools raises rather than being dropped; and Strands, a nested LangGraph and no-framework emit the same contract |
 | `test_cost_research.py` | The deterministic agent: unit rates read as data rows via `rowFields`, never paraphrased, never totalled |
 | `test_tool_lambda.py` | The shipped `type: "lambda"` demo — Price List query shaping and unresolved-service reporting |

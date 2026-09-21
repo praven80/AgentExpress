@@ -147,13 +147,19 @@ in its **own** AgentCore Runtime, invoked via `InvokeAgentRuntime`.
   issuer is the Cognito User Pool endpoint or the Auth0 tenant domain, audience is the
   SPA client id — so unauthenticated requests never reach the BFF. The BFF records the
   caller (`email`/`sub`) on the session for audit.
-- The SPA implements each provider as a small strategy (`AUTH_PROVIDERS` in
-  `web/index.html`) with the same `init`/`login`/`logout` contract: Cognito uses the
-  Hosted UI code flow directly, Auth0 loads `auth0-spa-js` on demand, and `none` is a
-  no-op. Terraform renders the chosen provider into `auth-config.js`, so the same UI
-  bundle serves all three.
+- The UI implements each provider as a small strategy (`STRATEGIES` in `web/src/auth.ts`)
+  with the same `init`/`login`/`logout`/`refresh` contract: Cognito uses the Hosted UI
+  code flow directly, Auth0 loads `auth0-spa-js` on demand, and `none` is a no-op. The
+  IaC renders the chosen provider into `auth-config.js` at deploy time, and the page
+  loads that file *before* the bundle — which is what lets one built bundle serve all
+  three.
+- **An expired token is recovered from, not reported.** An ID token lasts an hour, so
+  `web/src/api.ts` treats a 401 as a signal: refresh once (one in-flight refresh however
+  many requests are waiting), replay the original request, and only send the user back to
+  the IdP if the refresh itself fails. Without this the app is dead an hour after login
+  and the page offers no way out but a manual reload.
 - **Adding a provider** means one branch in `identity.tf`, one in the Gateway client's
-  token request, and one strategy in the SPA. Nothing else changes.
+  token request, and one strategy in `web/src/auth.ts`. Nothing else changes.
 
 ### Authorization (what you may do) — RBAC on run actions
 The JWT authorizer answers "is this a valid user?". It does **not** answer "may *this*
@@ -527,14 +533,19 @@ different boundaries, both config-driven.
   (`app/features/observability/pricing.py`), not the billed amount.
 - The BFF exposes read-only endpoints (`/api/sessions/{id}/telemetry`,
   `/api/telemetry/aggregate?by=date|model|user`, `/api/insights`); the
-  **Observability** UI tab (`web/observability.js`) renders per-run drilldown, the
+  **Observability** UI tab (`web/legacy/observability.js`) renders per-run drilldown, the
   **Prompts & I/O inspector** (per agent, per version: prompts, tool queries,
   memory ops, guardrail/policy decisions, evaluation scores), aggregation,
   projection, Insights, and export.
 - The whole feature is **isolated by design** — `app/features/observability/`,
-  `terraform/observability.tf`, `web/observability.js`, and thin hooks in
+  `terraform/observability.tf`, `web/legacy/observability.js`, and thin hooks in
   `llm.py`/`gateway/client.py`/`context.py`/`nodes.py`/`runtime.py` — so it can be
   removed as a unit.
+- The UI half is mounted as an **island**: `web/src/views/Observability.tsx` loads the
+  module and hands it a container plus the auth token, and that is the entire contract.
+  It is not Cloudscape components, and the tradeoff is stated rather than discovered —
+  porting ~1,700 lines of charts and inspectors at the same time as restructuring the
+  shell would have meant two large rewrites in flight at once.
 
 ### Time — Eastern Time everywhere
 - All stored and displayed timestamps use **US Eastern Time** in `YYYY-MM-DD HH:MM:SS`,
@@ -601,10 +612,10 @@ run) and `tools` (the data sources agents may reach).
 runtime, a policy engine) is provisioned from this one source of truth.
 
 ### Testing — the config plane, not the data plane
-Two suites, one per language, both fast enough for a pre-commit hook and needing
+Three suites, one per language, all fast enough for a pre-commit hook and needing
 neither AWS credentials nor a container builder:
 
-- **`orchestrator/tests/`** (pytest, 827 tests, a few seconds) — the runtime side:
+- **`orchestrator/tests/`** (pytest, 815 tests, a few seconds) — the runtime side:
   topology derivation, graph compilation across 14 step shapes, branch rules and
   routing, rewind planning, tool argument shapes, Gateway tool-name resolution,
   citation verification, figure grounding, contract coercion, and the RBAC rules plus
@@ -612,6 +623,11 @@ neither AWS credentials nor a container builder:
 - **`orchestrator/cdk/test/`** (jest, 168 tests) — the IaC side: the projections
   and validators, the synthesized template (Cognito groups, route set + authorizer,
   BFF environment, Gateway targets, Cedar policies), and **Terraform ↔ CDK parity**.
+- **`orchestrator/web/`** (vitest, 23 tests) — the UI's own config plane: the
+  shape-driven asset renderer against a contract it has never seen, recovery from an
+  expired token, a parallel gate submitting a decision for every agent in the stage, and
+  the build pinning `NODE_ENV=production`. `npx tsc --noEmit` runs inside `npm run build`,
+  so a type error fails a deploy rather than shipping a broken page.
 
 **Deliberately not tested: prompt quality.** That is non-deterministic and has its own
 machinery — the HITL gates and AgentCore Evaluations.

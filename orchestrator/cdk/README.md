@@ -16,7 +16,8 @@ provisions:
 - IAM for **AgentCore Evaluations** (`Evaluate`) and **Insights**
   (`StartBatchEvaluation`) plus the GenAI Observability env,
 - the **BFF Lambda** + **HTTP API** (JWT authorizer for the configured IdP),
-- the static **UI** on **S3 + CloudFront** (private bucket via Origin Access Control),
+- the **UI** on **S3 + CloudFront** (private bucket via Origin Access Control), built
+  from source at synth time — a Vite + React + Cloudscape application, not static files,
 - **CloudWatch Transaction Search**, so agent spans reach the `aws/spans` log group that
   Observability and Insights read,
 - and with `-c enableGateway=true`, the whole **tool plane**: the AgentCore **Gateway**
@@ -48,7 +49,11 @@ Two deliberate implementation differences from Terraform:
 
 ## Prerequisites
 
-- Node.js ≥ 20 and the AWS CDK CLI (`npm i -g aws-cdk`, or use the local dev dependency)
+- Node.js ≥ 20 and the AWS CDK CLI (`npm i -g aws-cdk`, or use the local dev dependency).
+  Node is needed twice: for the CDK app, and to build the UI. `cdk synth` runs
+  `npm ci && npm run build` in `../web` — in a `node:22-alpine` container when one is
+  available, and locally otherwise, so a synth still works without a container engine. A
+  TypeScript error in the UI fails the synth rather than shipping a broken page
 - A container engine that builds `linux/arm64` — Finch, Docker or Podman
 - AWS credentials for the target account, with **Bedrock model access** for `modelId`
   (default Claude Haiku 4.5) enabled in the region

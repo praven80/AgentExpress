@@ -53,8 +53,8 @@ between the two IaC paths deploys cleanly on both and behaves differently.
 **Portability is checked, not claimed.** Two checks run against this repo: swapping in a
 four-agent workflow from another domain (renamed agents, different topology, its own tool,
 guardrail and branding), and renaming a shipped agent by touching only `workflow.json` and
-its own folder. Both compile the graph and pass the full suite (827 Python +
-168 TypeScript), `terraform validate` and `cdk synth` with no other change.
+its own folder. Both compile the graph and pass the full suite (815 Python +
+168 IaC + 23 UI), `terraform validate` and `cdk synth` with no other change.
 
 **Two couplings remain**, neither of which blocks a typical use case: the five tool
 *types* (`kb` / `websearch` / `mcp` / `openapi` / `lambda`) are code, and Knowledge Base
@@ -174,7 +174,10 @@ to a telemetry table. The Observability tab gives you:
 - **Insights** — the cross-run batch analysis.
 
 It stays inside `app/features/observability/` + `terraform/observability.tf` +
-`web/observability.js`, so it can be understood or removed as a unit.
+`web/legacy/observability.js`, so it can be understood or removed as a unit. The UI half
+is mounted as an **island** — `web/src/views/Observability.tsx` hands the module a
+container and the auth token, and nothing else is shared — so it kept working unchanged
+when the rest of the UI was rebuilt on Cloudscape.
 
 ## The workflow
 
@@ -373,8 +376,11 @@ Browser ─▶ CloudFront ─┬─▶ S3 (static UI)
 - **Gateway** is a single OAuth-authed MCP endpoint fronting the whole tool plane.
 - **BFF (Lambda)** invokes the runtime and serves DynamoDB-backed status plus the workflow
   definition, so the UI renders dynamically. `/api/*` sits behind the JWT authorizer.
-- **UI** is static (S3/CloudFront): logs in via the configured IdP, renders the DAG from
-  `/api/workflow`, drives the gates, and polls for progress.
+- **UI** is a **Vite + React + TypeScript** console built on the **AWS Cloudscape Design
+  System**, served as static files from S3/CloudFront. It logs in via the configured IdP,
+  renders the DAG and every table from `/api/workflow`, drives the gates, and polls for
+  progress. Both IaC paths build it from source, so a deploy needs Node 22 (or a
+  container engine) and a TypeScript error fails the deploy.
 
 ## Repository layout
 
@@ -448,10 +454,24 @@ orchestrator/
 │                               #   research.py (gather evidence from a tool),
 │                               #   synthesis.py (reason over upstream assets),
 │                               #   strands_bridge.py, contracts/ (the five asset shapes)
-├── web/index.html              # config-driven UI: login, DAG, gates, outputs, rerun, assistant
-├── web/observability.js        # the Observability tab (charts, drilldown, I/O inspector,
-│                               #   evaluation scores, Insights, export)
-├── web/auth-config.js.tftpl    # IdP settings rendered into the SPA at deploy time
+├── web/                        # the console UI: Vite + React + TypeScript on the AWS
+│   │                           #   Cloudscape Design System. BUILT at deploy time by
+│   │                           #   both IaC paths (`npm ci && npm run build`), so a
+│   │                           #   deploy needs Node 22 or a container engine
+│   ├── src/App.tsx             #   the console shell: AppLayout, TopNavigation,
+│   │                           #     SideNavigation, breadcrumbs, SplitPanel, Flashbar
+│   ├── src/views/              #   Graph (a Step Functions-style canvas), RunsTable,
+│   │                           #     RunDetail, StepPanel, HitlGate, StartRunModal,
+│   │                           #     Assistant, AboutPanel, Observability
+│   ├── src/assets/             #   the SHAPE-driven asset renderer: a customer's own
+│   │                           #     asset type gets first-class layout with no code
+│   │                           #     change, chosen by shape not by field name
+│   ├── src/api.ts, src/auth.ts #   one exit point for requests (with 401 -> refresh ->
+│   │                           #     replay), and the IdP strategies
+│   ├── legacy/observability.js #   the Observability tab, mounted as an ISLAND rather
+│   │                           #     than ported: charts, drilldown, I/O inspector,
+│   │                           #     evaluation scores, Insights, export
+│   └── auth-config.js.tftpl    #   IdP settings rendered into the page at deploy time
 ├── bff/handler.py              # Lambda BFF (sessions, decisions, cancel, rerun, evaluate,
 │                               #   insights, telemetry reads, /api/me)
 ├── bff/authz.py                # RBAC: JWT groups -> which run actions a caller may take
@@ -613,10 +633,23 @@ Two constraints before you reach for one:
 python -m venv .venv && source .venv/bin/activate
 pip install -r orchestrator/requirements-dev.txt
 
-cd orchestrator
-uvicorn app.orchestrator.server:app --port 8090
+cd orchestrator/web && npm ci && npm run build   # the UI is compiled, not copied
+cd .. && uvicorn app.orchestrator.server:app --port 8090
 # open http://127.0.0.1:8090
 ```
+
+Editing the UI? Run Vite instead and get hot reload, with the API proxied back to the
+local server:
+
+```bash
+cd orchestrator/web
+VITE_API_BASE=http://127.0.0.1:8090 npm run dev   # then open http://127.0.0.1:5173
+```
+
+The local server returns the **same `/api/workflow` projection the deployed BFF returns**,
+so the page is fed the shape it will get in production. The routes that read deployed
+DynamoDB tables — telemetry, the assistant — answer with a well-formed empty response and
+a note saying so, rather than a 404 the page would surface as a red error.
 
 > **There is no offline mode, by design.** This framework never fabricates data: a failed
 > model call raises `ModelUnavailable` and an unreachable tool raises `ToolUnavailable`, so
@@ -649,13 +682,15 @@ Cognito, so no pre-existing auth infrastructure is required.
 
 ### Terraform
 
-Requires Terraform, a container engine (Finch/Docker/Podman), and AWS credentials.
+Requires Terraform ≥ 1.10, a container engine (Finch/Docker/Podman), **Node.js ≥ 20** for
+the UI build, and AWS credentials.
 
 ```bash
 cd orchestrator/terraform
 cp terraform.tfvars.example terraform.tfvars   # then edit
 terraform init
-terraform apply                                # builds the image, provisions everything
+terraform apply                                # builds the image AND the UI bundle,
+                                               #   then provisions everything
 ```
 
 | Login mode | `terraform.tfvars` |

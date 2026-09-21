@@ -701,7 +701,16 @@ a `doc_type` no chunk carried, and retrieval quietly returned nothing at all.
 ```bash
 cd orchestrator
 pip install -r requirements.txt -r requirements-dev.txt
+(cd web && npm ci && npm run build)              # the UI is compiled, not copied
 uvicorn app.orchestrator.server:app --port 8090   # needs AWS credentials + Bedrock access
+```
+
+Iterating on the UI itself? Run Vite for hot reload instead of rebuilding, and let it
+proxy the API back to the local server:
+
+```bash
+cd orchestrator/web
+VITE_API_BASE=http://127.0.0.1:8090 npm run dev   # then open http://127.0.0.1:5173
 ```
 
 > **No offline mode, deliberately.** This framework never fabricates data. A failed
@@ -720,8 +729,9 @@ the runtimes; editing `kb_docs/` re-ingests the corpus and nothing else.
 ### Check your config before you deploy it
 
 ```bash
-cd orchestrator     && pytest      # runtime side — 827 tests, ~12s
+cd orchestrator     && pytest      # runtime side — 815 tests, ~11s
 cd orchestrator/cdk && npm test    # IaC side + Terraform↔CDK parity — 168 tests
+cd orchestrator/web && npm test    # the UI — 23 tests
 ```
 
 Neither needs AWS credentials, a model, or a container builder.

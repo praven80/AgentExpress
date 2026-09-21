@@ -18,18 +18,24 @@ import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.staticfiles import StaticFiles
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 from app.common.bus import bus
-from app.common.config import DEFAULT_TOPIC, LAST_AGENT_ID, WORKFLOW
+from app.common.config import DEFAULT_TOPIC, LAST_AGENT_ID
 from app.common.sink import emit, ensure_session
 from app.orchestrator.graph_builder import build_graph, group_rerun_plan, rerun_plan
+from bff import workflow as bff_workflow
 
 app = FastAPI(title="Multi-Agent Orchestrator (local)")
 graph = build_graph()  # MemorySaver for local dev
 WEB = Path(__file__).resolve().parent.parent.parent / "web"
+# The BUILT UI, not the source. web/index.html is now a Vite template whose only script
+# tag points at /src/main.tsx — a browser cannot run it, so serving it would render a
+# blank page with a module-resolution error in the console and no hint why.
+DIST = WEB / "dist"
 _bg: set = set()
 
 
@@ -127,7 +133,21 @@ async def _run(sid: str, initial=None, resume=None, rerun=None):
 
 @app.get("/api/workflow")
 async def workflow():
-    return WORKFLOW
+    # THE PROJECTION, not the raw file — the same one the deployed BFF returns
+    # (bff/workflow.py). Serving the raw workflow here meant the local page was fed a
+    # different shape from the deployed one: `chatbot` lives under `orchestrator` in the
+    # file and is lifted to the top level by the projection, so locally the assistant
+    # simply did not appear, and nothing said why. A dev server that disagrees with
+    # production about the response shape hides exactly the bugs it exists to catch.
+    return bff_workflow.VIEW
+
+
+@app.get("/api/me")
+async def me():
+    # There is no IdP locally, so there is no caller and nothing to restrict.
+    # `permittedActions: None` is the UI's "unknown, hide nothing".
+    return {"user": "local", "groups": [], "permittedActions": None,
+            "authzEnabled": False}
 
 
 @app.post("/api/sessions")
@@ -221,6 +241,83 @@ async def insights_latest():
             "note": "Insights is available once deployed (needs runtime traces in CloudWatch)."}
 
 
+# The remaining deployed routes, answered the way /evaluate and /insights already are:
+# a well-formed empty response with a note, not a 404. A 404 here reaches the page as a
+# red error the reader cannot act on, and the reason is not that anything is broken —
+# these read DynamoDB tables that only exist once deployed.
+_NOT_LOCAL = "Available once deployed: this reads the telemetry table."
+
+
+@app.get("/api/telemetry/aggregate")
+async def telemetry_aggregate(by: str = "date"):
+    return {"by": by, "buckets": [], "note": _NOT_LOCAL}
+
+
+@app.get("/api/sessions/{sid}/telemetry")
+async def telemetry_session(sid: str):
+    return {"session_id": sid, "calls": [], "agents": [], "totals": {}, "note": _NOT_LOCAL}
+
+
+@app.post("/api/chat")
+async def chat():
+    # The assistant is a Bedrock Converse tool-use loop in bff/chatbot.py, and its tools
+    # read and write the deployed DynamoDB tables. Saying so is more useful than either a
+    # 404 or hiding the bubble, which would leave a reader wondering where it went.
+    return {"reply": "The assistant runs in the deployed BFF, where its tools can read "
+                     "and act on real runs. It is not available against this local "
+                     "server — everything else on this page is.",
+            "actions": []}
+
+
+BUILD_HINT = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Build the UI first</title>
+<style>body{font-family:system-ui,sans-serif;max-width:40rem;margin:4rem auto;
+line-height:1.6;color:#0f141a}code{background:#f2f3f3;padding:.1rem .3rem;
+border-radius:4px}</style></head><body>
+<h1>The UI has not been built</h1>
+<p>The console is a Vite + React application, so it has to be compiled before this
+server can serve it. Either build it once:</p>
+<pre><code>cd orchestrator/web
+npm ci
+npm run build</code></pre>
+<p>&hellip;and reload this page, or run the Vite dev server for hot reload, which
+proxies the API back here:</p>
+<pre><code>cd orchestrator/web
+VITE_API_BASE=http://127.0.0.1:8090 npm run dev
+# then open http://127.0.0.1:5173</code></pre>
+<p>The API on this port works either way &mdash; try
+<a href="/api/workflow">/api/workflow</a>.</p>
+</body></html>"""
+
+
+# The auth config the deployed page gets from the IaC. Locally there is no IdP, and
+# without this file the bundle's <script src="/auth-config.js"> 404s on every load.
+AUTH_CONFIG_LOCAL = "window.AUTH_CONFIG = { enabled: false, provider: 'none' };\n"
+
+
+@app.get("/auth-config.js")
+async def auth_config_js():
+    return Response(AUTH_CONFIG_LOCAL, media_type="application/javascript")
+
+
+@app.get("/observability.js")
+async def observability_js():
+    # Served from legacy/ rather than dist/, so editing it needs no rebuild.
+    return FileResponse(WEB / "legacy" / "observability.js",
+                        media_type="application/javascript")
+
+
 @app.get("/")
 async def index():
-    return FileResponse(WEB / "index.html")
+    entry = DIST / "index.html"
+    if not entry.exists():
+        # 200, not 404 or 500: the server is fine, the bundle is simply absent, and the
+        # useful response is the two commands that fix it.
+        return HTMLResponse(BUILD_HINT)
+    return FileResponse(entry)
+
+
+# Vite's hashed output. Mounted last so the routes above win, and only when a build
+# exists — StaticFiles raises at construction on a missing directory.
+if (DIST / "assets").is_dir():
+    app.mount("/assets", StaticFiles(directory=DIST / "assets"), name="assets")

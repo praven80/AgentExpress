@@ -27,6 +27,11 @@ All commands run from `orchestrator/terraform/`.
 - **Terraform ≥ 1.10** — `versions.tf` requires it for S3-native state locking
   (`use_lockfile`), which replaces the old DynamoDB lock table
 - A container engine that builds `linux/arm64` — Finch, Docker or Podman
+- **Node.js ≥ 20 and npm** — the UI is a Vite + React + Cloudscape application, and
+  `terraform apply` builds it (`npm ci && npm run build` in `orchestrator/web`) before
+  uploading. This is a real build step, not a file copy: a TypeScript error fails the
+  apply rather than shipping a broken page. The first build downloads ~200 MB of
+  `node_modules` and takes a couple of minutes; later ones are cached
 - **AWS CLI** with credentials for the target account
 
 In the target account and region, enable **Amazon Bedrock model access** for:
@@ -526,7 +531,11 @@ memory, evaluations and telemetry stay real.
 
 ## Prerequisites
 
-- Node.js ≥ 20 and the AWS CDK CLI (`npm i -g aws-cdk`, or the local dev dependency)
+- Node.js ≥ 20 and the AWS CDK CLI (`npm i -g aws-cdk`, or the local dev dependency).
+  Node is needed twice: for the CDK app itself, and to build the UI — `cdk synth` runs
+  `npm ci && npm run build` in `orchestrator/web`, in a `node:22-alpine` container if one
+  is available and locally otherwise, so a synth works on a machine with no container
+  engine. A TypeScript error in the UI fails the synth
 - A container engine that builds `linux/arm64` — Finch, Docker or Podman
 - AWS credentials, with **Bedrock model access** for `modelId` (default Claude Haiku 4.5)
   and for the embedding model (default Titan Text Embeddings V2) when deploying with

@@ -100,7 +100,7 @@ validator that can name it.
 |---|---|
 | `$comment` | Orientation for whoever opens the file. Not read by anything. |
 | `orchestrator` | Engine-wide settings. Not an agent — it has no model or prompt of its own. |
-| `ui` | Presentation strings, so re-branding is a config edit rather than an `index.html` edit. |
+| `ui` | Presentation strings, so re-branding is a config edit rather than a UI code change. |
 | `guardrail` | The Bedrock Guardrail *policy* — what is enforced. Agents opt in per agent. |
 | `authorization` | Which JWT groups may approve, re-run, cancel, evaluate, run insights, delete. |
 | `tools` | Every data source an agent may call. |
@@ -159,9 +159,10 @@ default-deny, including a tool name a prompt-injected instruction invents.
 
 ## `ui`
 
-Every user-facing string in the shell, so re-branding is a config edit rather than an
-`index.html` edit. All optional — the page has a neutral fallback for each — and all
-guarded: `tests/test_config_keys.py` fails on a `ui` key nothing renders, because a
+Every user-facing string in the shell, so re-branding is a config edit rather than a
+change to the UI's source. All optional — the page has a neutral fallback for each — and
+all guarded: `tests/test_config_keys.py` scans `web/src/**` and fails on a `ui` key
+nothing renders, because a
 presentation key that does nothing is worse than an absent one (you edit it and see
 no change, with nothing to tell you why).
 
