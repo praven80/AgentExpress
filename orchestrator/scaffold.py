@@ -317,9 +317,25 @@ def reset(dry_run: bool, keep_kb: bool) -> int:
     subprocess.run([sys.executable, str(ROOT / "build_schema.py")],  # noqa: S603
                    cwd=ROOT, check=True)
 
+    # From here on this tree is a workflow implementation rather than the framework's own
+    # development, so the edit boundary applies. tests/test_edit_boundary.py enforces it
+    # only when this marker exists — without it, framework files changing is normal and
+    # the check would fail on every commit the framework's own authors make.
+    (ROOT / ".agentexpress-customer").write_text(
+        "This tree is a workflow implementation, not the framework's own development.\n"
+        "\n"
+        "Written by `scaffold.py reset`. While it exists,\n"
+        "tests/test_edit_boundary.py fails if anything changes outside the four surfaces\n"
+        "you own: app/workflow.json, app/subagents/, app/tools/ and kb_docs/.\n"
+        "\n"
+        "Delete it to make a deliberate framework change.\n")
+
     print(f"\nDone. The sample is gone and you have the smallest workflow that still "
           f"works: one agent, {STARTER_ID!r}, in one gated step, and no tools.")
     print("Run `pytest` now — it should pass. That is your safety net while you build.")
+    print("\nThe edit boundary is now enforced: `pytest` fails if anything changes outside")
+    print("app/workflow.json, app/subagents/, app/tools/ and kb_docs/. Delete")
+    print("orchestrator/.agentexpress-customer to make a deliberate framework change.")
     print("\nNext:")
     print("  1. declare your data sources in `tools`")
     print(f"  2. rename {STARTER_ID!r}, and add the rest with `scaffold.py agent <id>`")
