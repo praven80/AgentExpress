@@ -31,8 +31,15 @@ REPO = ORCH.parent
 MARKER = ORCH / ".agentexpress-customer"
 
 #: The four surfaces, repo-relative. A path is allowed when it starts with one of these.
+#:
 #: workflow.schema.json and defaults.json are GENERATED from app/keys.json by
 #: build_schema.py, so they move on their own and are not a customer edit.
+#:
+#: cdk/cdk.json is DEPLOY CONFIG, not framework code: it carries the agent name, the model
+#: id and the gateway switch as CDK context, which is a customer's choice. Terraform's
+#: equivalent, terraform.tfvars, needs no entry — it is gitignored, so it never appears in
+#: `git status` at all. The hook allows both, because the hook judges the write rather than
+#: the working tree.
 ALLOWED = (
     "orchestrator/app/workflow.json",
     "orchestrator/app/workflow.schema.json",
@@ -40,6 +47,7 @@ ALLOWED = (
     "orchestrator/app/subagents/",
     "orchestrator/app/tools/",
     "orchestrator/kb_docs/",
+    "orchestrator/cdk/cdk.json",
     "orchestrator/.agentexpress-customer",
     ".kiro/",
 )
@@ -97,9 +105,10 @@ def test_the_allowlist_matches_the_surfaces_the_docs_promise():
     Guards against the allowlist quietly widening: a path added here to make a failure go
     away is the framework's promise narrowing, and nothing else would notice.
     """
+    generated_or_config = (".schema.json", "defaults.json", ".agentexpress-customer",
+                           "cdk/cdk.json")
     surfaces = {p for p in ALLOWED
-                if not p.endswith((".schema.json", "defaults.json",
-                                   ".agentexpress-customer")) and p != ".kiro/"}
+                if not p.endswith(generated_or_config) and p != ".kiro/"}
     assert surfaces == {
         "orchestrator/app/workflow.json",
         "orchestrator/app/subagents/",
@@ -117,4 +126,10 @@ def test_the_hook_that_prevents_this_is_still_installed():
     body = script.read_text()
     for surface in ("app/subagents/", "app/tools/", "kb_docs/", "app/workflow.json"):
         assert surface in body, f"the hook no longer allows {surface}"
+    # Deploy config, which the first version of the hook blocked — it would have stopped a
+    # customer setting their own region.
+    for deploy in ("terraform.tfvars", "cdk/cdk.json"):
+        assert deploy in body, (
+            f"the hook no longer allows {deploy}, so a customer cannot configure their own "
+            f"deployment")
     assert "exit 2" in body, "the hook no longer blocks: exit 2 is what stops a tool call"

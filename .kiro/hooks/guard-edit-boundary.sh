@@ -52,11 +52,21 @@ ROOT=${CWD:-$PWD}
 REL=${FILE#"$ROOT"/}
 REL=${REL#./}
 
-# THE FOUR SURFACES, plus the files the framework's own generators write.
+# THE FOUR SURFACES, plus DEPLOY CONFIG and the files the framework's generators write.
 #   workflow.json                  the configuration
 #   app/subagents/**               one folder per agent: prompt, contract, run()
 #   app/tools/**                   a tool's handler.py or openapi.json
 #   kb_docs/**                     the customer's documents
+#
+# DEPLOY CONFIG IS NOT A FRAMEWORK EDIT, and leaving it out was a real defect in the first
+# version of this hook: it would have blocked a customer setting their own region. Which
+# account, region, model and identity provider to deploy into is theirs to choose, and the
+# two files that carry it live inside otherwise off-limits directories:
+#   terraform/terraform.tfvars     region, model, idp, gateway on/off (gitignored)
+#   cdk/cdk.json                   the same, as CDK context
+# .env and *.creds.env are local secrets, never committed, and nothing here reads them at
+# build time — blocking a write to one would only stop someone configuring their own shell.
+#
 # workflow.schema.json and defaults.json are GENERATED from app/keys.json by
 # build_schema.py, which scaffold.py runs — blocking them would block the framework's own
 # scripts and look like the hook was broken.
@@ -67,6 +77,10 @@ case "$REL" in
     orchestrator/app/subagents/*|\
     orchestrator/app/tools/*|\
     orchestrator/kb_docs/*|\
+    orchestrator/terraform/terraform.tfvars|\
+    orchestrator/cdk/cdk.json|\
+    orchestrator/.agentexpress-customer|\
+    .env|*.env|\
     .kiro/*)
         exit 0 ;;
 esac
@@ -87,6 +101,11 @@ A workflow implementation touches only these four places:
   orchestrator/app/subagents/<id>/   one folder per agent
   orchestrator/app/tools/<name>/     a tool's handler.py or openapi.json
   orchestrator/kb_docs/<corpus>/     your documents
+
+plus your deploy configuration, which is also yours to set:
+
+  orchestrator/terraform/terraform.tfvars    region, model, identity provider
+  orchestrator/cdk/cdk.json                  the same, as CDK context
 
 Everything else — the IaC, the Gateway targets, the Cedar policies, the guardrail, the
 IAM, the BFF and the UI — is GENERATED from those four. Editing it directly is either
