@@ -15,7 +15,27 @@ Knowledge Base corpus with your own.
 
 ## What you edit
 
-Start with **[`GETTING_STARTED.md`](GETTING_STARTED.md)**. Your surface is:
+**The fastest path is to ask.** Open this repository in Kiro and describe your use case:
+
+> Use the agentexpress-author skill to build this workflow. Settle household insurance
+> claims: read the FNOL, check the policy wording for coverage, price the repair, and
+> produce a settlement decision a human approves.
+
+The skill in [`.kiro/skills/agentexpress-author/`](.kiro/skills/agentexpress-author/)
+scores your description against a ten-item readiness checklist, asks for whatever it still
+needs, confirms the topology with you, then clears this sample, scaffolds your agents,
+writes their prompts and runs the full test suite. Ready-to-paste prompts, including one
+that rebuilds this project's own workflow, are in
+[`SAMPLE-PROMPTS.md`](.kiro/skills/agentexpress-author/SAMPLE-PROMPTS.md).
+
+A `PreToolUse` hook keeps it honest: while you are implementing a workflow, a write to a
+framework file is **blocked** rather than politely discouraged, and
+`tests/test_edit_boundary.py` catches anything that arrives by another route. Both switch
+off for a deliberate framework change — see
+[`.kiro/hooks/guard-edit-boundary.sh`](.kiro/hooks/guard-edit-boundary.sh).
+
+Start with **[`GETTING_STARTED.md`](GETTING_STARTED.md)** to do it by hand. Either way,
+your surface is:
 
 | You edit | For |
 |---|---|
@@ -53,7 +73,7 @@ between the two IaC paths deploys cleanly on both and behaves differently.
 **Portability is checked, not claimed.** Two checks run against this repo: swapping in a
 four-agent workflow from another domain (renamed agents, different topology, its own tool,
 guardrail and branding), and renaming a shipped agent by touching only `workflow.json` and
-its own folder. Both compile the graph and pass the full suite (822 Python +
+its own folder. Both compile the graph and pass the full suite (824 Python +
 168 IaC + 23 UI), `terraform validate` and `cdk synth` with no other change.
 
 **Two couplings remain**, neither of which blocks a typical use case: the five tool
@@ -385,6 +405,18 @@ Browser ─▶ CloudFront ─┬─▶ S3 (static UI)
 ## Repository layout
 
 ```
+.kiro/                          # Kiro tooling. Not read at run time by anything.
+├── skills/agentexpress-author/ #   describe a use case, get a workflow. SKILL.md routes to
+│   │                           #     author-workflow.sop.md (the procedure, gated on a
+│   │                           #     readiness checklist), references/checklist.md (the
+│   │                           #     ten things the framework needs from you),
+│   │                           #     references/contract.md (the exact legal config
+│   │                           #     shapes) and SAMPLE-PROMPTS.md (paste-ready briefs)
+└── hooks/guard-edit-boundary.* #   PreToolUse: BLOCKS a write to a framework file while
+                                #     you are implementing a workflow. Paired with
+                                #     tests/test_edit_boundary.py, which detects what the
+                                #     hook cannot see. Both off for framework work
+
 orchestrator/
 ├── app/
 │   ├── workflow.json           # SINGLE SOURCE OF TRUTH: orchestrator + ui + guardrail

@@ -615,7 +615,7 @@ runtime, a policy engine) is provisioned from this one source of truth.
 Three suites, one per language, all fast enough for a pre-commit hook and needing
 neither AWS credentials nor a container builder:
 
-- **`orchestrator/tests/`** (pytest, 822 tests, a few seconds) — the runtime side:
+- **`orchestrator/tests/`** (pytest, 824 tests, a few seconds) — the runtime side:
   topology derivation, graph compilation across 14 step shapes, branch rules and
   routing, rewind planning, tool argument shapes, Gateway tool-name resolution,
   citation verification, figure grounding, contract coercion, and the RBAC rules plus

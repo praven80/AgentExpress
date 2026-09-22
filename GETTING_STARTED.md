@@ -310,6 +310,17 @@ reads it there unless `source` names it.
 
 ## 3. Add your own agent
 
+**Or skip this section and ask.** Open the repository in Kiro and say what you want —
+*"Use the agentexpress-author skill to build \<your use case\>"*. It scores your
+description against a ten-item checklist, asks for the gaps, confirms the topology, then
+does everything the rest of this guide describes by hand. Paste-ready briefs are in
+[`.kiro/skills/agentexpress-author/SAMPLE-PROMPTS.md`](.kiro/skills/agentexpress-author/SAMPLE-PROMPTS.md),
+including one that rebuilds this project's own workflow so you can compare.
+
+While it works, a `PreToolUse` hook blocks any write outside the four surfaces you own, so
+it cannot drift into framework code — and `pytest` catches anything that arrives another
+way. Read on if you would rather drive it yourself.
+
 Replacing this sample entirely rather than extending it? Clear it first — one command
 removes the nine agents, their folders, the five tools and the sample KB corpora, and
 leaves one working agent in one gated step so the test suite still passes:
@@ -739,7 +750,7 @@ the runtimes; editing `kb_docs/` re-ingests the corpus and nothing else.
 ### Check your config before you deploy it
 
 ```bash
-cd orchestrator     && pytest      # runtime side — 822 tests, ~10s
+cd orchestrator     && pytest      # runtime side — 824 tests, ~7s
 cd orchestrator/cdk && npm test    # IaC side + Terraform↔CDK parity — 168 tests
 cd orchestrator/web && npm test    # the UI — 23 tests
 ```

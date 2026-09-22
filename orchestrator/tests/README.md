@@ -6,7 +6,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-822 tests in about 10 seconds. No AWS credentials, no model calls, no network — so this
+824 tests in about 7 seconds. No AWS credentials, no model calls, no network — so this
 belongs in a pre-commit hook or a CI step, not a nightly job.
 
 **The UI has its own suite**, because it is a TypeScript application and `pytest` is the
@@ -73,6 +73,7 @@ a tool that asks the framework to deploy a function — `app/tools/`, and nothin
 | `test_observability_honesty.py` | The observability plane must not present a guess as a measurement: an unrecognised model is marked `rates_known=False` rather than priced at a fallback, and `orchestrator.modelRates` lets a customer supply real rates |
 | `test_runtime_invoke.py` | `InvokeAgentRuntime` is not retried, because it is not idempotent |
 | `test_clock_parity.py` | `app/common/clock.py` and `bff/clock.py` agree, since the BFF ships as its own zip |
+| `test_edit_boundary.py` | A workflow implementation changed only the four surfaces it owns. The paired `PreToolUse` hook blocks such a write before it happens, but it sees only the write tools — `execute_bash` reaches the filesystem too, and policing every shell command would break the build and the generators. So this inspects the working TREE instead and does not care how a change arrived. It enforces only when `orchestrator/.agentexpress-customer` exists, which `scaffold.py reset` writes: in this repository framework files are *supposed* to change, so the one skip you see is this check standing down |
 | `test_container_image.py` | The image does not inherit the builder's umask. `COPY` runs as root whatever `USER` says and preserves the build context's directory modes, so on a machine with `umask 077` the app/ tree arrives 0700 root-owned and the runtime user cannot traverse `app/orchestrator/` to reach its own code. The image builds, pushes and deploys clean; the failure lands at container start as `ModuleNotFoundError: No module named 'app.orchestrator.runtime'`, which names a file and sends you hunting through `.dockerignore` for something that was there all along |
 | `test_observability_syntax.py` | `web/legacy/observability.js` parses. Its whole stylesheet lives in a JS template literal, so a backtick in a CSS comment closes the string and the Observability tab silently fails to mount. Nothing else in the build looks at this file — it is copied to S3 verbatim, not imported by the bundle — so a blank tab is otherwise the first symptom |
 
