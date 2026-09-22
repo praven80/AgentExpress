@@ -41,6 +41,7 @@ Endpoints:
 import decimal
 import json
 import os
+import traceback
 import uuid
 
 import authz
@@ -576,4 +577,21 @@ def _api(event: dict, context) -> dict:
 def handler(event, context):
     if "action" in event and "requestContext" not in event:
         return _run(event)
-    return _api(event, context)
+    try:
+        return _api(event, context)
+    except Exception as e:  # noqa: BLE001
+        # NAME THE FAILURE. Without this, anything unhandled in _api escapes to API
+        # Gateway, which answers `{"message": "Internal Server Error"}` — and that is
+        # what the browser then shows. The route is absent, the exception type is
+        # absent, and the only way to learn either is CloudWatch, which a customer
+        # running a workshop does not have open.
+        #
+        # The status stays 500 because it genuinely is one. What changes is that the
+        # response says which route and which exception, and the log line carries the
+        # traceback next to the route that produced it.
+        method = (event.get("requestContext") or {}).get("http", {}).get("method", "?")
+        path = event.get("rawPath", "?")
+        print(f"[bff] {method} {path} failed: {type(e).__name__}: {e}")
+        traceback.print_exc()
+        return _resp(500, {"error": f"{type(e).__name__}: {e}",
+                           "route": f"{method} {path}"})

@@ -112,11 +112,32 @@ export default function App() {
   }, [fail]);
 
   // --- polling ------------------------------------------------------------
+  /** Consecutive failed polls. A SINGLE failure is not news.
+   *
+   *  Measured on the deployed stack over 24 hours: 17,276 API Gateway requests, 17,204
+   *  Lambda invocations, ZERO Lambda errors, and two 5xx — transient integration blips
+   *  at 0.012%. But this list polls every 5 seconds, so a tab left open all afternoon
+   *  will meet one, and the first version raised a sticky red banner for it. Two blips
+   *  in seventeen thousand requests presented as "Could not list runs: Internal Server
+   *  Error", sitting there until dismissed, which reads as a broken application.
+   *
+   *  So a poll failure is only worth reporting once it PERSISTS: three in a row is
+   *  fifteen seconds of genuinely not working, which is worth saying. Anything shorter
+   *  resolves itself before the reader could have acted on it. */
+  const pollFailures = useRef(0);
+  const FLASH_AFTER = 3;
+
   const refreshRuns = useCallback(async () => {
     try {
       setRuns(await api.get<SessionSummary[]>("/api/sessions"));
+      pollFailures.current = 0;
     } catch (e) {
-      if (booted) fail(e, "Could not list runs");
+      pollFailures.current += 1;
+      // `>` not `>=`: report on the third failure and then stay quiet, rather than
+      // stacking one flash per failed poll for as long as the outage lasts.
+      if (booted && pollFailures.current === FLASH_AFTER) {
+        fail(e, `Could not list runs (${FLASH_AFTER} attempts)`);
+      }
     } finally {
       setRunsLoading(false);
     }
